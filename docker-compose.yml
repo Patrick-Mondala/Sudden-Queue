@@ -1,3 +1,8 @@
+# Pinned so Compose does not derive the project name from the folder. Without
+# this, renaming the checkout directory creates fresh volumes and the existing
+# database appears to vanish.
+name: suddenqueue
+
 services:
   postgres:
     image: postgres:17-alpine
