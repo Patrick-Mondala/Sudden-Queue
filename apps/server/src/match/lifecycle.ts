@@ -15,6 +15,7 @@ import type { Database, Executor } from "../db/client.js";
 import {
   matchParticipants,
   matches,
+  parties,
   partyMembers,
   playerRatings,
   queueTickets,
@@ -71,8 +72,8 @@ export class MatchLifecycle {
 
       const membersByParty = await this.membersOf(tx, allPartyIds);
 
-      const team1Users = decision.team1PartyIds.flatMap((p) => membersByParty.get(p) ?? []);
-      const team2Users = decision.team2PartyIds.flatMap((p) => membersByParty.get(p) ?? []);
+      const team1Users = decision.team1PartyIds.flatMap((p) => membersByParty.get(p)?.members ?? []);
+      const team2Users = decision.team2PartyIds.flatMap((p) => membersByParty.get(p)?.members ?? []);
       const allUsers = [...team1Users, ...team2Users];
 
       // A player already inside a live match must never be pulled into a second.
@@ -147,34 +148,62 @@ export class MatchLifecycle {
   /**
    * Captain is the leader of the largest party on the side — the biggest
    * premade is already coordinating, so it is the least disruptive choice.
+   *
+   * Uses parties.leaderId rather than "first member". Members inserted in one
+   * statement share an identical joined_at (Postgres now() is transaction
+   * scoped), so ordering by it breaks ties arbitrarily and would pick a
+   * different captain run to run. Party size ties break on party id for the
+   * same reason.
    */
-  private pickCaptain(partyIds: string[], members: Map<string, string[]>): string | null {
-    let best: string[] | null = null;
-    for (const id of partyIds) {
-      const m = members.get(id);
-      if (!m || m.length === 0) continue;
-      if (best === null || m.length > best.length) best = m;
+  private pickCaptain(
+    partyIds: string[],
+    parties: Map<string, { leaderId: string; members: string[] }>,
+  ): string | null {
+    let bestId: string | null = null;
+    let bestSize = -1;
+
+    for (const id of [...partyIds].sort()) {
+      const p = parties.get(id);
+      if (!p || p.members.length === 0) continue;
+      if (p.members.length > bestSize) {
+        bestSize = p.members.length;
+        bestId = id;
+      }
     }
-    return best?.[0] ?? null;
+
+    return bestId === null ? null : (parties.get(bestId)?.leaderId ?? null);
   }
 
-  private async membersOf(tx: Executor, partyIds: string[]): Promise<Map<string, string[]>> {
+  /**
+   * Party membership plus each party's leader.
+   *
+   * Uses the query builder rather than a raw ANY(): Drizzle spreads a JS array
+   * into individual placeholders, which Postgres reads as a row constructor
+   * and rejects. Ordering includes userId so member order is stable even when
+   * rows share a joined_at.
+   */
+  private async membersOf(
+    tx: Executor,
+    partyIds: string[],
+  ): Promise<Map<string, { leaderId: string; members: string[] }>> {
     if (partyIds.length === 0) return new Map();
 
-    // Uses the query builder rather than a raw ANY(): Drizzle spreads a JS
-    // array into individual placeholders, which Postgres reads as a row
-    // constructor, not an array.
     const rows = await tx
-      .select({ partyId: partyMembers.partyId, userId: partyMembers.userId })
+      .select({
+        partyId: partyMembers.partyId,
+        userId: partyMembers.userId,
+        leaderId: parties.leaderId,
+      })
       .from(partyMembers)
+      .innerJoin(parties, eq(parties.id, partyMembers.partyId))
       .where(inArray(partyMembers.partyId, partyIds))
-      .orderBy(partyMembers.joinedAt);
+      .orderBy(partyMembers.joinedAt, partyMembers.userId);
 
-    const out = new Map<string, string[]>();
+    const out = new Map<string, { leaderId: string; members: string[] }>();
     for (const r of rows) {
-      const list = out.get(r.partyId);
-      if (list) list.push(r.userId);
-      else out.set(r.partyId, [r.userId]);
+      const entry = out.get(r.partyId);
+      if (entry) entry.members.push(r.userId);
+      else out.set(r.partyId, { leaderId: r.leaderId, members: [r.userId] });
     }
     return out;
   }

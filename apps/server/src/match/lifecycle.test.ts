@@ -2,7 +2,7 @@ import { isFail, isOk } from "@suddenqueue/core";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { matchParticipants, matches } from "../db/schema/index.js";
+import { matchParticipants, matches, parties } from "../db/schema/index.js";
 import { QueueRepository } from "../queue/repository.js";
 import { makeParty, setupTestDatabase, truncateAll } from "../test/helpers.js";
 import { MatchLifecycle } from "./lifecycle.js";
@@ -96,15 +96,46 @@ describe("committing a decision", () => {
     expect(parts.filter((p) => p.team === 2 && p.isCaptain)).toHaveLength(1);
   });
 
-  it("gives the captaincy to the largest party's leader", async () => {
+  it("gives the captaincy to the largest party's registered leader", async () => {
     const { team1, decision } = await stageMatch({ sizes1: [3, 1, 1], sizes2: [1, 1, 1, 1, 1] });
     const result = await lifecycle.createFromDecision(decision, "na");
     if (!isOk(result)) throw new Error("expected ok");
 
     const parts = await lifecycle.participants(result.data.matchId);
     const captain = parts.find((p) => p.team === 1 && p.isCaptain);
-    // team1[0] is the 3-stack; its first member leads it.
+    // team1[0] is the 3-stack, and makeParty makes its first user the leader.
     expect(captain!.userId).toBe(team1[0]!.userIds[0]);
+  });
+
+  /**
+   * Members created in one insert share a joined_at, because Postgres now() is
+   * transaction scoped. Picking the captain by member order was therefore
+   * unstable between runs; it now comes from parties.leaderId.
+   */
+  it("picks the same captain every time for identical input", async () => {
+    const seen = new Set<string>();
+
+    for (let run = 0; run < 5; run += 1) {
+      await truncateAll(handle);
+      const { decision } = await stageMatch({ sizes1: [3, 1, 1], sizes2: [1, 1, 1, 1, 1] });
+      const result = await lifecycle.createFromDecision(decision, "na");
+      if (!isOk(result)) throw new Error("expected ok");
+
+      const parts = await lifecycle.participants(result.data.matchId);
+      const captain = parts.find((p) => p.team === 1 && p.isCaptain)!;
+      const largestParty = decision.team1PartyIds[0]!;
+
+      // Captain must be the leader of the 3-stack, not an arbitrary member.
+      const [leader] = await handle.db
+        .select({ leaderId: parties.leaderId })
+        .from(parties)
+        .where(eq(parties.id, largestParty));
+
+      expect(captain.userId).toBe(leader!.leaderId);
+      seen.add(captain.userId === leader!.leaderId ? "leader" : "other");
+    }
+
+    expect([...seen]).toEqual(["leader"]);
   });
 
   it("refuses when a party left the queue after being scored", async () => {
