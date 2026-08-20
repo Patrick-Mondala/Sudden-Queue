@@ -166,8 +166,12 @@ export function isBetterCandidate(
  * `limit` caps the result because the search is combinatorial and TEAM_SIZE
  * doubled from the earlier version: with twenty solo tickets, 3v3 enumerated
  * about 1,100 team options where 5v5 enumerates over 15,000, and the candidate
- * pairing then squares it. The caller keeps the input window small; this is the
- * backstop.
+ * pairing then squares it.
+ *
+ * NOT used by the live matchmaker for that reason — findBestMatchForAnchor
+ * searches party shapes instead. Kept because exhaustive enumeration is the
+ * ground truth the shape search is tested against: if a feasible match exists,
+ * the fast path must find one too.
  */
 export function buildTeamOptions(
   tickets: readonly QueueTicket[],
@@ -217,7 +221,89 @@ export function remainingIndices(total: number, used: readonly number[]): number
 }
 
 /**
+ * Every way to partition `total` into descending parts of at most `maxPart`.
+ * For TEAM_SIZE 5 this is the seven team shapes: 5, 4-1, 3-2, 3-1-1, 2-2-1,
+ * 2-1-1-1, 1-1-1-1-1.
+ */
+export function partitionsOf(total: number, maxPart: number = total): number[][] {
+  if (total === 0) return [[]];
+  const out: number[][] = [];
+  for (let part = Math.min(maxPart, total); part >= 1; part -= 1) {
+    for (const rest of partitionsOf(total - part, part)) {
+      out.push([part, ...rest]);
+    }
+  }
+  return out;
+}
+
+/** The seven shapes a five-player team can take. Computed once. */
+export const TEAM_SHAPES: readonly (readonly number[])[] = partitionsOf(TEAM_SIZE);
+
+/** Tickets grouped by party size, each group sorted by rating ascending. */
+function bucketBySize(tickets: readonly QueueTicket[]): Map<number, QueueTicket[]> {
+  const buckets = new Map<number, QueueTicket[]>();
+  for (const t of tickets) {
+    const list = buckets.get(t.size);
+    if (list) list.push(t);
+    else buckets.set(t.size, [t]);
+  }
+  for (const list of buckets.values()) {
+    list.sort((a, b) => a.ratingSnapshot - b.ratingSnapshot);
+  }
+  return buckets;
+}
+
+/**
+ * Takes the party of the given size whose rating sits closest to `target`,
+ * removing it from the bucket. Returns null when that size is exhausted.
+ */
+function takeNearest(
+  buckets: Map<number, QueueTicket[]>,
+  size: number,
+  target: number,
+): QueueTicket | null {
+  const list = buckets.get(size);
+  if (!list || list.length === 0) return null;
+
+  let bestIndex = 0;
+  let bestDistance = Math.abs(list[0]!.ratingSnapshot - target);
+  for (let i = 1; i < list.length; i += 1) {
+    const d = Math.abs(list[i]!.ratingSnapshot - target);
+    if (d < bestDistance) {
+      bestDistance = d;
+      bestIndex = i;
+    }
+  }
+  return list.splice(bestIndex, 1)[0]!;
+}
+
+/** Fills one shape from the buckets, aiming each pick at `target`. */
+function fillShape(
+  shape: readonly number[],
+  buckets: Map<number, QueueTicket[]>,
+  target: number,
+): QueueTicket[] | null {
+  const picked: QueueTicket[] = [];
+  for (const size of shape) {
+    const t = takeNearest(buckets, size, target);
+    if (t === null) return null;
+    picked.push(t);
+  }
+  return picked;
+}
+
+/**
  * Best valid match among `candidates` that includes `anchorPartyId` on one side.
+ *
+ * Searches the 7x7 grid of team shapes rather than every subset of tickets.
+ * Enumerating player combinations is what does not scale: forty solo tickets
+ * give roughly 82,000 anchored team-1 options against 325,000 team-2 options.
+ * There are only ever seven shapes per side, whatever the queue size.
+ *
+ * Within a shape, parties are chosen by rating proximity, so the shape grid
+ * decides feasibility and the greedy pick decides quality. Feasibility is never
+ * traded away for speed — every shape is always tried, so no party is excluded
+ * for being the wrong size.
  *
  * Anchoring on the longest-waiting ticket is what stops a party being starved
  * while newer, easier-to-pair parties keep jumping ahead of it.
@@ -230,26 +316,36 @@ export function findBestMatchForAnchor(
 ): MatchDecision | null {
   if (sumTicketSizes(candidates) < MATCH_SIZE) return null;
 
-  const anchorIndex = candidates.findIndex((t) => t.partyId === anchorPartyId);
-  if (anchorIndex === -1) return null;
+  const anchor = candidates.find((t) => t.partyId === anchorPartyId);
+  if (!anchor) return null;
 
-  const allIndices = candidates.map((_, i) => i);
-  const team1Options = buildTeamOptions(candidates, allIndices);
+  const others = candidates.filter((t) => t.partyId !== anchorPartyId);
 
   let bestScore: CandidateScore | null = null;
   let best: MatchDecision | null = null;
 
-  for (const team1Indices of team1Options) {
-    if (!team1Indices.includes(anchorIndex)) continue;
+  for (const shape1 of TEAM_SHAPES) {
+    // The anchor has to occupy one of team 1's slots, so its size must appear.
+    if (!shape1.includes(anchor.size)) continue;
 
-    const team1 = ticketsFromIndices(candidates, team1Indices);
-    const rest = remainingIndices(candidates.length, team1Indices);
-    const team2Options = buildTeamOptions(candidates, rest);
+    for (const shape2 of TEAM_SHAPES) {
+      const buckets = bucketBySize(others);
 
-    for (const team2Indices of team2Options) {
-      const team2 = ticketsFromIndices(candidates, team2Indices);
+      // Anchor consumes one slot of its own size.
+      const remainingShape1 = [...shape1];
+      remainingShape1.splice(remainingShape1.indexOf(anchor.size), 1);
+
+      const rest1 = fillShape(remainingShape1, buckets, anchor.ratingSnapshot);
+      if (rest1 === null) continue;
+
+      const team1 = [anchor, ...rest1];
+      const team1Rating = teamRating(team1, defaultRating);
+
+      // Aim team 2 at team 1's average so the gap closes rather than drifts.
+      const team2 = fillShape(shape2, buckets, team1Rating);
+      if (team2 === null) continue;
+
       const score = scoreCandidate(team1, team2, now, defaultRating);
-
       if (score.gap > score.allowedGap) continue;
       if (!isBetterCandidate(score, bestScore)) continue;
 
@@ -271,33 +367,26 @@ export function findBestMatchForAnchor(
 }
 
 /**
- * Narrows the pool to tickets worth pairing with the anchor before the
- * combinatorial step. Rating-bounded and hard-capped, since the pair search
- * scales roughly with the square of this list.
+ * Tickets the anchor is currently allowed to be matched with.
+ *
+ * Rating-bounded only — deliberately uncapped in count. The bound widens with
+ * wait time and exceeds the full ladder spread after a few minutes, so a
+ * long-waiting party eventually becomes eligible to match anyone rather than
+ * sitting in a queue that never pops.
  */
 export function candidateWindowForAnchor(
   anchor: QueueTicket,
   pool: readonly QueueTicket[],
   now: number,
-  maxCandidates = 14,
 ): QueueTicket[] {
   const waited = Math.max(0, now - anchor.joinedAt);
   const allowed = allowedGapForWait(waited);
 
-  return pool
-    .filter(
-      (t) =>
-        t.partyId === anchor.partyId ||
-        Math.abs(t.ratingSnapshot - anchor.ratingSnapshot) <= allowed,
-    )
-    .sort((a, b) => {
-      if (a.partyId === anchor.partyId) return -1;
-      if (b.partyId === anchor.partyId) return 1;
-      const da = Math.abs(a.ratingSnapshot - anchor.ratingSnapshot);
-      const db = Math.abs(b.ratingSnapshot - anchor.ratingSnapshot);
-      return da === db ? a.joinedAt - b.joinedAt : da - db;
-    })
-    .slice(0, maxCandidates);
+  return pool.filter(
+    (t) =>
+      t.partyId === anchor.partyId ||
+      Math.abs(t.ratingSnapshot - anchor.ratingSnapshot) <= allowed,
+  );
 }
 
 /**

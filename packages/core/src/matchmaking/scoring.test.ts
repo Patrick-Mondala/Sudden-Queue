@@ -3,18 +3,39 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_RATING, MATCH_SIZE, TEAM_SIZE } from "../constants.js";
 import {
   type QueueTicket,
+  TEAM_SHAPES,
   buildTeamOptions,
   candidateWindowForAnchor,
   coordinationScore,
   findBestMatch,
   findBestMatchForAnchor,
   isBetterCandidate,
+  partitionsOf,
   partySymmetryScore,
+  remainingIndices,
   scoreCandidate,
   sumTicketSizes,
   teamRating,
   teamShapeSignature,
+  ticketsFromIndices,
 } from "./scoring.js";
+
+/**
+ * Ground truth: exhaustively checks whether ANY valid 5v5 exists in the pool
+ * containing the anchor, ignoring rating entirely. Too slow for production,
+ * which is the whole reason the shape search exists — but perfect as an oracle.
+ */
+function feasibleByBruteForce(pool: QueueTicket[], anchorId: string): boolean {
+  const anchorIndex = pool.findIndex((t) => t.partyId === anchorId);
+  if (anchorIndex === -1) return false;
+
+  for (const t1 of buildTeamOptions(pool, pool.map((_, i) => i))) {
+    if (!t1.includes(anchorIndex)) continue;
+    const rest = remainingIndices(pool.length, t1);
+    if (buildTeamOptions(pool, rest).length > 0) return true;
+  }
+  return false;
+}
 
 const NOW = 1_000_000;
 
@@ -261,30 +282,171 @@ describe("finding a match", () => {
   });
 });
 
+describe("team shapes", () => {
+  it("finds all seven ways to fill a five-player team", () => {
+    expect(TEAM_SHAPES).toHaveLength(7);
+    expect(TEAM_SHAPES.map((s) => s.join("-"))).toEqual([
+      "5",
+      "4-1",
+      "3-2",
+      "3-1-1",
+      "2-2-1",
+      "2-1-1-1",
+      "1-1-1-1-1",
+    ]);
+  });
+
+  it("every shape totals a full team", () => {
+    for (const shape of TEAM_SHAPES) {
+      expect(shape.reduce((a, b) => a + b, 0)).toBe(TEAM_SIZE);
+    }
+  });
+
+  it("generalises to other sizes", () => {
+    expect(partitionsOf(3).map((s) => s.join("-"))).toEqual(["3", "2-1", "1-1-1"]);
+    expect(partitionsOf(4)).toHaveLength(5);
+  });
+});
+
 describe("candidate window", () => {
   it("excludes tickets outside the anchor's rating window", () => {
     const anchor = ticket(1, 1200);
     const near = ticket(1, 1250);
     const far = ticket(1, 2000);
 
-    const window = candidateWindowForAnchor(anchor, [anchor, near, far], NOW);
-    const ids = window.map((t) => t.partyId);
-
+    const ids = candidateWindowForAnchor(anchor, [anchor, near, far], NOW).map((t) => t.partyId);
     expect(ids).toContain(near.partyId);
     expect(ids).not.toContain(far.partyId);
   });
 
-  it("always keeps the anchor itself, first", () => {
+  it("always keeps the anchor itself", () => {
     const anchor = ticket(1, 1200);
     const others = Array.from({ length: 30 }, () => ticket(1, 1210));
-    const window = candidateWindowForAnchor(anchor, [...others, anchor], NOW);
-    expect(window[0]!.partyId).toBe(anchor.partyId);
+    const ids = candidateWindowForAnchor(anchor, [...others, anchor], NOW).map((t) => t.partyId);
+    expect(ids).toContain(anchor.partyId);
   });
 
-  it("caps the window so the pair search cannot blow up", () => {
+  it("is never truncated by count, so the queue cannot stall on pool size", () => {
     const anchor = ticket(1, 1200);
     const crowd = Array.from({ length: 200 }, () => ticket(1, 1200));
-    expect(candidateWindowForAnchor(anchor, [anchor, ...crowd], NOW, 14)).toHaveLength(14);
+    expect(candidateWindowForAnchor(anchor, [anchor, ...crowd], NOW)).toHaveLength(201);
+  });
+
+  it("eventually widens past the whole ladder, so any rank can match any rank", () => {
+    // F- floor 620 to S+ floor 1720 is an 1100-point spread.
+    const bottom = ticket(1, 620, 300);
+    const top = ticket(1, 1720, 300);
+    const ids = candidateWindowForAnchor(bottom, [bottom, top], NOW).map((t) => t.partyId);
+    expect(ids).toContain(top.partyId);
+  });
+});
+
+describe("no stalling on party shape", () => {
+  /**
+   * The failure the old rating-proximity cap could produce: a pool with plenty
+   * of players but whose nearest-rated members cannot tile into two teams.
+   */
+  it("finds a match when close-rated parties cannot tile but distant ones can", () => {
+    const anchor = ticket(1, 1200);
+    const unusable = Array.from({ length: 13 }, () => ticket(3, 1201));
+    const usable = Array.from({ length: 20 }, () => ticket(1, 1260));
+
+    const pool = [anchor, ...unusable, ...usable];
+    const decision = findBestMatchForAnchor(pool, anchor.partyId, NOW, DEFAULT_RATING);
+
+    expect(decision).not.toBeNull();
+    const all = [...decision!.team1PartyIds, ...decision!.team2PartyIds];
+    expect(all).toContain(anchor.partyId);
+  });
+
+  it("matches a queue of nothing but 5-stacks", () => {
+    const pool = [ticket(5, 1200), ticket(5, 1205)];
+    const decision = findBestMatch(pool, NOW, DEFAULT_RATING);
+    expect(decision).not.toBeNull();
+    expect(decision!.team1PartyIds).toHaveLength(1);
+    expect(decision!.team2PartyIds).toHaveLength(1);
+  });
+
+  it("matches awkward shapes that need different tilings per side", () => {
+    // 4-1 against 3-2: no single shape works for both.
+    const pool = [ticket(4, 1200), ticket(1, 1200), ticket(3, 1200), ticket(2, 1200)];
+    const decision = findBestMatch(pool, NOW, DEFAULT_RATING);
+    expect(decision).not.toBeNull();
+    expect(sumTicketSizes(pool.filter((t) => decision!.team1PartyIds.includes(t.partyId)))).toBe(
+      TEAM_SIZE,
+    );
+  });
+
+  /**
+   * The property that matters: the fast path must not miss matches that exist.
+   * Ratings are held equal so only shape feasibility is under test.
+   */
+  it("finds a match whenever exhaustive search says one exists", () => {
+    const sizePool = [1, 1, 1, 2, 2, 3, 4, 5];
+    let checked = 0;
+
+    for (let trial = 0; trial < 60; trial += 1) {
+      const sizes = Array.from(
+        { length: 4 + (trial % 5) },
+        (_, i) => sizePool[(trial * 3 + i * 5) % sizePool.length]!,
+      );
+      const pool = sizes.map((s) => ticket(s, 1200));
+      const anchorId = pool[0]!.partyId;
+
+      if (!feasibleByBruteForce(pool, anchorId)) continue;
+      checked += 1;
+
+      const decision = findBestMatchForAnchor(pool, anchorId, NOW, DEFAULT_RATING);
+      expect(decision, `shapes ${sizes.join(",")} are tileable but no match was found`).not.toBeNull();
+    }
+
+    // Guard against the loop silently testing nothing.
+    expect(checked).toBeGreaterThan(5);
+  });
+});
+
+describe("scales with queue size", () => {
+  const sizes = [1, 1, 1, 1, 2, 2, 3, 5];
+
+  function pool(n: number, spread: number): QueueTicket[] {
+    return Array.from({ length: n }, (_, i) => ({
+      partyId: `x${i}`,
+      size: sizes[i % sizes.length]!,
+      ratingSnapshot: 1000 + ((i * 37) % spread),
+      joinedAt: NOW - 60,
+    }));
+  }
+
+  it("completes a single pass over 500 parties well inside the tick interval", () => {
+    const t0 = performance.now();
+    findBestMatch(pool(500, 700), NOW, DEFAULT_RATING);
+    const ms = performance.now() - t0;
+
+    // The live loop runs every 2s. Brute-force enumeration could not do this at
+    // any queue size; shape search is effectively flat in party count.
+    expect(ms).toBeLessThan(250);
+  });
+
+  it("drains a 200-solo queue into 20 full matches", () => {
+    let cur: QueueTicket[] = Array.from({ length: 200 }, (_, i) => ({
+      partyId: `s${i}`,
+      size: 1,
+      ratingSnapshot: 1150 + (i % 100),
+      joinedAt: NOW - 60,
+    }));
+
+    let matches = 0;
+    for (;;) {
+      const d = findBestMatch(cur, NOW, DEFAULT_RATING);
+      if (!d) break;
+      const ids = new Set([...d.team1PartyIds, ...d.team2PartyIds]);
+      cur = cur.filter((t) => !ids.has(t.partyId));
+      matches += 1;
+      if (matches > 25) break;
+    }
+
+    expect(matches).toBe(20);
+    expect(cur).toHaveLength(0);
   });
 });
 
