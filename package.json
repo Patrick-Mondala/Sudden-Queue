@@ -15,6 +15,7 @@
     "server": "npm run dev --workspace @suddenqueue/server",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
+    "seed": "npm run seed --workspace @suddenqueue/server --",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },

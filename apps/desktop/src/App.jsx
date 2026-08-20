@@ -307,6 +307,39 @@ const RegionPicker = ({ value, onChange, multi = true }) => (
     })}
   </div>
 );
+/**
+ * State that survives navigation and restarts.
+ *
+ * Screen-local useState resets whenever the screen unmounts, so region filters
+ * silently reverted every time you switched tabs. These are preferences, not
+ * view state, so they belong in storage.
+ */
+function usePersistentState(key, initial) {
+  const [value, setValue] = useState(() => {
+    try {
+      const stored = localStorage.getItem(key);
+      if (stored === null) return initial;
+      const parsed = JSON.parse(stored);
+      // Guard against a stored shape that no longer matches, e.g. after a
+      // region is renamed — fall back rather than rendering something broken.
+      if (Array.isArray(initial) && !Array.isArray(parsed)) return initial;
+      return parsed;
+    } catch {
+      return initial;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      // Storage unavailable; the preference just will not persist.
+    }
+  }, [key, value]);
+
+  return [value, setValue];
+}
+
 const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.max(0, s % 60)).padStart(2, "0")}`;
 const ago = (ts) => { const m = Math.round((Date.now() - ts) / 60000); if (m < 1) return "just now"; if (m < 60) return `${m}m ago`; const h = Math.round(m / 60); return h < 24 ? `${h}h ago` : `${Math.round(h / 24)}d ago`; };
 const useTick = (active) => { const [, s] = useState(0); useEffect(() => { if (!active) return; const i = setInterval(() => s((n) => n + 1), 500); return () => clearInterval(i); }, [active]); };
@@ -406,7 +439,7 @@ function Login({ onLogin, onSignedIn }) {
    PUG QUEUE
    ───────────────────────────────────────────────────────────── */
 function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, history, notify, onViewMatch, onView, tutorial }) {
-  const [regions, setRegions] = useState(["na", "eu"]);
+  const [regions, setRegions] = usePersistentState("sq.pug.regions", ["na", "eu"]);
   useTick(queue.state === "queued" || cooldownUntil > Date.now());
   const elapsed = queue.state === "queued" ? Math.floor((Date.now() - queue.since) / 1000) : 0;
   const cooling = cooldownUntil > Date.now();
@@ -578,7 +611,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
    SCRIMS
    ───────────────────────────────────────────────────────────── */
 function ScrimsScreen({ me, myTeam, teams, scrims, setScrims, notify, queue, onViewTeam, tutorial }) {
-  const [filter, setFilter] = useState(["na", "sa", "eu", "asia"]);
+  const [filter, setFilter] = usePersistentState("sq.scrims.filter", ["na", "sa", "eu", "asia"]);
   const [note, setNote] = useState("");
   const [postRegion, setPostRegion] = useState(myTeam?.region || "na");
   const [pending, setPending] = useState(null);
@@ -671,7 +704,7 @@ function ScrimsScreen({ me, myTeam, teams, scrims, setScrims, notify, queue, onV
    ───────────────────────────────────────────────────────────── */
 function TeamsScreen({ me, teams, setTeams, myTeam, notify, history, onViewMatch, onViewTeam, onView }) {
   const [pendingApp, setPendingApp] = useState(null);
-  const [regFilter, setRegFilter] = useState(["na", "sa", "eu", "asia"]);
+  const [regFilter, setRegFilter] = usePersistentState("sq.teams.filter", ["na", "sa", "eu", "asia"]);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState(""); const [newTag, setNewTag] = useState(""); const [newRegion, setNewRegion] = useState("na");
   const [leftTab, setLeftTab] = useState("roster");
