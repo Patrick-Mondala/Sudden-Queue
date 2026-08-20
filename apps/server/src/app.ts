@@ -15,6 +15,7 @@ import { z } from "zod";
 
 import { AuthService } from "./auth/service.js";
 import { DiscordAuth } from "./auth/discord.js";
+import { LoginHandoff } from "./auth/handoff.js";
 import { SessionService, type SessionUser } from "./auth/sessions.js";
 import type { Config } from "./config.js";
 import type { Database } from "./db/client.js";
@@ -56,6 +57,25 @@ export interface App {
 
 const SESSION_COOKIE = "sq_session";
 
+/** Shown in the browser tab after a desktop login completes. */
+const SIGNED_IN_PAGE = `<!doctype html>
+<meta charset="utf-8">
+<title>Signed in</title>
+<style>
+  body { margin:0; height:100vh; display:grid; place-items:center;
+         background:#0D1014; color:#E4E7EB;
+         font-family:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif; }
+  .card { text-align:center; }
+  h1 { font-size:20px; letter-spacing:.02em; text-transform:uppercase; margin:0 0 8px; }
+  p { color:#7C8794; font-size:14px; margin:0; }
+  .mark { width:34px; height:34px; border-radius:7px; background:#2FC8BF; margin:0 auto 18px; }
+</style>
+<div class="card">
+  <div class="mark"></div>
+  <h1>Signed in to Sudden Queue</h1>
+  <p>You can close this tab and return to the app.</p>
+</div>`;
+
 export async function buildApp({ db, config, autoStart = true }: AppDeps): Promise<App> {
   const server = Fastify({ logger: config.NODE_ENV !== "test" });
 
@@ -82,6 +102,7 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
   });
 
   const notifier = new Notifier();
+  const handoff = new LoginHandoff();
   const sessions = new SessionService(db);
   const discord = new DiscordAuth({
     clientId: config.DISCORD_CLIENT_ID,
@@ -178,8 +199,41 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
 
   server.get("/health", async () => ({ ok: true }));
 
+  /**
+   * Desktop login: hand back an id plus the URL to open in the user's browser.
+   * The app then polls until the session lands against that id.
+   */
+  server.post("/auth/desktop/start", async (req) => {
+    const handoffId = handoff.create();
+    const base = `${req.protocol}://${req.headers.host ?? `127.0.0.1:${config.PORT}`}`;
+
+    return {
+      handoffId,
+      url: `${base}/auth/discord/start?handoff=${encodeURIComponent(handoffId)}`,
+      expiresInSeconds: 600,
+    };
+  });
+
+  server.get("/auth/desktop/poll/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const result = handoff.claim(id);
+
+    if (result.status === "expired") {
+      return reply.code(410).send({ status: "expired" });
+    }
+    if (result.status === "error") {
+      return reply.code(401).send({ status: "error", error: result.error });
+    }
+    return result;
+  });
+
   server.get("/auth/discord/start", async (req, reply) => {
-    const { url, state, codeVerifier } = discord.createAuthorizationUrl();
+    const handoffId = (req.query as Record<string, string>)?.handoff;
+    // Carried inside the signed state so it survives the round trip without a
+    // cookie, which the browser would not share with the desktop app anyway.
+    const { url, state, codeVerifier } = discord.createAuthorizationUrl(
+      handoffId ? { handoff: handoffId } : {},
+    );
 
     // The verifier must survive the round trip to Discord but never reach the
     // browser's JS; an httpOnly cookie is the smallest thing that does both.
@@ -227,8 +281,13 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
       return reply.code(400).send({ error: stateCheck.code, message: stateCheck.message });
     }
 
+    const handoffId =
+      typeof stateCheck.data.handoff === "string" ? stateCheck.data.handoff : null;
+
     const login = await auth.completeLogin(parsed.data.code, verifier);
     if (isFail(login)) {
+      // Tell the waiting app why, so it stops polling instead of timing out.
+      if (handoffId) handoff.reject(handoffId, login.code);
       return reply.code(401).send({ error: login.code, message: login.message });
     }
 
@@ -243,6 +302,14 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
     });
 
     await party.ensureParty(login.data.userId);
+
+    if (handoffId) {
+      handoff.fulfill(handoffId, login.data.token);
+
+      // This tab belongs to the browser, not the app; the token must not be
+      // rendered into a page the user could copy out of.
+      return reply.type("text/html").send(SIGNED_IN_PAGE);
+    }
 
     return reply.send({
       userId: login.data.userId,

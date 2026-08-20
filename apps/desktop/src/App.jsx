@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { Crosshair, Swords, Users, Trophy, User, MessageSquare, Send, X, Check, Shield, Star, Wifi, Timer, Copy, ChevronRight, LogOut, Bell, Filter, Plus, Minus, AlertTriangle, CircleDot, Lock, Unlock } from "lucide-react";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
+import { signIn } from "./api/auth.js";
+import { api as server, bus as liveBus, getToken } from "./api/client.js";
 import "./App.css";
 
 /* ─────────────────────────────────────────────────────────────
@@ -42,6 +44,13 @@ const rankFromPercentile = (p) => TIERS[Math.min(TIERS.length - 1, Math.floor(p 
    ───────────────────────────────────────────────────────────── */
 const NAMES = ["vexlyn","kuroba","Nyx_","dartel","s0lace","Marrow","tenshi","ovrkill","Halcyon","riftwalk","zeroKelvin","pale","Ashgrove","tinsel","Kotone","brk","Wraithe","dyad","Fennec","lowsky","yuzuha","gnash","Cinder","Orbital","hush","Vantablk","reiko","Quell","Nomad_","sable"];
 const AV_COLORS = ["#4C6EF5","#B23A48","#2A9D8F","#8E44AD","#D97706","#0EA5E9","#DC2626","#65A30D","#7C3AED","#DB2777"];
+
+/** Stable colour pick for a server-issued id, so avatars do not change per render. */
+function hashString(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i += 1) h = (h * 31 + str.charCodeAt(i)) | 0;
+  return h;
+}
 const mkPlayer = (i, over = {}) => ({
   id: `p${i}`,
   discordName: NAMES[i % NAMES.length],
@@ -292,8 +301,42 @@ const useTick = (active) => { const [, s] = useState(0); useEffect(() => { if (!
 /* ─────────────────────────────────────────────────────────────
    LOGIN
    ───────────────────────────────────────────────────────────── */
-function Login({ onLogin }) {
+function Login({ onLogin, onSignedIn }) {
   const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState("idle"); // idle | waiting
+  const [error, setError] = useState(null);
+  const abortRef = useRef(null);
+
+  const startDiscord = async () => {
+    setError(null);
+    setPhase("waiting");
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      await signIn({ signal: controller.signal });
+      await onSignedIn();
+    } catch (err) {
+      setPhase("idle");
+      setError(
+        err?.code === "NETWORK"
+          ? "Can't reach the server. Is it running?"
+          : err?.code === "LOGIN_TIMEOUT"
+          ? "Sign-in timed out. Try again."
+          : err?.code === "BANNED"
+          ? "This account is suspended."
+          : err?.message || "Sign-in failed.",
+      );
+    } finally {
+      abortRef.current = null;
+    }
+  };
+
+  const cancel = () => {
+    abortRef.current?.abort();
+    setPhase("idle");
+  };
+
   return (
     <div style={{ height: "100%", display: "grid", placeItems: "center", background: `radial-gradient(1200px 600px at 50% -10%, rgba(47,200,191,0.08), transparent 60%), ${T.bg}` }}>
       <div style={{ width: 380, animation: "sqIn .3s ease" }}>
@@ -306,13 +349,40 @@ function Login({ onLogin }) {
         </div>
         <Panel pad={20}>
           <Eyebrow style={{ marginBottom: 12 }}>Sign in</Eyebrow>
-          <Btn kind="ghost" style={{ width: "100%", justifyContent: "center", marginBottom: 16, background: "#5865F2", borderColor: "#5865F2", color: "#fff" }} disabled>Continue with Discord</Btn>
+
+          {phase === "waiting" ? (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 5, padding: "12px 14px", marginBottom: 12 }}>
+                <Dot pulse />
+                <div style={{ fontSize: 13, lineHeight: 1.45 }}>
+                  <div style={{ fontWeight: 600 }}>Waiting for Discord…</div>
+                  <div style={{ color: T.muted, fontSize: 12 }}>Finish signing in in your browser, then come back.</div>
+                </div>
+              </div>
+              <Btn style={{ width: "100%", justifyContent: "center" }} onClick={cancel}>Cancel</Btn>
+            </>
+          ) : (
+            <Btn
+              kind="ghost"
+              style={{ width: "100%", justifyContent: "center", marginBottom: 16, background: "#5865F2", borderColor: "#5865F2", color: "#fff" }}
+              onClick={startDiscord}
+            >
+              Continue with Discord
+            </Btn>
+          )}
+
+          {error && (
+            <div style={{ background: T.dangerDim, border: `1px solid ${T.danger}`, borderRadius: 4, padding: "8px 10px", fontSize: 12.5, color: T.danger, marginBottom: 12 }}>
+              {error}
+            </div>
+          )}
+
           <div style={{ height: 1, background: T.line, margin: "4px 0 16px" }} />
           <Eyebrow style={{ marginBottom: 8 }}>Preview build</Eyebrow>
-          <Btn kind="primary" style={{ width: "100%", justifyContent: "center" }} disabled={busy} onClick={async () => { setBusy(true); const u = await api.login(); onLogin(u); }}>
+          <Btn kind="primary" style={{ width: "100%", justifyContent: "center" }} disabled={busy || phase === "waiting"} onClick={async () => { setBusy(true); const u = await api.login(); onLogin(u); }}>
             {busy ? "Signing in…" : "Start tutorial"}
           </Btn>
-          <div style={{ marginTop: 12, fontSize: 12, color: T.dim, lineHeight: 1.5 }}>Discord OAuth is wired up later. This drops you into a demo account — captain on a registered team, with a short guided tour of how queueing, scrims, and teams work. Skip it any time.</div>
+          <div style={{ marginTop: 12, fontSize: 12, color: T.dim, lineHeight: 1.5 }}>The tutorial runs on sample data and needs no account — a guided tour of queueing, scrims, and teams. Sign in with Discord to play for real.</div>
         </Panel>
       </div>
     </div>
@@ -1251,6 +1321,74 @@ export default function App() {
   useEffect(() => { if (me) setParty([me]); }, [me]);
   useEffect(() => { if (!me) return; const f = async () => setPop(await api.population()); f(); const iv = setInterval(f, 8000); return () => clearInterval(iv); }, [me]);
   useEffect(() => bus.on((e) => { if (e.type === "match_found") { setQueue({ state: "idle" }); setPendingMatch(e.match); } }), []);
+
+  /**
+   * Bridges live server events onto the in-app bus.
+   *
+   * The server speaks dotted names (match.found) while the prototype's screens
+   * listen for the older ones (match_found). Translating here means the UI does
+   * not have to know whether it is running on sample data or the real backend.
+   */
+  useEffect(() => {
+    if (!me?.live) return;
+
+    const off = liveBus.on((e) => {
+      switch (e.type) {
+        case "match.found":
+          setQueue({ state: "idle" });
+          bus.emit({ type: "match_found", match: e.match, matchId: e.matchId });
+          break;
+        case "queue.left":
+          setQueue({ state: "idle" });
+          if (e.reason === "CONNECTION_LOST") notify("Connection dropped — you left the queue");
+          break;
+        case "match.cancelled":
+          setPendingMatch(null);
+          notify(e.atFault ? "You missed the accept — cooldown applied" : "A player didn't accept");
+          break;
+        case "match.resolved":
+          notify(
+            e.ratingDelta ? `Match complete · ${e.ratingDelta > 0 ? "+" : ""}${e.ratingDelta}` : "Match complete",
+          );
+          break;
+        case "notification":
+          notify(e.text);
+          break;
+        case "auth.expired":
+          notify("Session expired — sign in again");
+          setMe(null);
+          break;
+        default:
+          break;
+      }
+    });
+
+    liveBus.connect();
+    return () => {
+      off();
+      liveBus.disconnect();
+    };
+  }, [me?.live, notify]);
+
+  // Restore an existing session on launch rather than making the user sign in
+  // again every time the app opens.
+  useEffect(() => {
+    if (me || !getToken()) return;
+    let cancelled = false;
+
+    server
+      .me()
+      .then(() => {
+        if (!cancelled) void adoptServerSession();
+      })
+      .catch(() => {
+        // Token is stale or the server is down; the login screen handles both.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   useEffect(() => {
     if (!pendingMatch) return;
     const win = getCurrentWindow();
@@ -1287,9 +1425,61 @@ export default function App() {
     setTourStep((x) => Math.min(TOUR_STEPS.length - 1, x + 1));
   };
 
+  /**
+   * Adopts a real server session: pulls the profile, mirrors it into the shape
+   * the UI already renders, and brings the live connection up.
+   *
+   * The prototype's player shape is kept rather than rewritten, so every screen
+   * keeps working while the data behind it becomes real.
+   */
+  const adoptServerSession = useCallback(async () => {
+    const profile = await server.me();
+
+    setMe({
+      id: profile.userId,
+      discordName: profile.discordName,
+      inGameName: profile.inGameName ?? profile.discordName,
+      avatarColor: AV_COLORS[Math.abs(hashString(profile.userId)) % AV_COLORS.length],
+      rating: profile.rating,
+      tier: profile.tier,
+      placementsRemaining: profile.placementsRemaining,
+      wins: profile.wins,
+      losses: profile.losses,
+      disputes: 0,
+      percentile: 0,
+      live: true,
+    });
+
+    setParty(
+      (profile.party?.members ?? []).map((m) => ({
+        id: m.userId,
+        discordName: m.discordName,
+        inGameName: m.inGameName ?? m.discordName,
+        avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length],
+        rating: m.rating,
+        tier: null,
+        wins: 0,
+        losses: 0,
+      })),
+    );
+
+    setChatOpen(false);
+    // No tutorial for a real sign-in; it runs on sample data.
+    setTourStep(-1);
+  }, []);
+
   const myTeam = me ? teams.find((t) => t.members.includes(me.id)) : null;
 
-  if (!me) return <div className="sq" style={{ height: "100vh", width: "100vw", boxSizing: "border-box", fontFamily: T.body, color: T.text }}><style>{css}</style><Login onLogin={(u) => { setMe(u); setChatOpen(false); setTourStep(0); }} /></div>;
+  if (!me)
+    return (
+      <div className="sq" style={{ height: "100vh", width: "100vw", boxSizing: "border-box", fontFamily: T.body, color: T.text }}>
+        <style>{css}</style>
+        <Login
+          onLogin={(u) => { setMe(u); setChatOpen(false); setTourStep(0); }}
+          onSignedIn={adoptServerSession}
+        />
+      </div>
+    );
 
   const NAV = [["play", "PUG", Crosshair], ["scrims", "Scrims", Swords], ["teams", "Teams", Users], ["ladder", "Ladder", Trophy], ["profile", "Profile", User]];
   const go = (id) => { setNav(id); setViewProfile(null); };
