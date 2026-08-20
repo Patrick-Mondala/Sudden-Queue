@@ -15,6 +15,7 @@ import type { Database, Executor } from "../db/client.js";
 import {
   matchParticipants,
   matches,
+  partyMembers,
   playerRatings,
   queueTickets,
 } from "../db/schema/index.js";
@@ -68,26 +69,30 @@ export class MatchLifecycle {
         );
       }
 
-      // A party already inside a live match must never be pulled into a second.
-      const busy = await tx
-        .select({ partyId: matchParticipants.matchId })
-        .from(matchParticipants)
-        .innerJoin(matches, eq(matches.id, matchParticipants.matchId))
-        .innerJoin(
-          sql`party_members pm`,
-          sql`pm.user_id = ${matchParticipants.userId} AND pm.party_id = ANY(${allPartyIds})`,
-        )
-        .where(inArray(matches.state, ["PENDING_ACCEPT", "PARTY_UP", "LIVE", "REPORTED"]))
-        .limit(1);
-
-      if (busy.length > 0) {
-        return fail("PARTY_ALREADY_MATCHED", "A party is already committed to another match");
-      }
-
       const membersByParty = await this.membersOf(tx, allPartyIds);
 
       const team1Users = decision.team1PartyIds.flatMap((p) => membersByParty.get(p) ?? []);
       const team2Users = decision.team2PartyIds.flatMap((p) => membersByParty.get(p) ?? []);
+      const allUsers = [...team1Users, ...team2Users];
+
+      // A player already inside a live match must never be pulled into a second.
+      if (allUsers.length > 0) {
+        const busy = await tx
+          .select({ matchId: matchParticipants.matchId })
+          .from(matchParticipants)
+          .innerJoin(matches, eq(matches.id, matchParticipants.matchId))
+          .where(
+            and(
+              inArray(matchParticipants.userId, allUsers),
+              inArray(matches.state, ["PENDING_ACCEPT", "PARTY_UP", "LIVE", "REPORTED"]),
+            ),
+          )
+          .limit(1);
+
+        if (busy.length > 0) {
+          return fail("PARTY_ALREADY_MATCHED", "A party is already committed to another match");
+        }
+      }
 
       if (team1Users.length + team2Users.length !== MATCH_SIZE) {
         return fail("EMPTY_PARTY", "Party membership did not add up to a full match");
@@ -154,17 +159,22 @@ export class MatchLifecycle {
   }
 
   private async membersOf(tx: Executor, partyIds: string[]): Promise<Map<string, string[]>> {
-    const rows = await tx.execute<{ party_id: string; user_id: string }>(
-      sql`SELECT party_id, user_id FROM party_members
-          WHERE party_id = ANY(${partyIds})
-          ORDER BY joined_at`,
-    );
+    if (partyIds.length === 0) return new Map();
+
+    // Uses the query builder rather than a raw ANY(): Drizzle spreads a JS
+    // array into individual placeholders, which Postgres reads as a row
+    // constructor, not an array.
+    const rows = await tx
+      .select({ partyId: partyMembers.partyId, userId: partyMembers.userId })
+      .from(partyMembers)
+      .where(inArray(partyMembers.partyId, partyIds))
+      .orderBy(partyMembers.joinedAt);
 
     const out = new Map<string, string[]>();
     for (const r of rows) {
-      const list = out.get(r.party_id);
-      if (list) list.push(r.user_id);
-      else out.set(r.party_id, [r.user_id]);
+      const list = out.get(r.partyId);
+      if (list) list.push(r.userId);
+      else out.set(r.partyId, [r.userId]);
     }
     return out;
   }
