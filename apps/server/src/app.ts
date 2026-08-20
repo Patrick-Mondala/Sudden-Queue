@@ -153,12 +153,12 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
 
   const matchmaker = new Matchmaker(queue, lifecycle, {
     onMatchCreated: async (match) => {
-      const detail = await lifecycle.participants(match.matchId);
+      const detail = await lifecycle.view(match.matchId);
       notifier.toUsers(match.userIds, {
         type: "match.found",
         matchId: match.matchId,
         acceptDeadline: match.acceptDeadline.toISOString(),
-        match: { participants: detail },
+        match: detail,
       });
     },
     onTicketsPruned: async (partyIds) => {
@@ -745,18 +745,18 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
 
   server.get("/match/:id", { preHandler: authenticate }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const match = await lifecycle.getMatch(id);
-    if (!match) {
+    const view = await lifecycle.view(id);
+    if (!view) {
       return reply.code(404).send({ error: "NOT_FOUND", message: "Match not found" });
     }
 
-    const parts = await lifecycle.participants(id);
     const user = requireUser(req);
-    if (!parts.some((p) => p.userId === user.userId) && user.role === "player") {
+    const inMatch = [...view.team1, ...view.team2].some((p) => p.id === user.userId);
+    if (!inMatch && user.role === "player") {
       return reply.code(403).send({ error: "FORBIDDEN", message: "Not your match" });
     }
 
-    return { match, participants: parts };
+    return view;
   });
 
   // ---------------------------------------------------------------- websocket

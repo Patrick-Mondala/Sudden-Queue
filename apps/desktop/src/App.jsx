@@ -63,6 +63,39 @@ function hashString(str) {
   for (let i = 0; i < str.length; i += 1) h = (h * 31 + str.charCodeAt(i)) | 0;
   return h;
 }
+/**
+ * Server match view -> the player shape the screens render.
+ *
+ * The server has no opinion about avatar colour, so it is derived from the id
+ * here: same input, same colour, on every client and every render.
+ *
+ * Returns null for anything that is not a full match, because the roster
+ * components index into team1/team2 unconditionally and a partial payload takes
+ * the whole tree down rather than degrading.
+ */
+function adaptMatch(m) {
+  if (!m || !Array.isArray(m.team1) || !Array.isArray(m.team2)) return null;
+  if (m.team1.length === 0 || m.team2.length === 0) return null;
+
+  const player = (p) => ({
+    ...p,
+    avatarColor: AV_COLORS[Math.abs(hashString(p.id)) % AV_COLORS.length],
+  });
+
+  return {
+    id: m.id,
+    type: m.type,
+    region: m.region,
+    state: m.state,
+    captain1: m.captain1,
+    captain2: m.captain2,
+    team1: m.team1.map(player),
+    team2: m.team2.map(player),
+    acceptDeadline: m.acceptDeadline,
+    partyUpDeadline: m.partyUpDeadline,
+  };
+}
+
 const mkPlayer = (i, over = {}) => ({
   id: `p${i}`,
   discordName: NAMES[i % NAMES.length],
@@ -1038,27 +1071,78 @@ function TutorialOverlay({ step, onNext, onFinish }) {
   );
 }
 
-function AcceptOverlay({ match, me, onAccepted, onFail, fast }) {
+function AcceptOverlay({ match, me, onAccepted, onFail, fast, live }) {
   const ACCEPT_S = 20;
   const [left, setLeft] = useState(ACCEPT_S);
   const [accepted, setAccepted] = useState({});
+  const [liveCount, setLiveCount] = useState(0);
   const [mine, setMine] = useState(false);
   const all = [...match.team1, ...match.team2];
   const done = useRef(false);
 
+  // The server stamps the deadline at creation, so counting down to it keeps
+  // the clock honest even if the event took a moment to arrive.
+  const endsAt = useRef(
+    live && match.acceptDeadline ? Date.parse(match.acceptDeadline) : Date.now() + ACCEPT_S * 1000,
+  );
+
   useEffect(() => {
-    // other players trickle in over 1–9s
-    const timers = all.filter((p) => p.id !== me.id).map((p) => setTimeout(() => setAccepted((a) => ({ ...a, [p.id]: true })), fast ? rnd(500, 2200) : rnd(900, 9000)));
-    const iv = setInterval(() => setLeft((l) => l - 1), 1000);
+    const tick = () => setLeft(Math.ceil((endsAt.current - Date.now()) / 1000));
+    tick();
+    const iv = setInterval(tick, 250);
+
+    // On a real match the other nine are real people; only the sample path
+    // needs them faked in.
+    const timers = live
+      ? []
+      : all
+          .filter((p) => p.id !== me.id)
+          .map((p) =>
+            setTimeout(
+              () => setAccepted((a) => ({ ...a, [p.id]: true })),
+              fast ? rnd(500, 2200) : rnd(900, 9000),
+            ),
+          );
+
     return () => { timers.forEach(clearTimeout); clearInterval(iv); };
   }, []);
-  useEffect(() => { if (left <= 0 && !done.current) { done.current = true; onFail(mine ? "someone" : "you"); } }, [left]);
+
+  /**
+   * On a live match the server is the authority on who has accepted and on
+   * whether the match survives, so progress is pushed rather than guessed.
+   */
   useEffect(() => {
+    if (!live) return;
+    return liveBus.on((e) => {
+      if (e.matchId && e.matchId !== match.id) return;
+      if (e.type === "match.accept.progress") setLiveCount(e.accepted);
+      // PARTY_UP means all ten are in; that is the real "everyone accepted".
+      if (e.type === "match.state" && e.state === "PARTY_UP" && !done.current) {
+        done.current = true;
+        setLiveCount(all.length);
+        onAccepted();
+      }
+    });
+  }, [live, match.id]);
+
+  useEffect(() => {
+    if (left > 0 || done.current) return;
+    // The server decides what a missed accept costs and pushes match.cancelled,
+    // so a live overlay waits for that verdict instead of inventing one.
+    if (live) return;
+    done.current = true;
+    onFail(mine ? "someone" : "you");
+  }, [left]);
+
+  useEffect(() => {
+    if (live) return;
     const n = Object.keys(accepted).length + (mine ? 1 : 0);
     if (n === all.length && !done.current) { done.current = true; setTimeout(onAccepted, 500); }
   }, [accepted, mine]);
 
-  const count = Object.keys(accepted).length + (mine ? 1 : 0);
+  const count = live
+    ? Math.max(liveCount, mine ? 1 : 0)
+    : Object.keys(accepted).length + (mine ? 1 : 0);
   const pct = left / ACCEPT_S;
   const R = 54, C = 2 * Math.PI * R;
   return (
@@ -1076,13 +1160,13 @@ function AcceptOverlay({ match, me, onAccepted, onFail, fast }) {
           </div>
         </div>
         <div style={{ display: "flex", justifyContent: "center", gap: 6, marginBottom: 20 }}>
-          {all.map((p) => { const ok = p.id === me.id ? mine : accepted[p.id]; return <div key={p.id} title={p.discordName} style={{ width: 34, height: 6, borderRadius: 3, background: ok ? T.accent : T.line2, transition: "background .25s" }} />; })}
+          {all.map((p, i) => { const ok = live ? i < count : p.id === me.id ? mine : accepted[p.id]; return <div key={p.id} title={live ? undefined : p.discordName} style={{ width: 34, height: 6, borderRadius: 3, background: ok ? T.accent : T.line2, transition: "background .25s" }} />; })}
         </div>
-        <div style={{ color: T.muted, fontSize: 13, marginBottom: 18 }}><span style={{ fontFamily: T.mono, color: T.text }}>{count}/10</span> accepted</div>
+        <div style={{ color: T.muted, fontSize: 13, marginBottom: 18 }}><span style={{ fontFamily: T.mono, color: T.text }}>{count}/{all.length}</span> accepted</div>
         {!mine ? (
           <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
-            <Btn kind="primary" data-tour="accept-btn" style={{ padding: "12px 34px", fontSize: 15 }} onClick={async () => { setMine(true); await api.accept(match.id); }}><Check size={16} strokeWidth={3} /> Accept</Btn>
-            <Btn kind="ghost" style={{ padding: "12px 20px" }} onClick={() => { done.current = true; onFail("you"); }}>Decline</Btn>
+            <Btn kind="primary" data-tour="accept-btn" style={{ padding: "12px 34px", fontSize: 15 }} onClick={async () => { setMine(true); try { await (live ? server.accept(match.id) : api.accept(match.id)); } catch { setMine(false); } }}><Check size={16} strokeWidth={3} /> Accept</Btn>
+            <Btn kind="ghost" style={{ padding: "12px 20px" }} onClick={async () => { if (live) { try { await server.decline(match.id); } catch { /* the sweeper cancels it regardless */ } } done.current = true; onFail("you"); }}>Decline</Btn>
           </div>
         ) : <div style={{ color: T.accent, fontSize: 13, display: "inline-flex", gap: 8, alignItems: "center" }}><Dot pulse /> Waiting for others…</div>}
         <div style={{ marginTop: 18, fontSize: 12, color: T.dim }}>Not accepting in time puts you on a queue cooldown. Everyone else goes back to the front of the queue.</div>
@@ -1466,10 +1550,18 @@ export default function App() {
 
     const off = liveBus.on((e) => {
       switch (e.type) {
-        case "match.found":
+        case "match.found": {
+          const match = adaptMatch(e.match);
+          // A roster we cannot draw is worse than no match screen: rendering
+          // one blanks the app. Surface it instead of taking the UI down.
+          if (!match) {
+            notify("Match found, but its details could not be loaded");
+            break;
+          }
           setQueue({ state: "idle" });
-          bus.emit({ type: "match_found", match: e.match, matchId: e.matchId });
+          bus.emit({ type: "match_found", match, matchId: e.matchId });
           break;
+        }
         case "queue.left":
           setQueue({ state: "idle" });
           if (e.reason === "CONNECTION_LOST") notify("Connection dropped — you left the queue");
@@ -1709,7 +1801,7 @@ export default function App() {
         <div style={{ flex: 1, minWidth: 0, padding: 16, overflow: "auto", position: "relative" }}>{content}</div>
       </div>
 
-      {pendingMatch && <AcceptOverlay match={pendingMatch} me={me} fast={tourStep >= 0}
+      {pendingMatch && <AcceptOverlay match={pendingMatch} me={me} fast={tourStep >= 0} live={!!me.live && tourStep < 0}
         onAccepted={() => { setMatch(pendingMatch); setPendingMatch(null); go("play"); }}
         onFail={(who) => { setPendingMatch(null);
           if (tourStep >= 0) { setQueue({ state: "idle" }); setTourStep(TOUR_STEPS.findIndex((x) => x.id === "queue")); notify("No cooldown during the tutorial — queue again"); return; }

@@ -7,7 +7,9 @@ import {
   REPORT_WINDOW_SECONDS,
   type Result,
   fail,
+  isPlaced,
   ok,
+  tierForRating,
 } from "@suddenqueue/core";
 import { and, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 
@@ -19,7 +21,40 @@ import {
   partyMembers,
   playerRatings,
   queueTickets,
+  users,
 } from "../db/schema/index.js";
+
+export interface MatchViewPlayer {
+  id: string;
+  discordName: string;
+  inGameName: string;
+  avatarUrl: string | null;
+  rating: number;
+  tier: string | null;
+  gamesPlayed: number;
+  wins: number;
+  losses: number;
+  accepted: boolean;
+  ratingDelta: number | null;
+}
+
+export interface MatchView {
+  id: string;
+  type: "PUG" | "SCRIM";
+  region: string;
+  state: string;
+  result: "TEAM1" | "TEAM2" | null;
+  acceptDeadline: string | null;
+  partyUpDeadline: string | null;
+  reportDeadline: string | null;
+  createdAt: string;
+  team1Rating: number;
+  team2Rating: number;
+  captain1: string | null;
+  captain2: string | null;
+  team1: MatchViewPlayer[];
+  team2: MatchViewPlayer[];
+}
 
 export interface CreatedMatch {
   matchId: string;
@@ -398,6 +433,81 @@ export class MatchLifecycle {
       .from(matchParticipants)
       .where(eq(matchParticipants.matchId, matchId))
       .orderBy(matchParticipants.team);
+  }
+
+  /**
+   * The match as a client can render it.
+   *
+   * Participant rows carry user ids and nothing else, which is enough to decide
+   * who to notify but not enough to draw a roster: name, rating and tier all
+   * live on other tables. Joining them here keeps that join in one place rather
+   * than leaving every caller to re-derive a roster, and means the push event
+   * and the fetch hand back the identical shape.
+   */
+  async view(matchId: string): Promise<MatchView | null> {
+    const match = await this.getMatch(matchId);
+    if (!match) return null;
+
+    const rows = await this.db
+      .select({
+        userId: matchParticipants.userId,
+        team: matchParticipants.team,
+        isCaptain: matchParticipants.isCaptain,
+        acceptedAt: matchParticipants.acceptedAt,
+        ratingDelta: matchParticipants.ratingDelta,
+        discordName: users.discordName,
+        inGameName: users.inGameName,
+        avatarUrl: users.avatarUrl,
+        rating: playerRatings.rating,
+        gamesPlayed: playerRatings.gamesPlayed,
+        wins: playerRatings.wins,
+        losses: playerRatings.losses,
+      })
+      .from(matchParticipants)
+      .innerJoin(users, eq(users.id, matchParticipants.userId))
+      .leftJoin(playerRatings, eq(playerRatings.userId, matchParticipants.userId))
+      .where(eq(matchParticipants.matchId, matchId))
+      .orderBy(matchParticipants.team);
+
+    const toPlayer = (r: (typeof rows)[number]): MatchViewPlayer => {
+      const rating = r.rating ?? DEFAULT_RATING;
+      const gamesPlayed = r.gamesPlayed ?? 0;
+      return {
+        id: r.userId,
+        discordName: r.discordName,
+        // The in-game name is optional until a player sets it, and the roster is
+        // exactly where a blank would hurt -- it is the name teammates type to
+        // find each other in-game -- so fall back to something addressable.
+        inGameName: r.inGameName ?? r.discordName,
+        avatarUrl: r.avatarUrl,
+        rating,
+        // Same rule as /me: no rank until placements are done.
+        tier: isPlaced(gamesPlayed) ? tierForRating(rating) : null,
+        gamesPlayed,
+        wins: r.wins ?? 0,
+        losses: r.losses ?? 0,
+        accepted: r.acceptedAt !== null,
+        ratingDelta: r.ratingDelta,
+      };
+    };
+
+    return {
+      id: match.id,
+      type: match.type,
+      region: match.region,
+      state: match.state,
+      result: match.result,
+      acceptDeadline: match.acceptDeadline?.toISOString() ?? null,
+      partyUpDeadline: match.partyUpDeadline?.toISOString() ?? null,
+      reportDeadline: match.reportDeadline?.toISOString() ?? null,
+      createdAt: match.createdAt.toISOString(),
+      team1Rating: match.team1Rating,
+      team2Rating: match.team2Rating,
+      captain1: rows.find((r) => r.team === 1 && r.isCaptain)?.userId ?? null,
+      captain2: rows.find((r) => r.team === 2 && r.isCaptain)?.userId ?? null,
+      team1: rows.filter((r) => r.team === 1).map(toPlayer),
+      team2: rows.filter((r) => r.team === 2).map(toPlayer),
+    };
   }
 
   /** Rating snapshot for a set of users, defaulting anyone unseen. */

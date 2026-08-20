@@ -334,3 +334,66 @@ describe("rating lookup", () => {
     expect(ratings.get(ghost)).toBe(1200);
   });
 });
+
+describe("client view", () => {
+  it("returns full rosters, not bare participant rows", async () => {
+    const { decision } = await stageMatch();
+    const created = await lifecycle.createFromDecision(decision, "na");
+    expect(isOk(created)).toBe(true);
+    if (!isOk(created)) return;
+
+    const view = await lifecycle.view(created.data.matchId);
+
+    // The roster components index into these unconditionally; anything less
+    // than a drawable team takes the whole client down.
+    expect(view!.team1).toHaveLength(5);
+    expect(view!.team2).toHaveLength(5);
+    expect(view!.captain1).toBeTruthy();
+    expect(view!.captain2).toBeTruthy();
+
+    for (const p of [...view!.team1, ...view!.team2]) {
+      expect(p.id).toBeTruthy();
+      expect(p.discordName).toBeTruthy();
+      expect(p.inGameName).toBeTruthy();
+      expect(typeof p.rating).toBe("number");
+      expect(p.accepted).toBe(false);
+    }
+  });
+
+  it("hides the tier of a player still in placements", async () => {
+    const { decision } = await stageMatch();
+    const created = await lifecycle.createFromDecision(decision, "na");
+    if (!isOk(created)) throw new Error("staging failed");
+
+    const view = await lifecycle.view(created.data.matchId);
+    // stageMatch's players have no games, so nobody is placed yet.
+    expect([...view!.team1, ...view!.team2].every((p) => p.tier === null)).toBe(true);
+  });
+
+  it("reflects an accept", async () => {
+    const { team1, decision } = await stageMatch();
+    const created = await lifecycle.createFromDecision(decision, "na");
+    if (!isOk(created)) throw new Error("staging failed");
+
+    await lifecycle.accept(created.data.matchId, team1[0]!.userIds[0]!);
+
+    const view = await lifecycle.view(created.data.matchId);
+    const accepted = [...view!.team1, ...view!.team2].filter((p) => p.accepted);
+    expect(accepted).toHaveLength(1);
+    expect(accepted[0]!.id).toBe(team1[0]!.userIds[0]);
+  });
+
+  it("serialises deadlines as strings so JSON round-trips unchanged", async () => {
+    const { decision } = await stageMatch();
+    const created = await lifecycle.createFromDecision(decision, "na");
+    if (!isOk(created)) throw new Error("staging failed");
+
+    const view = await lifecycle.view(created.data.matchId);
+    expect(typeof view!.acceptDeadline).toBe("string");
+    expect(JSON.parse(JSON.stringify(view))).toEqual(view);
+  });
+
+  it("returns null for a match that does not exist", async () => {
+    expect(await lifecycle.view("00000000-0000-0000-0000-000000000000")).toBeNull();
+  });
+});
