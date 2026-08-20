@@ -22,8 +22,10 @@
     "typescript": "^5.7.2",
     "vitest": "^3.2.4"
   },
+  "//known-audit-findings": "4 moderate: GHSA-67mh-4wv8-2f99 (esbuild) reaches us only via drizzle-kit -> @esbuild-kit/esm-loader, a deprecated shim drizzle-kit still declares. Accepted, not ignored: drizzle-kit is a devDependency that transpiles drizzle.config.ts to emit migration SQL and never starts esbuild's dev server, which the advisory requires. npm overrides do not reach the nested pin, and `audit fix --force` downgrades drizzle-kit 0.31 -> 0.18. Revisit when drizzle-kit drops @esbuild-kit in favour of its bundled tsx.",
   "allowScripts": {
     "esbuild@0.28.2": true,
-    "esbuild@0.21.5": true
+    "esbuild@0.18.20": true,
+    "esbuild@0.25.12": true
   }
 }
