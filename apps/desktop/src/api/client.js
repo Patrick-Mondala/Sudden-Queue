@@ -59,9 +59,15 @@ async function request(path, { method = "GET", body, auth = true } = {}) {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch (cause) {
-    // Distinguish "server is down" from "server said no" — the UI wants to
-    // show a reconnect state for one and an error for the other.
-    throw new ApiError(0, "NETWORK", "Cannot reach the server");
+    // A rejected fetch is opaque by design: the browser refuses to tell JS
+    // whether the server was unreachable or the response failed a CORS check,
+    // because leaking that would itself be a cross-origin information leak.
+    // So the message names both rather than asserting the wrong one.
+    throw new ApiError(
+      0,
+      "NETWORK",
+      `Could not reach ${BASE_URL}. The server may be down, or blocking this origin.`,
+    );
   }
 
   if (response.status === 204) return null;

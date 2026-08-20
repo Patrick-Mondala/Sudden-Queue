@@ -8,6 +8,7 @@ import {
   tierForRating,
 } from "@suddenqueue/core";
 import cookie from "@fastify/cookie";
+import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import { eq } from "drizzle-orm";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
@@ -78,6 +79,38 @@ const SIGNED_IN_PAGE = `<!doctype html>
 
 export async function buildApp({ db, config, autoStart = true }: AppDeps): Promise<App> {
   const server = Fastify({ logger: config.NODE_ENV !== "test" });
+
+  /**
+   * CORS for the desktop client.
+   *
+   * The Tauri webview serves the UI from localhost:1420 in dev and from a
+   * tauri:// origin once bundled, while the API is a separate origin. Without
+   * this the webview blocks every request before it is sent, which surfaces in
+   * the client as "cannot reach the server" rather than as a CORS error.
+   *
+   * Origins are allow-listed rather than mirrored back: reflecting any origin
+   * would let any page a user visits call this API with their session.
+   */
+  const allowedOrigins = new Set([
+    "http://localhost:1420",
+    "http://127.0.0.1:1420",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+  ]);
+
+  await server.register(cors, {
+    origin(origin, cb) {
+      // Same-origin and non-browser callers (curl, the desktop app's own
+      // native requests) send no Origin at all.
+      if (!origin) return cb(null, true);
+      if (allowedOrigins.has(origin)) return cb(null, true);
+      // Tauri's bundled webview uses a tauri:// scheme on some platforms.
+      if (origin.startsWith("tauri://")) return cb(null, true);
+      cb(null, false);
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+  });
 
   await server.register(cookie);
   await server.register(websocket);

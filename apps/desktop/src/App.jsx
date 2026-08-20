@@ -29,13 +29,25 @@ const REGIONS = [
 
 /* letter ranks, percentile buckets, F- .. S+ (17 tiers) */
 const TIERS = ["F-","F","F+","D-","D","D+","C-","C","C+","B-","B","B+","A-","A","A+","S","S+"];
+/**
+ * Colour for a tier letter. Tolerates null, which is what an unplaced player
+ * legitimately has — rank stays hidden until placements are done, and a crash
+ * here takes the whole app down with it.
+ */
 const tierColor = (t) => {
+  if (!t) return "#4E5966";
   if (t.startsWith("S")) return "#F2A93B";
+  if (t.startsWith("G")) return "#FF5C8A";
   if (t.startsWith("A")) return "#C77DFF";
   if (t.startsWith("B")) return "#2FC8BF";
   if (t.startsWith("C")) return "#5DBE7B";
   if (t.startsWith("D")) return "#9AA5B1";
   return "#7C8794";
+};
+/** Win percentage, or a dash when nobody has played yet. */
+const winRate = (wins = 0, losses = 0) => {
+  const total = wins + losses;
+  return total === 0 ? "—" : `${Math.round((100 * wins) / total)}%`;
 };
 const rankFromPercentile = (p) => TIERS[Math.min(TIERS.length - 1, Math.floor(p * TIERS.length))];
 
@@ -271,8 +283,9 @@ const Avatar = ({ p, size = 32, ring }) => (
     {(p?.discordName || "?")[0].toUpperCase()}
   </div>
 );
+/** Renders a tier, or a dash while the player is still in placements. */
 const Tier = ({ tier, size = 12 }) => (
-  <span style={{ fontFamily: T.display, fontWeight: 800, fontSize: size, color: tierColor(tier), letterSpacing: "0.02em", minWidth: size * 1.6, display: "inline-block", textAlign: "center" }}>{tier}</span>
+  <span style={{ fontFamily: T.display, fontWeight: 800, fontSize: size, color: tierColor(tier), letterSpacing: "0.02em", minWidth: size * 1.6, display: "inline-block", textAlign: "center" }}>{tier ?? "—"}</span>
 );
 const Tag = ({ children, color = T.muted, bg }) => (
   <span style={{ fontFamily: T.mono, fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", color, background: bg || "transparent", border: `1px solid ${bg ? "transparent" : T.line2}`, borderRadius: 3, padding: "2px 6px" }}>{children}</span>
@@ -320,7 +333,7 @@ function Login({ onLogin, onSignedIn }) {
       setPhase("idle");
       setError(
         err?.code === "NETWORK"
-          ? "Can't reach the server. Is it running?"
+          ? err.message
           : err?.code === "LOGIN_TIMEOUT"
           ? "Sign-in timed out. Try again."
           : err?.code === "BANNED"
@@ -498,7 +511,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 14 }}>
-            {[["Record", `${me.wins}–${me.losses}`], ["Win rate", `${Math.round(100 * me.wins / (me.wins + me.losses))}%`], ["Disputes", me.disputes]].map(([k, v]) => (
+            {[["Record", `${me.wins}–${me.losses}`], ["Win rate", winRate(me.wins, me.losses)], ["Disputes", me.disputes]].map(([k, v]) => (
               <div key={k} style={{ background: T.raised, borderRadius: 4, padding: "8px 10px" }}>
                 <Eyebrow style={{ fontSize: 9.5 }}>{k}</Eyebrow>
                 <div style={{ fontFamily: T.mono, fontSize: 15, fontWeight: 600, marginTop: 2 }}>{v}</div>
@@ -787,7 +800,7 @@ function LadderScreen({ me, onView }) {
             <Tier tier={p.tier} size={14} />
             <span style={{ fontFamily: T.mono, textAlign: "right" }}>{p.rating}</span>
             <span style={{ fontFamily: T.mono, textAlign: "right", fontSize: 12 }}>{p.wins}–{p.losses}</span>
-            <span style={{ fontFamily: T.mono, textAlign: "right", fontSize: 12 }}>{Math.round(100 * p.wins / (p.wins + p.losses))}%</span>
+            <span style={{ fontFamily: T.mono, textAlign: "right", fontSize: 12 }}>{winRate(p.wins, p.losses)}</span>
             <span style={{ fontFamily: T.mono, textAlign: "right", fontSize: 12, color: p.disputes ? T.captain : T.dim }}>{p.disputes}</span>
           </div>
         ))}
@@ -813,7 +826,7 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch }) {
             <div style={{ textAlign: "right" }}><Tier tier={p.tier} size={40} /><Eyebrow>Top {Math.max(1, Math.round((1 - p.percentile) * 100))}%</Eyebrow></div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginTop: 20 }}>
-            {[["Rating", p.rating], ["Matches", total], ["Record", `${p.wins}–${p.losses}`], ["Win rate", `${Math.round(100 * p.wins / total)}%`], ["Streak", `W${streak}`]].map(([k, v]) => (
+            {[["Rating", p.rating], ["Matches", total], ["Record", `${p.wins}–${p.losses}`], ["Win rate", winRate(p.wins, p.losses)], ["Streak", `W${streak}`]].map(([k, v]) => (
               <div key={k} style={{ background: T.raised, borderRadius: 4, padding: "10px 12px" }}><Eyebrow style={{ fontSize: 9.5 }}>{k}</Eyebrow><div style={{ fontFamily: T.mono, fontSize: 18, fontWeight: 600, marginTop: 4 }}>{v}</div></div>
             ))}
           </div>
