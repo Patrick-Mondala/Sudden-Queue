@@ -1,3 +1,7 @@
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { z } from "zod";
 
 /**
@@ -7,12 +11,35 @@ import { z } from "zod";
  * fails the process rather than surfacing as a confusing 500 later.
  */
 
-// Node reads .env natively; ignore its absence so production can use real env vars.
-try {
-  process.loadEnvFile();
-} catch {
-  // no .env file present
+/**
+ * Finds the nearest .env by walking up from this module.
+ *
+ * The workspace keeps one .env at the repo root while the server runs from
+ * apps/server, so looking only in the working directory finds nothing and every
+ * variable reads as missing.
+ */
+function loadNearestEnvFile(): void {
+  let dir = dirname(fileURLToPath(import.meta.url));
+
+  for (let depth = 0; depth < 6; depth += 1) {
+    const candidate = join(dir, ".env");
+    if (existsSync(candidate)) {
+      try {
+        process.loadEnvFile(candidate);
+      } catch {
+        // Unreadable or malformed; fall through to real env vars.
+      }
+      return;
+    }
+
+    const parent = resolve(dir, "..");
+    if (parent === dir) break;
+    dir = parent;
+  }
+  // No .env anywhere: production supplies real environment variables.
 }
+
+loadNearestEnvFile();
 
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
