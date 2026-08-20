@@ -416,10 +416,36 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
 
   const start = async () => {
     if (!regions.length) return;
+
+    if (me.live) {
+      // Only flip the UI once the server has actually accepted the ticket, so
+      // a rejection cannot leave the screen claiming you are queued.
+      try {
+        await server.joinQueue(regions);
+        setQueue({ state: "queued", since: Date.now(), regions });
+      } catch (err) {
+        notify(err?.message ?? "Could not join the queue");
+      }
+      return;
+    }
+
     setQueue({ state: "queued", since: Date.now(), regions });
     await api.joinQueue({ regions, partyIds: party.map((p) => p.id), auto: !tutorial });
   };
-  const stop = async () => { setQueue({ state: "idle" }); await api.leaveQueue(); };
+
+  const stop = async () => {
+    if (me.live) {
+      try {
+        await server.leaveQueue();
+      } catch (err) {
+        notify(err?.message ?? "Could not leave the queue");
+      }
+      setQueue({ state: "idle" });
+      return;
+    }
+    setQueue({ state: "idle" });
+    await api.leaveQueue();
+  };
   const addBot = () => { if (party.length >= 5) return; const c = pick(POOL, 1, party.map((p) => p.id))[0]; setParty([...party, byId(c.id)]); notify(`${c.discordName} joined your party`); };
   const kick = (id) => setParty(party.filter((p) => p.id !== id));
 
@@ -458,7 +484,17 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <Eyebrow>Party · {party.length}/5</Eyebrow>
             <div style={{ display: "flex", gap: 6 }}>
-              <Btn size="sm" data-tour="invite-btn" onClick={addBot} disabled={party.length >= 5 || queue.state === "queued"}><Plus size={13} /> Invite</Btn>
+              {/* Inviting needs a player search the server does not expose yet,
+                  so on a live account the control is present but honest. */}
+              <Btn
+                size="sm"
+                data-tour="invite-btn"
+                onClick={addBot}
+                title={me.live ? "Player search isn't wired up yet" : undefined}
+                disabled={me.live || party.length >= 5 || queue.state === "queued"}
+              >
+                <Plus size={13} /> Invite
+              </Btn>
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8 }}>
@@ -781,8 +817,38 @@ function TeamsScreen({ me, teams, setTeams, myTeam, notify, history, onViewMatch
 /* ─────────────────────────────────────────────────────────────
    LADDER + PROFILE
    ───────────────────────────────────────────────────────────── */
+/** Shown where a real feature will go, instead of inventing data for it. */
+function ComingSoon({ eyebrow, title, body }) {
+  return (
+    <Panel style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <div style={{ marginBottom: 12 }}>
+        <Eyebrow>{eyebrow}</Eyebrow>
+        <H size={20}>{title}</H>
+      </div>
+      <div style={{ flex: 1, display: "grid", placeItems: "center" }}>
+        <div style={{ maxWidth: 420, textAlign: "center", color: T.muted, fontSize: 13, lineHeight: 1.6 }}>
+          {body}
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
 function LadderScreen({ me, onView }) {
   const rows = useMemo(() => [...LADDER].sort((a, b) => b.rating - a.rating), []);
+
+  // The ladder has no server endpoint yet. Showing sample players to a real
+  // account would read as a live leaderboard that simply does not exist.
+  if (me.live) {
+    return (
+      <ComingSoon
+        eyebrow="Ladder"
+        title="Active players"
+        body="The ladder isn't wired up yet. Once it is, every placed player appears here ranked by rating, and you can open anyone's profile from it."
+      />
+    );
+  }
+
   return (
     <Panel style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 12 }}>
@@ -1332,7 +1398,27 @@ export default function App() {
   const notify = useCallback((text) => { const id = Date.now() + Math.random(); setToasts((t) => [...t, { id, text }]); setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3800); }, []);
 
   useEffect(() => { if (me) setParty([me]); }, [me]);
-  useEffect(() => { if (!me) return; const f = async () => setPop(await api.population()); f(); const iv = setInterval(f, 8000); return () => clearInterval(iv); }, [me]);
+  useEffect(() => {
+    if (!me) return;
+    // Live accounts get the server's real counts; the tutorial keeps its
+    // simulated population so the lobby does not look abandoned.
+    const f = async () => {
+      if (me.live) {
+        try {
+          const stats = await server.queueStats();
+          setPop({ online: stats.online, inQueue: stats.inQueue, inMatch: 0 });
+        } catch {
+          // Server unreachable; leave the last known counts rather than
+          // showing zeroes that look like an empty playerbase.
+        }
+      } else {
+        setPop(await api.population());
+      }
+    };
+    f();
+    const iv = setInterval(f, 8000);
+    return () => clearInterval(iv);
+  }, [me]);
   useEffect(() => bus.on((e) => { if (e.type === "match_found") { setQueue({ state: "idle" }); setPendingMatch(e.match); } }), []);
 
   /**
@@ -1476,6 +1562,30 @@ export default function App() {
       })),
     );
 
+    // Clear the sample data. Rendering invented teams and matches beside a real
+    // account is worse than showing nothing: there is no way for the player to
+    // tell which parts of the screen are real.
+    setTeams([]);
+    setScrims([]);
+    setHistory([]);
+
+    try {
+      const rows = await server.history();
+      setHistory(
+        rows.map((r) => ({
+          id: r.matchId,
+          ts: new Date(r.resolvedAt ?? r.createdAt).getTime(),
+          region: r.region,
+          type: r.type,
+          result: r.result === null ? "—" : (r.result === "TEAM1") === (r.team === 1) ? "win" : "loss",
+          state: r.state === "DISPUTED" ? "in dispute" : "completed",
+          delta: r.ratingDelta ?? 0,
+        })),
+      );
+    } catch {
+      // History is not essential to signing in; an empty list is honest.
+    }
+
     setChatOpen(false);
     // No tutorial for a real sign-in; it runs on sample data.
     setTourStep(-1);
@@ -1506,8 +1616,28 @@ export default function App() {
   }} />;
   else if (viewProfile) content = <ProfileScreen p={viewProfile} me={me} history={history} onBack={() => setViewProfile(null)} onViewMatch={setViewMatch} />;
   else if (nav === "play") content = <PlayScreen me={me} party={party} setParty={setParty} queue={queue} setQueue={setQueue} cooldownUntil={cooldownUntil} history={history} notify={notify} onViewMatch={setViewMatch} onView={setViewProfile} tutorial={tourStep >= 0} />;
-  else if (nav === "scrims") content = <ScrimsScreen me={me} myTeam={myTeam} teams={teams} scrims={scrims} setScrims={setScrims} notify={notify} queue={queue} onViewTeam={setViewTeam} tutorial={tourStep >= 0} />;
-  else if (nav === "teams") content = <TeamsScreen me={me} teams={teams} setTeams={setTeams} myTeam={myTeam} notify={notify} history={history} onViewMatch={setViewMatch} onViewTeam={setViewTeam} onView={setViewProfile} />;
+  // Teams and scrims have no server endpoints yet. A live account gets an
+  // honest placeholder rather than sample rosters it could try to interact with.
+  else if (nav === "scrims")
+    content = me.live ? (
+      <ComingSoon
+        eyebrow="Scrim list"
+        title="Teams looking to scrim"
+        body="Scrims aren't wired up yet. Once teams exist, captains will list here for practice matches — unrated, but running the same accept and report flow as a PUG."
+      />
+    ) : (
+      <ScrimsScreen me={me} myTeam={myTeam} teams={teams} scrims={scrims} setScrims={setScrims} notify={notify} queue={queue} onViewTeam={setViewTeam} tutorial={tourStep >= 0} />
+    );
+  else if (nav === "teams")
+    content = me.live ? (
+      <ComingSoon
+        eyebrow="Teams"
+        title="Find a team"
+        body="Teams aren't wired up yet. Once they are, you'll be able to register one, appoint officers, review applications, and list for scrims."
+      />
+    ) : (
+      <TeamsScreen me={me} teams={teams} setTeams={setTeams} myTeam={myTeam} notify={notify} history={history} onViewMatch={setViewMatch} onViewTeam={setViewTeam} onView={setViewProfile} />
+    );
   else if (nav === "ladder") content = <LadderScreen me={me} onView={setViewProfile} />;
   else content = <ProfileScreen p={me} me={me} history={history} onBack={() => {}} onViewMatch={setViewMatch} />;
 
