@@ -20,6 +20,7 @@ import type { Config } from "./config.js";
 import type { Database } from "./db/client.js";
 import { playerRatings } from "./db/schema/index.js";
 import { MatchLifecycle } from "./match/lifecycle.js";
+import { MatchReporting } from "./match/reporting.js";
 import { Matchmaker, MatchSweeper } from "./matchmaker/loop.js";
 import { PartyService } from "./party/service.js";
 import { QueueRepository } from "./queue/repository.js";
@@ -49,6 +50,7 @@ export interface App {
     party: PartyService;
     queue: QueueRepository;
     lifecycle: MatchLifecycle;
+    reporting: MatchReporting;
   };
 }
 
@@ -91,6 +93,7 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
   const party = new PartyService(db);
   const queue = new QueueRepository(db);
   const lifecycle = new MatchLifecycle(db);
+  const reporting = new MatchReporting(db);
 
   // ---------------------------------------------------------------- realtime
 
@@ -540,6 +543,106 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
     return result.data;
   });
 
+  const reportBody = z.object({ winner: z.enum(["TEAM1", "TEAM2"]) });
+
+  server.post("/match/:id/report", { preHandler: authenticate }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = reportBody.safeParse(req.body);
+    if (!body.success) {
+      return reply
+        .code(400)
+        .send({ error: "BAD_REQUEST", message: "winner must be TEAM1 or TEAM2" });
+    }
+
+    const user = requireUser(req);
+    const result = await reporting.report(id, user.userId, body.data.winner);
+    if (isFail(result)) {
+      const status = result.code === "NOT_A_CAPTAIN" ? 403 : 409;
+      return reply.code(status).send({ error: result.code, message: result.message });
+    }
+
+    const parts = await lifecycle.participants(id);
+    const userIds = parts.map((p) => p.userId);
+
+    if (result.data.state === "REPORTED") {
+      notifier.toUsers(userIds, { type: "match.state", matchId: id, state: "REPORTED" });
+    } else if (result.data.state === "DISPUTED") {
+      notifier.toUsers(userIds, { type: "match.state", matchId: id, state: "DISPUTED" });
+    } else {
+      // Each player is told their own delta, not the whole table.
+      for (const change of result.data.ratingChanges ?? []) {
+        notifier.toUser(change.userId, {
+          type: "match.resolved",
+          matchId: id,
+          result: result.data.winner ?? "",
+          ratingDelta: change.delta,
+        });
+      }
+    }
+
+    return result.data;
+  });
+
+  server.get("/match/:id/reports", { preHandler: authenticate }, async (req) => {
+    const { id } = req.params as { id: string };
+    return reporting.reportsFor(id);
+  });
+
+  server.get("/me/history", { preHandler: authenticate }, async (req) => {
+    const limit = Number((req.query as Record<string, string>)?.limit ?? 25);
+    return reporting.historyFor(requireUser(req).userId, Math.min(Math.max(limit, 1), 100));
+  });
+
+  // ------------------------------------------------------------- moderation
+
+  function requireModerator(req: FastifyRequest, reply: FastifyReply): boolean {
+    const user = requireUser(req);
+    if (user.role === "player") {
+      void reply.code(403).send({ error: "FORBIDDEN", message: "Moderator access required" });
+      return false;
+    }
+    return true;
+  }
+
+  server.get("/mod/disputes", { preHandler: authenticate }, async (req, reply) => {
+    if (!requireModerator(req, reply)) return reply;
+    return reporting.openDisputes();
+  });
+
+  const rulingBody = z.object({
+    winner: z.enum(["TEAM1", "TEAM2"]),
+    note: z.string().min(1).max(500),
+  });
+
+  server.post("/mod/disputes/:id/resolve", { preHandler: authenticate }, async (req, reply) => {
+    if (!requireModerator(req, reply)) return reply;
+
+    const { id } = req.params as { id: string };
+    const body = rulingBody.safeParse(req.body);
+    if (!body.success) {
+      return reply
+        .code(400)
+        .send({ error: "BAD_REQUEST", message: "winner and a note are required" });
+    }
+
+    const user = requireUser(req);
+    const result = await reporting.resolveDispute(id, user.userId, body.data.winner, body.data.note);
+    if (isFail(result)) {
+      return reply.code(409).send({ error: result.code, message: result.message });
+    }
+
+    for (const change of result.data.ratingChanges ?? []) {
+      notifier.toUser(change.userId, {
+        type: "match.resolved",
+        matchId: id,
+        result: result.data.winner ?? "",
+        ratingDelta: change.delta,
+      });
+    }
+
+    return result.data;
+  });
+
   server.get("/match/:id", { preHandler: authenticate }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const match = await lifecycle.getMatch(id);
@@ -614,6 +717,6 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
     notifier,
     matchmaker,
     sweeper,
-    services: { auth, sessions, party, queue, lifecycle },
+    services: { auth, sessions, party, queue, lifecycle, reporting },
   };
 }

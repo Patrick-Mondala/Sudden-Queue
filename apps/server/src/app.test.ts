@@ -1,7 +1,9 @@
 import { isOk } from "@suddenqueue/core";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { type App, buildApp } from "./app.js";
+import { matches, users } from "./db/schema/index.js";
 import { AuthService } from "./auth/service.js";
 import { DiscordAuth } from "./auth/discord.js";
 import type { Config } from "./config.js";
@@ -458,6 +460,204 @@ describe("end to end: ten solos become a match", () => {
       headers: authed(outsider.token),
     });
     expect(res.statusCode).toBe(403);
+  });
+});
+
+describe("reporting through the API", () => {
+  /** Queues ten players, matches them, accepts, and forces the match live. */
+  async function liveMatch() {
+    const players = [];
+    for (let i = 0; i < 10; i += 1) players.push(await login());
+    for (const p of players) {
+      await app.server.inject({
+        method: "POST",
+        url: "/queue/join",
+        headers: authed(p.token),
+        payload: { regions: ["na"] },
+      });
+    }
+    await app.matchmaker.runPass();
+
+    const matchId = (await findMatchIdFor(players[0]!.userId))!;
+    for (const p of players) {
+      await app.server.inject({
+        method: "POST",
+        url: `/match/${matchId}/accept`,
+        headers: authed(p.token),
+      });
+    }
+
+    await handle.db.update(matches).set({ state: "LIVE" }).where(eq(matches.id, matchId));
+
+    const parts = await app.services.lifecycle.participants(matchId);
+    const capA = parts.find((p) => p.team === 1 && p.isCaptain)!.userId;
+    const capB = parts.find((p) => p.team === 2 && p.isCaptain)!.userId;
+
+    return {
+      matchId,
+      players,
+      captain1: players.find((p) => p.userId === capA)!,
+      captain2: players.find((p) => p.userId === capB)!,
+      nonCaptain: players.find((p) => p.userId !== capA && p.userId !== capB)!,
+    };
+  }
+
+  it("refuses a report from a non-captain", async () => {
+    const m = await liveMatch();
+    const res = await app.server.inject({
+      method: "POST",
+      url: `/match/${m.matchId}/report`,
+      headers: authed(m.nonCaptain.token),
+      payload: { winner: "TEAM1" },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe("NOT_A_CAPTAIN");
+  });
+
+  it("rejects a winner value that is not a team", async () => {
+    const m = await liveMatch();
+    const res = await app.server.inject({
+      method: "POST",
+      url: `/match/${m.matchId}/report`,
+      headers: authed(m.captain1.token),
+      payload: { winner: "NOBODY" },
+    });
+
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("holds at REPORTED until the second captain agrees, then settles", async () => {
+    const m = await liveMatch();
+
+    const first = await app.server.inject({
+      method: "POST",
+      url: `/match/${m.matchId}/report`,
+      headers: authed(m.captain1.token),
+      payload: { winner: "TEAM1" },
+    });
+    expect(first.json().state).toBe("REPORTED");
+
+    const second = await app.server.inject({
+      method: "POST",
+      url: `/match/${m.matchId}/report`,
+      headers: authed(m.captain2.token),
+      payload: { winner: "TEAM1" },
+    });
+    expect(second.json().state).toBe("COMPLETED");
+    expect(second.json().winner).toBe("TEAM1");
+  });
+
+  it("shows the settled match in the player's history with their delta", async () => {
+    const m = await liveMatch();
+    await app.server.inject({
+      method: "POST",
+      url: `/match/${m.matchId}/report`,
+      headers: authed(m.captain1.token),
+      payload: { winner: "TEAM1" },
+    });
+    await app.server.inject({
+      method: "POST",
+      url: `/match/${m.matchId}/report`,
+      headers: authed(m.captain2.token),
+      payload: { winner: "TEAM1" },
+    });
+
+    const history = await app.server.inject({
+      method: "GET",
+      url: "/me/history",
+      headers: authed(m.captain1.token),
+    });
+
+    const rows = history.json();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].ratingDelta).toBeGreaterThan(0);
+  });
+
+  it("disagreement opens a dispute", async () => {
+    const m = await liveMatch();
+    await app.server.inject({
+      method: "POST",
+      url: `/match/${m.matchId}/report`,
+      headers: authed(m.captain1.token),
+      payload: { winner: "TEAM1" },
+    });
+    const clash = await app.server.inject({
+      method: "POST",
+      url: `/match/${m.matchId}/report`,
+      headers: authed(m.captain2.token),
+      payload: { winner: "TEAM2" },
+    });
+
+    expect(clash.json().state).toBe("DISPUTED");
+  });
+
+  it("keeps the dispute queue behind a moderator check", async () => {
+    const player = await login();
+    const denied = await app.server.inject({
+      method: "GET",
+      url: "/mod/disputes",
+      headers: authed(player.token),
+    });
+    expect(denied.statusCode).toBe(403);
+
+    await handle.db
+      .update(users)
+      .set({ role: "moderator" })
+      .where(eq(users.id, player.userId));
+
+    const allowed = await app.server.inject({
+      method: "GET",
+      url: "/mod/disputes",
+      headers: authed(player.token),
+    });
+    expect(allowed.statusCode).toBe(200);
+  });
+
+  it("lets a moderator rule on a dispute and settle it", async () => {
+    const m = await liveMatch();
+    await app.server.inject({
+      method: "POST",
+      url: `/match/${m.matchId}/report`,
+      headers: authed(m.captain1.token),
+      payload: { winner: "TEAM1" },
+    });
+    await app.server.inject({
+      method: "POST",
+      url: `/match/${m.matchId}/report`,
+      headers: authed(m.captain2.token),
+      payload: { winner: "TEAM2" },
+    });
+
+    const mod = await login();
+    await handle.db.update(users).set({ role: "moderator" }).where(eq(users.id, mod.userId));
+
+    const ruling = await app.server.inject({
+      method: "POST",
+      url: `/mod/disputes/${m.matchId}/resolve`,
+      headers: authed(mod.token),
+      payload: { winner: "TEAM1", note: "Reviewed screenshots" },
+    });
+
+    expect(ruling.statusCode).toBe(200);
+    expect(ruling.json().state).toBe("COMPLETED");
+
+    const match = await app.services.lifecycle.getMatch(m.matchId);
+    expect(match!.result).toBe("TEAM1");
+  });
+
+  it("requires a note on a ruling", async () => {
+    const mod = await login();
+    await handle.db.update(users).set({ role: "moderator" }).where(eq(users.id, mod.userId));
+
+    const res = await app.server.inject({
+      method: "POST",
+      url: "/mod/disputes/00000000-0000-0000-0000-000000000000/resolve",
+      headers: authed(mod.token),
+      payload: { winner: "TEAM1" },
+    });
+
+    expect(res.statusCode).toBe(400);
   });
 });
 
