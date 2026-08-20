@@ -20,9 +20,12 @@ export interface Fail<E extends string = string> {
 
 export type Result<T, E extends string = string> = Ok<T> | Fail<E>;
 
-export function ok(): Result<void>;
-export function ok<T>(data: T): Result<T>;
-export function ok<T>(data?: T): Result<T | undefined> {
+// Returns Ok<T> rather than Result<T, string>: a success can never carry an
+// error code, and widening here would force every caller's error union to
+// collapse to `string`.
+export function ok(): Ok<void>;
+export function ok<T>(data: T): Ok<T>;
+export function ok<T>(data?: T): Ok<T | undefined> {
   return { ok: true, data };
 }
 
