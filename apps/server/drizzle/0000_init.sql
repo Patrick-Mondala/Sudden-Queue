@@ -38,7 +38,7 @@ CREATE TABLE "users" (
 	"discord_id" text NOT NULL,
 	"discord_name" text NOT NULL,
 	"avatar_url" text,
-	"sazp_name" text,
+	"in_game_name" text,
 	"role" "user_role" DEFAULT 'player' NOT NULL,
 	"banned_until" timestamp with time zone,
 	"ban_reason" text,

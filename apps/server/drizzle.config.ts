@@ -5,7 +5,7 @@ export default defineConfig({
   out: "./drizzle",
   dialect: "postgresql",
   dbCredentials: {
-    url: process.env.DATABASE_URL ?? "postgresql://sazp:sazp_dev@localhost:5432/sazp",
+    url: process.env.DATABASE_URL ?? "postgresql://suddenqueue:suddenqueue_dev@localhost:5432/suddenqueue",
   },
   strict: true,
   verbose: true,

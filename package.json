@@ -1,5 +1,5 @@
 {
-  "name": "sazp",
+  "name": "sudden-queue",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -11,8 +11,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "desktop": "npm run tauri dev --workspace @sazp/desktop",
-    "server": "npm run dev --workspace @sazp/server",
+    "desktop": "npm run tauri dev --workspace @suddenqueue/desktop",
+    "server": "npm run dev --workspace @suddenqueue/server",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
     "test": "npm run test --workspaces --if-present",

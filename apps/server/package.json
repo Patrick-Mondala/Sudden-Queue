@@ -1,5 +1,5 @@
 {
-  "name": "@sazp/server",
+  "name": "@suddenqueue/server",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -15,7 +15,7 @@
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
     "@fastify/websocket": "^11.0.2",
-    "@sazp/core": "*",
+    "@suddenqueue/core": "*",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.2.0",
     "postgres": "^3.4.5",

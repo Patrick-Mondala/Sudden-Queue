@@ -45,7 +45,7 @@ const AV_COLORS = ["#4C6EF5","#B23A48","#2A9D8F","#8E44AD","#D97706","#0EA5E9","
 const mkPlayer = (i, over = {}) => ({
   id: `p${i}`,
   discordName: NAMES[i % NAMES.length],
-  sazpName: (NAMES[i % NAMES.length] + (i > 29 ? i : "")).toUpperCase().slice(0, 12),
+  inGameName: (NAMES[i % NAMES.length] + (i > 29 ? i : "")).toUpperCase().slice(0, 12),
   avatarColor: AV_COLORS[i % AV_COLORS.length],
   rating: 1200 + ((i * 137) % 900),
   wins: 10 + ((i * 7) % 60), losses: 8 + ((i * 11) % 50),
@@ -53,7 +53,7 @@ const mkPlayer = (i, over = {}) => ({
   ...over,
 });
 const POOL = Array.from({ length: 30 }, (_, i) => mkPlayer(i));
-const DEMO = mkPlayer(99, { id: "demo", discordName: "demo", sazpName: "DEMO_ACCT", avatarColor: "#2FC8BF", rating: 1610, wins: 34, losses: 27, disputes: 0 });
+const DEMO = mkPlayer(99, { id: "demo", discordName: "demo", inGameName: "DEMO_ACCT", avatarColor: "#2FC8BF", rating: 1610, wins: 34, losses: 27, disputes: 0 });
 
 const withPercentiles = (players) => {
   const sorted = [...players].sort((a, b) => a.rating - b.rating);
@@ -176,7 +176,7 @@ const CANNED = {
    type "action": the spotlit control is live and the user must actually use it;
    the step advances only when `when(state)` proves they did. Nothing is timed. */
 const TOUR_STEPS = [
-  { id: "welcome", type: "info", nav: "play", target: null, title: "Welcome to SAZP Matchmaker", body: "This tutorial covers every flow in the app, hands-on — you'll build a party, queue, play a full match, report it, request and play a scrim, then run through teams and chat. Every highlighted control is live; where a step asks you to click something, that's the only way forward. There's no skipping — it's short, and it's the whole product." },
+  { id: "welcome", type: "info", nav: "play", target: null, title: "Welcome to Sudden Queue", body: "This tutorial covers every flow in the app, hands-on — you'll build a party, queue, play a full match, report it, request and play a scrim, then run through teams and chat. Every highlighted control is live; where a step asks you to click something, that's the only way forward. There's no skipping — it's short, and it's the whole product." },
   { id: "nav", type: "info", nav: "play", target: "nav-rail", title: "The five tabs", body: "PUG is rated solo/party matchmaking. Scrims is unrated team practice. Teams manages rosters, Ladder ranks everyone, Profile is your record." },
   { id: "invite", type: "action", nav: "play", target: "invite-btn", title: "Build a party", body: "You can queue with up to 4 friends. Invite one now — in this demo a player joins instantly.", hint: "Click Invite", when: (c) => c.party.length > 1 },
   { id: "party-slots", type: "info", nav: "play", target: "party-panel", title: "Your party", body: "Five slots. The starred slot is the party captain — that's you. The ✕ on a card removes a player any time you're not queued." },
@@ -220,21 +220,21 @@ const TOUR_STEPS = [
    PRIMITIVES
    ───────────────────────────────────────────────────────────── */
 const css = `
-  @keyframes sazpPulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
-  @keyframes sazpRise { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
-  @keyframes sazpIn { from { opacity: 0; transform: scale(.98) } to { opacity: 1; transform: none } }
-  @keyframes sazpSweep { from { background-position: 0% 0 } to { background-position: 200% 0 } }
-  @keyframes sazpGlow { 0%,100% { box-shadow: 0 0 0 0 rgba(93,190,123,0.45) } 50% { box-shadow: 0 0 0 8px rgba(93,190,123,0) } }
-  @keyframes sazpSpotlight { 0%,100% { box-shadow: 0 0 0 0 rgba(47,200,191,0.55) } 50% { box-shadow: 0 0 0 10px rgba(47,200,191,0) } }
-  .sazp * { box-sizing: border-box; min-width: 0; }
-  .sazp ::-webkit-scrollbar { width: 8px; height: 8px }
-  .sazp ::-webkit-scrollbar-thumb { background: #29323D; border-radius: 4px }
-  .sazp button { font-family: inherit; cursor: pointer; }
-  .sazp button:disabled { cursor: not-allowed; opacity: .5 }
-  .sazp button:focus-visible, .sazp input:focus-visible { outline: 2px solid ${T.accent}; outline-offset: 2px }
-  .sazp input { font-family: inherit }
-  .sazp .row-hover:hover { background: ${T.raised} }
-  @media (prefers-reduced-motion: reduce) { .sazp * { animation: none !important; transition: none !important } }
+  @keyframes sqPulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+  @keyframes sqRise { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
+  @keyframes sqIn { from { opacity: 0; transform: scale(.98) } to { opacity: 1; transform: none } }
+  @keyframes sqSweep { from { background-position: 0% 0 } to { background-position: 200% 0 } }
+  @keyframes sqGlow { 0%,100% { box-shadow: 0 0 0 0 rgba(93,190,123,0.45) } 50% { box-shadow: 0 0 0 8px rgba(93,190,123,0) } }
+  @keyframes sqSpotlight { 0%,100% { box-shadow: 0 0 0 0 rgba(47,200,191,0.55) } 50% { box-shadow: 0 0 0 10px rgba(47,200,191,0) } }
+  .sq * { box-sizing: border-box; min-width: 0; }
+  .sq ::-webkit-scrollbar { width: 8px; height: 8px }
+  .sq ::-webkit-scrollbar-thumb { background: #29323D; border-radius: 4px }
+  .sq button { font-family: inherit; cursor: pointer; }
+  .sq button:disabled { cursor: not-allowed; opacity: .5 }
+  .sq button:focus-visible, .sq input:focus-visible { outline: 2px solid ${T.accent}; outline-offset: 2px }
+  .sq input { font-family: inherit }
+  .sq .row-hover:hover { background: ${T.raised} }
+  @media (prefers-reduced-motion: reduce) { .sq * { animation: none !important; transition: none !important } }
 `;
 
 const Eyebrow = ({ children, color = T.muted, style }) => (
@@ -269,7 +269,7 @@ const Tag = ({ children, color = T.muted, bg }) => (
   <span style={{ fontFamily: T.mono, fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", color, background: bg || "transparent", border: `1px solid ${bg ? "transparent" : T.line2}`, borderRadius: 3, padding: "2px 6px" }}>{children}</span>
 );
 const Dot = ({ color = T.accent, pulse }) => (
-  <span style={{ width: 7, height: 7, borderRadius: "50%", background: color, display: "inline-block", animation: pulse ? "sazpPulse 1.6s infinite" : "none" }} />
+  <span style={{ width: 7, height: 7, borderRadius: "50%", background: color, display: "inline-block", animation: pulse ? "sqPulse 1.6s infinite" : "none" }} />
 );
 const RegionPicker = ({ value, onChange, multi = true }) => (
   <div style={{ display: "flex", gap: 6 }}>
@@ -296,11 +296,11 @@ function Login({ onLogin }) {
   const [busy, setBusy] = useState(false);
   return (
     <div style={{ height: "100%", display: "grid", placeItems: "center", background: `radial-gradient(1200px 600px at 50% -10%, rgba(47,200,191,0.08), transparent 60%), ${T.bg}` }}>
-      <div style={{ width: 380, animation: "sazpIn .3s ease" }}>
+      <div style={{ width: 380, animation: "sqIn .3s ease" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 28 }}>
           <div style={{ width: 34, height: 34, borderRadius: 6, background: T.accent, display: "grid", placeItems: "center" }}><Crosshair size={20} color="#07110F" strokeWidth={2.5} /></div>
           <div>
-            <H size={18}>SAZP Matchmaker</H>
+            <H size={18}>Sudden Queue</H>
             <Eyebrow>Sudden Attack Zero Point · PUGs & scrims</Eyebrow>
           </div>
         </div>
@@ -345,7 +345,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
       <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
         {/* queue control */}
         <Panel pad={20} data-tour="queue-panel" style={{ position: "relative", overflow: "hidden", borderColor: queue.state === "queued" ? T.accent : T.line }}>
-          {queue.state === "queued" && <div style={{ position: "absolute", inset: 0, background: `linear-gradient(90deg, transparent, ${T.accentDim}, transparent)`, backgroundSize: "200% 100%", animation: "sazpSweep 2.4s linear infinite", pointerEvents: "none" }} />}
+          {queue.state === "queued" && <div style={{ position: "absolute", inset: 0, background: `linear-gradient(90deg, transparent, ${T.accentDim}, transparent)`, backgroundSize: "200% 100%", animation: "sqSweep 2.4s linear infinite", pointerEvents: "none" }} />}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", position: "relative" }}>
             <div>
               <Eyebrow style={{ marginBottom: 6 }}>PUG · 5v5 · rated</Eyebrow>
@@ -420,7 +420,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
             <Avatar p={me} size={44} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 700, fontSize: 15 }}>{me.discordName}</div>
-              <div style={{ fontFamily: T.mono, fontSize: 11.5, color: T.muted }}>{me.sazpName}</div>
+              <div style={{ fontFamily: T.mono, fontSize: 11.5, color: T.muted }}>{me.inGameName}</div>
             </div>
             <div style={{ textAlign: "right" }}>
               <Tier tier={me.tier} size={22} />
@@ -602,7 +602,7 @@ function TeamsScreen({ me, teams, setTeams, myTeam, notify, history, onViewMatch
             const p = byId(id); const role = id === myTeam.captain ? "Captain" : myTeam.officers.includes(id) ? "Officer" : "Member";
             return (
               <div key={id} className="row-hover" onClick={() => onView?.(p)} style={{ display: "grid", gridTemplateColumns: "minmax(160px, 1fr) 76px 68px 66px 64px", gap: 10, alignItems: "center", padding: "8px", borderRadius: 4, fontSize: 13, cursor: onView ? "pointer" : "default" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}><Avatar p={p} size={28} ring={role === "Captain" ? T.captain : null} /><div style={{ minWidth: 0 }}><div style={{ fontWeight: 600, whiteSpace: "nowrap" }}>{p.discordName}{id === me.id && <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span>}</div><div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{p.sazpName}</div></div></div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}><Avatar p={p} size={28} ring={role === "Captain" ? T.captain : null} /><div style={{ minWidth: 0 }}><div style={{ fontWeight: 600, whiteSpace: "nowrap" }}>{p.discordName}{id === me.id && <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span>}</div><div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{p.inGameName}</div></div></div>
                 <span style={{ color: role === "Captain" ? T.captain : role === "Officer" ? T.accent : T.muted, fontSize: 12, display: "flex", gap: 5, alignItems: "center", whiteSpace: "nowrap" }}>{role === "Captain" ? <Star size={12} fill={T.captain} /> : role === "Officer" ? <Shield size={12} /> : null}{role}</span>
                 <div style={{ display: "flex", gap: 6, alignItems: "center", whiteSpace: "nowrap" }}><Tier tier={p.tier} /><span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted }}>{p.rating}</span></div>
                 <span style={{ fontFamily: T.mono, fontSize: 12, whiteSpace: "nowrap" }}>{p.wins}–{p.losses}</span>
@@ -713,7 +713,7 @@ function LadderScreen({ me, onView }) {
         {rows.map((p, i) => (
           <div key={p.id} data-tour={i === 0 ? "ladder-row" : undefined} className="row-hover" onClick={() => onView(p)} style={{ display: "grid", gridTemplateColumns: "44px 1fr 70px 80px 90px 90px 70px", gap: 10, alignItems: "center", padding: "7px 8px", borderRadius: 4, fontSize: 13, cursor: "pointer", background: p.id === me.id ? T.accentDim : "transparent" }}>
             <span style={{ fontFamily: T.mono, color: T.muted, fontSize: 12 }}>{i + 1}</span>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}><Avatar p={p} size={26} /><div style={{ minWidth: 0, whiteSpace: "nowrap" }}><span style={{ fontWeight: 600 }}>{p.discordName}</span> <span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, marginLeft: 6 }}>{p.sazpName}</span></div></div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}><Avatar p={p} size={26} /><div style={{ minWidth: 0, whiteSpace: "nowrap" }}><span style={{ fontWeight: 600 }}>{p.discordName}</span> <span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, marginLeft: 6 }}>{p.inGameName}</span></div></div>
             <Tier tier={p.tier} size={14} />
             <span style={{ fontFamily: T.mono, textAlign: "right" }}>{p.rating}</span>
             <span style={{ fontFamily: T.mono, textAlign: "right", fontSize: 12 }}>{p.wins}–{p.losses}</span>
@@ -738,7 +738,7 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch }) {
             <Avatar p={p} size={64} />
             <div style={{ flex: 1 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}><H size={26}>{p.discordName}</H>{isMe && <Tag color={T.accent}>You</Tag>}</div>
-              <div style={{ fontFamily: T.mono, fontSize: 12, color: T.muted, marginTop: 4 }}>{p.sazpName} · Discord linked</div>
+              <div style={{ fontFamily: T.mono, fontSize: 12, color: T.muted, marginTop: 4 }}>{p.inGameName} · Discord linked</div>
             </div>
             <div style={{ textAlign: "right" }}><Tier tier={p.tier} size={40} /><Eyebrow>Top {Math.max(1, Math.round((1 - p.percentile) * 100))}%</Eyebrow></div>
           </div>
@@ -840,9 +840,9 @@ function TutorialOverlay({ step, onNext, onFinish }) {
         <div style={{ position: "fixed", left: 0, top: hole.b, width: vw, height: Math.max(0, vh - hole.b), background: dim, pointerEvents: "auto" }} />
         <div style={{ position: "fixed", left: 0, top: hole.t, width: hole.l, height: hole.b - hole.t, background: dim, pointerEvents: "auto" }} />
         <div style={{ position: "fixed", left: hole.r, top: hole.t, width: Math.max(0, vw - hole.r), height: hole.b - hole.t, background: dim, pointerEvents: "auto" }} />
-        <div style={{ position: "fixed", left: hole.l, top: hole.t, width: hole.r - hole.l, height: hole.b - hole.t, borderRadius: 10, border: `2px solid ${T.accent}`, animation: "sazpSpotlight 1.6s ease-in-out infinite", pointerEvents: "none" }} />
+        <div style={{ position: "fixed", left: hole.l, top: hole.t, width: hole.r - hole.l, height: hole.b - hole.t, borderRadius: 10, border: `2px solid ${T.accent}`, animation: "sqSpotlight 1.6s ease-in-out infinite", pointerEvents: "none" }} />
       </> : <div style={{ position: "fixed", inset: 0, background: dim, pointerEvents: "auto" }} />}
-      <div ref={cardRef} style={{ position: "fixed", left: cardPos.left, top: cardPos.top, width: 330, background: T.panel, border: `1px solid ${T.line2}`, borderRadius: 8, padding: 18, boxShadow: "0 16px 40px rgba(0,0,0,.55)", pointerEvents: "auto", animation: "sazpRise .2s ease" }}>
+      <div ref={cardRef} style={{ position: "fixed", left: cardPos.left, top: cardPos.top, width: 330, background: T.panel, border: `1px solid ${T.line2}`, borderRadius: 8, padding: 18, boxShadow: "0 16px 40px rgba(0,0,0,.55)", pointerEvents: "auto", animation: "sqRise .2s ease" }}>
         <Eyebrow color={T.accent} style={{ marginBottom: 8 }}>Tutorial · {step + 1}/{TOUR_STEPS.length}</Eyebrow>
         <div style={{ fontFamily: T.display, fontWeight: 700, fontSize: 16, marginBottom: 8, color: T.text, textTransform: "uppercase" }}>{s.title}</div>
         <div style={{ fontSize: 13, color: T.muted, lineHeight: 1.5, marginBottom: 14 }}>{s.body}</div>
@@ -880,7 +880,7 @@ function AcceptOverlay({ match, me, onAccepted, onFail, fast }) {
   const pct = left / ACCEPT_S;
   const R = 54, C = 2 * Math.PI * R;
   return (
-    <div style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 50, animation: "sazpIn .2s ease" }}>
+    <div style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 50, animation: "sqIn .2s ease" }}>
       <div style={{ width: 520, textAlign: "center" }}>
         <Eyebrow color={T.accent} style={{ marginBottom: 8 }}>{match.type} · {match.region.toUpperCase()} · 5v5</Eyebrow>
         <H size={34}>Match found</H>
@@ -921,13 +921,13 @@ function Roster({ team, captainId, me, side, label, phase, onView }) {
         {team.map((p) => {
           const cap = p.id === captainId; const isMe = p.id === me.id;
           return (
-            <div key={p.id} onClick={() => onView?.(p)} style={{ background: cap ? T.captainDim : T.raised, border: `1px solid ${cap ? T.captain : isMe ? T.accent : T.line}`, borderRadius: 6, padding: "12px 8px 10px", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, position: "relative", animation: "sazpRise .35s ease both", cursor: onView ? "pointer" : "default" }}>
+            <div key={p.id} onClick={() => onView?.(p)} style={{ background: cap ? T.captainDim : T.raised, border: `1px solid ${cap ? T.captain : isMe ? T.accent : T.line}`, borderRadius: 6, padding: "12px 8px 10px", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, position: "relative", animation: "sqRise .35s ease both", cursor: onView ? "pointer" : "default" }}>
               {cap && <div style={{ position: "absolute", top: -9, left: "50%", transform: "translateX(-50%)", background: T.captain, color: "#160E00", fontFamily: T.mono, fontSize: 9.5, letterSpacing: "0.1em", padding: "2px 7px", borderRadius: 3, fontWeight: 700 }}>CAPTAIN</div>}
               <Avatar p={p} size={40} ring={cap ? T.captain : isMe ? T.accent : null} />
-              <div style={{ fontFamily: T.mono, fontSize: 11.5, fontWeight: 600, letterSpacing: "0.02em", textAlign: "center", maxWidth: "100%", whiteSpace: "nowrap" }}>{p.sazpName}</div>
+              <div style={{ fontFamily: T.mono, fontSize: 11.5, fontWeight: 600, letterSpacing: "0.02em", textAlign: "center", maxWidth: "100%", whiteSpace: "nowrap" }}>{p.inGameName}</div>
               <div style={{ fontSize: 11, color: T.muted, textAlign: "center", maxWidth: "100%", whiteSpace: "nowrap" }}>{p.discordName}{isMe ? " (you)" : ""}</div>
               <div style={{ display: "flex", gap: 5, alignItems: "center" }}><Tier tier={p.tier} size={11} /><span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.dim }}>{p.rating}</span></div>
-              {cap && phase === "party" && isMySide && !isMe && <button onClick={(e) => { e.stopPropagation(); navigator.clipboard?.writeText(p.sazpName); }} title="Copy your captain's in-game name" style={{ marginTop: 2, background: "transparent", border: `1px solid ${T.captain}`, color: T.captain, borderRadius: 3, fontSize: 10.5, padding: "3px 8px", display: "inline-flex", gap: 4, alignItems: "center", fontFamily: T.mono }}><Copy size={10} /> copy name</button>}
+              {cap && phase === "party" && isMySide && !isMe && <button onClick={(e) => { e.stopPropagation(); navigator.clipboard?.writeText(p.inGameName); }} title="Copy your captain's in-game name" style={{ marginTop: 2, background: "transparent", border: `1px solid ${T.captain}`, color: T.captain, borderRadius: 3, fontSize: 10.5, padding: "3px 8px", display: "inline-flex", gap: 4, alignItems: "center", fontFamily: T.mono }}><Copy size={10} /> copy name</button>}
             </div>
           );
         })}
@@ -941,7 +941,7 @@ function MatchHistoryModal({ m, me, onClose, onView }) {
   const resultLabel = m.result === "win" ? "Victory" : m.result === "loss" ? "Defeat" : m.state === "in dispute" ? "In dispute" : "Match";
   const resultColor = m.result === "win" ? T.ok : m.result === "loss" ? T.danger : T.captain;
   return (
-    <div style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 70, animation: "sazpIn .2s ease" }} onClick={onClose}>
+    <div style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 70, animation: "sqIn .2s ease" }} onClick={onClose}>
       <div style={{ width: 640, maxWidth: "90vw" }} onClick={(e) => e.stopPropagation()}>
         <Panel pad={20} data-tour="match-modal">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
@@ -964,7 +964,7 @@ function TeamDetailModal({ team, teams, history, me, onClose, onViewMatch, onVie
   const roster = team.members.map(byId);
   const teamHistory = history.filter((m) => m.teamId === team.id || m.teamId2 === team.id);
   return (
-    <div style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 70, animation: "sazpIn .2s ease" }} onClick={onClose}>
+    <div style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 70, animation: "sqIn .2s ease" }} onClick={onClose}>
       <div style={{ width: 680, maxWidth: "90vw" }} onClick={(e) => e.stopPropagation()}>
         <Panel pad={20} style={{ maxHeight: "85vh", overflow: "auto" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
@@ -983,7 +983,7 @@ function TeamDetailModal({ team, teams, history, me, onClose, onViewMatch, onVie
             const role = p.id === team.captain ? "Captain" : team.officers.includes(p.id) ? "Officer" : "Member";
             return (
               <div key={p.id} className="row-hover" onClick={() => onView?.(p)} style={{ display: "grid", gridTemplateColumns: "minmax(160px, 1fr) 76px 68px 66px", gap: 10, alignItems: "center", padding: "8px", borderRadius: 4, fontSize: 13, cursor: onView ? "pointer" : "default" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}><Avatar p={p} size={28} ring={role === "Captain" ? T.captain : null} /><div style={{ minWidth: 0 }}><div style={{ fontWeight: 600, whiteSpace: "nowrap" }}>{p.discordName}{me && p.id === me.id && <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span>}</div><div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{p.sazpName}</div></div></div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}><Avatar p={p} size={28} ring={role === "Captain" ? T.captain : null} /><div style={{ minWidth: 0 }}><div style={{ fontWeight: 600, whiteSpace: "nowrap" }}>{p.discordName}{me && p.id === me.id && <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span>}</div><div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{p.inGameName}</div></div></div>
                 <span style={{ color: role === "Captain" ? T.captain : role === "Officer" ? T.accent : T.muted, fontSize: 12, display: "flex", gap: 5, alignItems: "center", whiteSpace: "nowrap" }}>{role === "Captain" ? <Star size={12} fill={T.captain} /> : role === "Officer" ? <Shield size={12} /> : null}{role}</span>
                 <div style={{ display: "flex", gap: 6, alignItems: "center", whiteSpace: "nowrap" }}><Tier tier={p.tier} /><span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted }}>{p.rating}</span></div>
                 <span style={{ fontFamily: T.mono, fontSize: 12, whiteSpace: "nowrap" }}>{p.wins}–{p.losses}</span>
@@ -1052,7 +1052,7 @@ function MatchChat({ match, me, onView }) {
       <div style={{ flex: 1, overflow: "auto", padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
         {msgs[tab].length === 0 ? <div style={{ margin: "auto", color: T.dim, fontSize: 12.5 }}>No messages yet.</div>
           : msgs[tab].map((m, i) => (
-            <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", animation: "sazpRise .2s ease" }}>
+            <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", animation: "sqRise .2s ease" }}>
               <div onClick={() => onView?.(m.from)} style={{ cursor: onView ? "pointer" : "default", flexShrink: 0 }}><Avatar p={m.from} size={22} /></div>
               <div style={{ minWidth: 0 }}><span onClick={() => onView?.(m.from)} style={{ fontSize: 12, fontWeight: 700, color: m.me ? T.accent : T.text, cursor: onView ? "pointer" : "default" }}>{m.from.discordName}</span> <span style={{ fontSize: 10.5, color: T.dim, fontFamily: T.mono }}>{new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span><div style={{ fontSize: 13, color: T.text, lineHeight: 1.4, wordBreak: "break-word" }}>{m.text}</div></div>
             </div>
@@ -1115,7 +1115,7 @@ function MatchScreen({ match, me, onFinished, notify, onView, tutorial, onPhaseC
   };
 
   const banner = {
-    party: { color: T.captain, title: "Party up", sub: iAmCaptain ? "You're the captain — your teammates add you in-game and join your party. Queue starts in" : `Add ${cap.sazpName} — your captain — in-game and join their party. Queue starts in` },
+    party: { color: T.captain, title: "Party up", sub: iAmCaptain ? "You're the captain — your teammates add you in-game and join your party. Queue starts in" : `Add ${cap.inGameName} — your captain — in-game and join their party. Queue starts in` },
     queue: { color: T.accent, title: "Queue casual now", sub: "Both captains hit Casual queue on this signal. Stay in party." },
     live: { color: T.accent, title: "Match in progress", sub: iAmCaptain ? "When it ends, report the result below." : "Your captain reports the result when the match ends." },
     reported: { color: T.muted, title: "Waiting for the other captain", sub: `You reported a ${myReport}. Awaiting the other side's report.` },
@@ -1124,7 +1124,7 @@ function MatchScreen({ match, me, onFinished, notify, onView, tutorial, onPhaseC
   }[phase];
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16, height: "100%", animation: "sazpIn .25s ease" }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16, height: "100%", animation: "sqIn .25s ease" }}>
       <Panel pad={20} data-tour="match-banner" style={{ borderColor: banner.color, position: "relative", overflow: "hidden" }}>
         <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: banner.color }} />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 20 }}>
@@ -1134,14 +1134,14 @@ function MatchScreen({ match, me, onFinished, notify, onView, tutorial, onPhaseC
             <div style={{ color: T.muted, fontSize: 13, marginTop: 6 }}>{banner.sub}{phase === "party" && <span style={{ fontFamily: T.mono, color: T.text }}> {fmt(Math.max(0, left))}</span>}</div>
           </div>
           {phase === "party" && <div style={{ fontFamily: T.mono, fontSize: 44, fontWeight: 600, color: T.captain, lineHeight: 1 }}>{fmt(Math.max(0, left))}</div>}
-          {phase === "queue" && <div style={{ fontFamily: T.display, fontWeight: 800, fontSize: 30, color: T.accent, textTransform: "uppercase", animation: "sazpPulse 1s infinite" }}>Queue</div>}
+          {phase === "queue" && <div style={{ fontFamily: T.display, fontWeight: 800, fontSize: 30, color: T.accent, textTransform: "uppercase", animation: "sqPulse 1s infinite" }}>Queue</div>}
           {phase === "live" && !iAmCaptain && <Tag>Captain reports</Tag>}
           {phase === "reported" && <Dot pulse color={T.muted} />}
           {(phase === "completed" || phase === "dispute") && <Btn kind="primary" data-tour="back-lobby" onClick={() => onFinished({ outcome, disputed: phase === "dispute" })}>Back to lobby <ChevronRight size={14} /></Btn>}
         </div>
         {phase === "live" && iAmCaptain && (
           <div data-tour="report-bar" style={{ display: "flex", gap: 12, marginTop: 20 }}>
-            <button onClick={() => report("win")} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: T.ok, color: "#07110F", border: "none", borderRadius: 6, padding: "16px 20px", fontSize: 16, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.03em", animation: "sazpGlow 1.8s ease-in-out infinite" }}><Trophy size={20} /> We won</button>
+            <button onClick={() => report("win")} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: T.ok, color: "#07110F", border: "none", borderRadius: 6, padding: "16px 20px", fontSize: 16, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.03em", animation: "sqGlow 1.8s ease-in-out infinite" }}><Trophy size={20} /> We won</button>
             <button onClick={() => report("loss")} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: T.dangerDim, color: T.danger, border: `2px solid ${T.danger}`, borderRadius: 6, padding: "16px 20px", fontSize: 16, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.03em" }}>We lost</button>
           </div>
         )}
@@ -1195,7 +1195,7 @@ function ChatDock({ me, party, open, setOpen, onView }) {
   );
   const disabled = party.length < 2;
   return (
-    <div data-tour="chat-toggle" style={{ position: "absolute", right: 16, bottom: 16, width: 300, height: 380, background: T.panel, border: `1px solid ${T.line2}`, borderRadius: 8, boxShadow: "0 16px 40px rgba(0,0,0,.5)", display: "flex", flexDirection: "column", zIndex: 55, animation: "sazpRise .2s ease", overflow: "hidden" }}>
+    <div data-tour="chat-toggle" style={{ position: "absolute", right: 16, bottom: 16, width: 300, height: 380, background: T.panel, border: `1px solid ${T.line2}`, borderRadius: 8, boxShadow: "0 16px 40px rgba(0,0,0,.5)", display: "flex", flexDirection: "column", zIndex: 55, animation: "sqRise .2s ease", overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${T.line}`, padding: "10px 12px" }}>
         <div style={{ flex: 1, fontFamily: T.mono, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: T.text }}>Party chat</div>
         <button onClick={() => setOpen(false)} style={{ background: "transparent", border: "none", color: T.muted, padding: 4 }}><X size={14} /></button>
@@ -1204,7 +1204,7 @@ function ChatDock({ me, party, open, setOpen, onView }) {
         {disabled ? <div style={{ margin: "auto", color: T.dim, fontSize: 12.5, textAlign: "center", padding: 20, lineHeight: 1.5 }}>Invite someone to your party to chat.</div>
           : msgs.length === 0 ? <div style={{ margin: "auto", color: T.dim, fontSize: 12.5 }}>No messages yet.</div>
           : msgs.map((m, i) => (
-            <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", animation: "sazpRise .2s ease" }}>
+            <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", animation: "sqRise .2s ease" }}>
               <div onClick={() => onView?.(m.from)} style={{ cursor: onView ? "pointer" : "default", flexShrink: 0 }}><Avatar p={m.from} size={22} /></div>
               <div style={{ minWidth: 0 }}><span onClick={() => onView?.(m.from)} style={{ fontSize: 12, fontWeight: 700, color: m.me ? T.accent : T.text, cursor: onView ? "pointer" : "default" }}>{m.from.discordName}</span> <span style={{ fontSize: 10.5, color: T.dim, fontFamily: T.mono }}>{new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span><div style={{ fontSize: 13, color: T.text, lineHeight: 1.4, wordBreak: "break-word" }}>{m.text}</div></div>
             </div>
@@ -1289,7 +1289,7 @@ export default function App() {
 
   const myTeam = me ? teams.find((t) => t.members.includes(me.id)) : null;
 
-  if (!me) return <div className="sazp" style={{ height: "100vh", width: "100vw", boxSizing: "border-box", fontFamily: T.body, color: T.text }}><style>{css}</style><Login onLogin={(u) => { setMe(u); setChatOpen(false); setTourStep(0); }} /></div>;
+  if (!me) return <div className="sq" style={{ height: "100vh", width: "100vw", boxSizing: "border-box", fontFamily: T.body, color: T.text }}><style>{css}</style><Login onLogin={(u) => { setMe(u); setChatOpen(false); setTourStep(0); }} /></div>;
 
   const NAV = [["play", "PUG", Crosshair], ["scrims", "Scrims", Swords], ["teams", "Teams", Users], ["ladder", "Ladder", Trophy], ["profile", "Profile", User]];
   const go = (id) => { setNav(id); setViewProfile(null); };
@@ -1309,11 +1309,11 @@ export default function App() {
   else content = <ProfileScreen p={me} me={me} history={history} onBack={() => {}} onViewMatch={setViewMatch} />;
 
   return (
-    <div className="sazp" style={{ height: "100vh", width: "100vw", boxSizing: "border-box", background: T.bg, color: T.text, fontFamily: T.body, fontSize: 13, display: "flex", flexDirection: "column", position: "relative", overflow: "hidden" }}>
+    <div className="sq" style={{ height: "100vh", width: "100vw", boxSizing: "border-box", background: T.bg, color: T.text, fontFamily: T.body, fontSize: 13, display: "flex", flexDirection: "column", position: "relative", overflow: "hidden" }}>
       <style>{css}</style>
       {/* title bar */}
       <div style={{ height: 44, display: "flex", alignItems: "center", padding: "0 14px", borderBottom: `1px solid ${T.line}`, background: T.panel, gap: 14 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginRight: 8 }}><div style={{ width: 22, height: 22, borderRadius: 4, background: T.accent, display: "grid", placeItems: "center" }}><Crosshair size={14} color="#07110F" strokeWidth={2.5} /></div><span style={{ fontFamily: T.display, fontWeight: 700, fontSize: 14, textTransform: "uppercase", letterSpacing: "0.02em" }}>SAZP Matchmaker</span></div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginRight: 8 }}><div style={{ width: 22, height: 22, borderRadius: 4, background: T.accent, display: "grid", placeItems: "center" }}><Crosshair size={14} color="#07110F" strokeWidth={2.5} /></div><span style={{ fontFamily: T.display, fontWeight: 700, fontSize: 14, textTransform: "uppercase", letterSpacing: "0.02em" }}>Sudden Queue</span></div>
         {/* population strip */}
         <div style={{ display: "flex", gap: 14, marginLeft: 6 }}>
           {[["Online", pop.online, T.ok], ["In queue", pop.inQueue + (queue.state === "queued" ? party.length : 0), T.accent], ["In match", pop.inMatch + (match ? 10 : 0), T.captain]].map(([k, v, c]) => (
@@ -1361,7 +1361,7 @@ export default function App() {
 
       {/* toasts */}
       <div style={{ position: "absolute", top: 54, right: 16, display: "flex", flexDirection: "column", gap: 6, zIndex: 60, pointerEvents: "none" }}>
-        {toasts.map((t) => <div key={t.id} style={{ background: T.raised, border: `1px solid ${T.line2}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 4, padding: "8px 12px", fontSize: 12.5, animation: "sazpRise .2s ease", boxShadow: "0 6px 20px rgba(0,0,0,.35)", display: "flex", gap: 8, alignItems: "center" }}><Bell size={12} color={T.accent} />{t.text}</div>)}
+        {toasts.map((t) => <div key={t.id} style={{ background: T.raised, border: `1px solid ${T.line2}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 4, padding: "8px 12px", fontSize: 12.5, animation: "sqRise .2s ease", boxShadow: "0 6px 20px rgba(0,0,0,.35)", display: "flex", gap: 8, alignItems: "center" }}><Bell size={12} color={T.accent} />{t.text}</div>)}
       </div>
     </div>
   );

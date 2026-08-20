@@ -1,5 +1,5 @@
 {
-  "name": "@sazp/desktop",
+  "name": "@suddenqueue/desktop",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -10,7 +10,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@sazp/core": "*",
+    "@suddenqueue/core": "*",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "lucide-react": "^1.31.0",

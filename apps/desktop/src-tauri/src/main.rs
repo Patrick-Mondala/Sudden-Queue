@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    sazp_matchmaker_app_lib::run()
+    sudden_queue_lib::run()
 }

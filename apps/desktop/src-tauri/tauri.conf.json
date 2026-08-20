@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "sazp-matchmaker-app",
+  "productName": "Sudden Queue",
   "version": "0.1.0",
-  "identifier": "com.gentl.sazp-matchmaker-app",
+  "identifier": "com.gentl.suddenqueue",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "sazp-matchmaker-app",
+        "title": "Sudden Queue",
         "width": 1320,
         "height": 940,
         "resizable": false,

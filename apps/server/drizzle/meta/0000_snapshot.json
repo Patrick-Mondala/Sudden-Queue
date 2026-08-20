@@ -1,5 +1,5 @@
 {
-  "id": "2e8d28de-06cb-41cb-807f-0a08a4763b69",
+  "id": "67f0398f-395b-42dc-b8e5-315574f1cab0",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -260,8 +260,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "sazp_name": {
-          "name": "sazp_name",
+        "in_game_name": {
+          "name": "in_game_name",
           "type": "text",
           "primaryKey": false,
           "notNull": false

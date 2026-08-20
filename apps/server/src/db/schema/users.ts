@@ -13,10 +13,10 @@ import {
 export const userRole = pgEnum("user_role", ["player", "moderator", "admin"]);
 
 /**
- * Accounts. Identity comes from Discord OAuth; `sazpName` is the in-game name
+ * Accounts. Identity comes from Discord OAuth; `inGameName` is the in-game name
  * the player types themselves.
  *
- * There is no way to verify `sazpName` against Sudden Attack, so it is display
+ * There is no way to verify `inGameName` against Sudden Attack, so it is display
  * data with a trust cost, not an identity. Moderators can override it.
  */
 export const users = pgTable(
@@ -26,7 +26,7 @@ export const users = pgTable(
     discordId: text("discord_id").notNull(),
     discordName: text("discord_name").notNull(),
     avatarUrl: text("avatar_url"),
-    sazpName: text("sazp_name"),
+    inGameName: text("in_game_name"),
     role: userRole("role").notNull().default("player"),
 
     /** Set by a moderator; blocks queueing while in the future. */
@@ -43,7 +43,7 @@ export const users = pgTable(
  * Rating state, one row per user.
  *
  * Deliberately has no tier column. Tier is a pure function of rating
- * (see @sazp/core tierForRating), so recalibrating the thresholds against real
+ * (see @suddenqueue/core tierForRating), so recalibrating the thresholds against real
  * population data is a constants change rather than a migration.
  */
 export const playerRatings = pgTable(

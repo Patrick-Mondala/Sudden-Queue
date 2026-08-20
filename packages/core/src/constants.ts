@@ -5,7 +5,7 @@
  * that cannot reserve servers or observe results.
  */
 
-/** Match composition. The earlier system was 3v3; SAZP is 5v5. */
+/** Match composition. The earlier system was 3v3; Sudden Queue targets 5v5. */
 export const TEAM_SIZE = 5;
 export const MATCH_SIZE = TEAM_SIZE * 2;
 export const MAX_PARTY_SIZE = 5;

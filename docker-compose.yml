@@ -1,23 +1,23 @@
 services:
   postgres:
     image: postgres:17-alpine
-    container_name: sazp-postgres
+    container_name: suddenqueue-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: sazp
-      POSTGRES_PASSWORD: sazp_dev
-      POSTGRES_DB: sazp
+      POSTGRES_USER: suddenqueue
+      POSTGRES_PASSWORD: suddenqueue_dev
+      POSTGRES_DB: suddenqueue
     ports:
       - "5432:5432"
     volumes:
-      - sazp-pgdata:/var/lib/postgresql/data
+      - suddenqueue-pgdata:/var/lib/postgresql/data
     healthcheck:
       # Compose waits on this before dependent services start, so migrations
       # never race an unready database.
-      test: ["CMD-SHELL", "pg_isready -U sazp -d sazp"]
+      test: ["CMD-SHELL", "pg_isready -U suddenqueue -d suddenqueue"]
       interval: 5s
       timeout: 3s
       retries: 10
 
 volumes:
-  sazp-pgdata:
+  suddenqueue-pgdata:
