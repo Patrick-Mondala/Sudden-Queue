@@ -1609,7 +1609,7 @@ export default function App() {
       if (me.live) {
         try {
           const stats = await server.queueStats();
-          setPop({ online: stats.online, inQueue: stats.inQueue, inMatch: 0 });
+          setPop({ online: stats.online, inQueue: stats.inQueue, inMatch: stats.inMatch ?? 0 });
         } catch {
           // Server unreachable; leave the last known counts rather than
           // showing zeroes that look like an empty playerbase.
@@ -1860,7 +1860,14 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginRight: 8 }}><div style={{ width: 22, height: 22, borderRadius: 4, background: T.accent, display: "grid", placeItems: "center" }}><Crosshair size={14} color="#07110F" strokeWidth={2.5} /></div><span style={{ fontFamily: T.display, fontWeight: 700, fontSize: 14, textTransform: "uppercase", letterSpacing: "0.02em" }}>Sudden Queue</span></div>
         {/* population strip */}
         <div style={{ display: "flex", gap: 14, marginLeft: 6 }}>
-          {[["Online", pop.online, T.ok], ["In queue", pop.inQueue + (queue.state === "queued" ? party.length : 0), T.accent], ["In match", pop.inMatch + (match ? 10 : 0), T.captain]].map(([k, v, c]) => (
+          {/*
+            The sample population is a made-up number that does not know about
+            you, so your own party is added on top of it. A live server counts
+            every ticket and participant there are, yours included -- adding
+            again would show you twice, and would visibly tick up a second
+            later when the poll landed.
+          */}
+          {[["Online", pop.online, T.ok], ["In queue", pop.inQueue + (!me.live && queue.state === "queued" ? party.length : 0), T.accent], ["In match", pop.inMatch + (!me.live && match ? 10 : 0), T.captain]].map(([k, v, c]) => (
             <div key={k} style={{ display: "flex", alignItems: "center", gap: 6 }}><Dot color={c} /><span style={{ fontFamily: T.mono, fontSize: 12.5, fontWeight: 600 }}>{v}</span><span style={{ fontSize: 11.5, color: T.muted }}>{k}</span></div>
           ))}
         </div>

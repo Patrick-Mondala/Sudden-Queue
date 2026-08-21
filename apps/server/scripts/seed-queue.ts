@@ -123,6 +123,23 @@ async function removeSeeded(): Promise<number> {
     WHERE NOT EXISTS (SELECT 1 FROM party_members m WHERE m.party_id = p.id)
   `);
 
+  // Deleting the bots cascades away their participant rows but leaves the match
+  // itself standing, short of players. An unfinished match nobody can finish is
+  // a zombie: it counts its survivors as "in match" indefinitely and, once its
+  // report window lapses, lands in the dispute queue for a moderator who will
+  // find nothing there. Finished matches are history and are left alone.
+  const zombies = await db.execute(sql`
+    DELETE FROM matches m
+    WHERE m.state IN ('PENDING_ACCEPT', 'PARTY_UP', 'LIVE', 'REPORTED')
+      AND (SELECT COUNT(*) FROM match_participants p WHERE p.match_id = m.id) < ${MATCH_SIZE}
+    RETURNING m.id
+  `);
+
+  const orphaned = Array.isArray(zombies) ? zombies.length : (zombies?.length ?? 0);
+  if (orphaned > 0) {
+    console.log(`Cleared ${orphaned} unfinished match(es) left without enough players.`);
+  }
+
   return rows.length;
 }
 

@@ -510,6 +510,22 @@ export class MatchLifecycle {
     };
   }
 
+  /**
+   * How many players are currently inside a match.
+   *
+   * Anything before COMPLETED counts: a player sitting on an accept prompt is
+   * as unavailable as one who is mid-game.
+   */
+  async countPlayersInMatches(): Promise<number> {
+    const [row] = await this.db
+      .select({ total: sql<number>`COUNT(*)::int` })
+      .from(matchParticipants)
+      .innerJoin(matches, eq(matches.id, matchParticipants.matchId))
+      .where(inArray(matches.state, ["PENDING_ACCEPT", "PARTY_UP", "LIVE", "REPORTED"]));
+
+    return row?.total ?? 0;
+  }
+
   /** Rating snapshot for a set of users, defaulting anyone unseen. */
   async ratingsFor(userIds: string[]): Promise<Map<string, number>> {
     if (userIds.length === 0) return new Map();

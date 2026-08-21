@@ -591,6 +591,7 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
   server.get("/queue/stats", async () => ({
     online: notifier.onlineCount(),
     inQueue: await queue.countQueuedPlayers(),
+    inMatch: await lifecycle.countPlayersInMatches(),
   }));
 
   // -------------------------------------------------------------------- match
