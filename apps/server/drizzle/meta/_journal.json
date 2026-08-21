@@ -15,6 +15,13 @@
       "when": 1787281887162,
       "tag": "0001_brown_toad",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787283599787,
+      "tag": "0002_skinny_titanium_man",
+      "breakpoints": true
     }
   ]
 }

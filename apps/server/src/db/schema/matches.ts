@@ -104,7 +104,6 @@ export const matchParticipants = pgTable(
     ratingBefore: integer("rating_before"),
     ratingDelta: integer("rating_delta"),
 
-    abandoned: boolean("abandoned").notNull().default(false),
   },
   (t) => [
     uniqueIndex("match_participants_pk").on(t.matchId, t.userId),

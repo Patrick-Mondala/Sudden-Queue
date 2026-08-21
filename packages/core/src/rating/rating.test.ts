@@ -184,25 +184,6 @@ describe("applying a result", () => {
     expect(result.ratingAfter).toBe(1200 + result.ratingDelta);
   });
 
-  it("subtracts an abandon penalty on top of the loss", () => {
-    const clean = applyMatchResult({
-      playerRating: 1400,
-      gamesPlayed: 30,
-      opponentTeamRating: 1400,
-      won: false,
-    });
-    const abandoned = applyMatchResult({
-      playerRating: 1400,
-      gamesPlayed: 30,
-      opponentTeamRating: 1400,
-      won: false,
-      abandoned: true,
-      abandonPenalty: 75,
-    });
-
-    expect(abandoned.ratingDelta).toBe(clean.ratingDelta - 75);
-  });
-
   it("never drops below the ladder floor, and reconciles the delta when clamped", () => {
     const result = applyMatchResult({
       playerRating: RATING_FLOOR,

@@ -93,23 +93,11 @@ export function applyMatchResult(params: {
   gamesPlayed: number;
   opponentTeamRating: number;
   won: boolean;
-  abandoned?: boolean;
-  abandonPenalty?: number;
 }): AppliedRating {
-  const {
-    playerRating,
-    gamesPlayed,
-    opponentTeamRating,
-    won,
-    abandoned = false,
-    abandonPenalty = 0,
-  } = params;
+  const { playerRating, gamesPlayed, opponentTeamRating, won } = params;
 
   const k = kFactorForGamesPlayed(gamesPlayed);
-  let delta = ratingDelta(playerRating, opponentTeamRating, won ? 1 : 0, k);
-
-  if (abandoned) delta -= abandonPenalty;
-
+  const delta = ratingDelta(playerRating, opponentTeamRating, won ? 1 : 0, k);
   const after = Math.max(RATING_FLOOR, playerRating + delta);
 
   return {

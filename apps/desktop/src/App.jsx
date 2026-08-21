@@ -560,7 +560,7 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch }) {
         <Panel>
           <Eyebrow style={{ marginBottom: 8 }}>Reliability</Eyebrow>
           <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>
-            Disputes, missed accepts and abandons aren't published yet.
+            Disputes and missed accepts aren't published yet.
           </div>
         </Panel>
         {!isMe && <Btn onClick={onBack} style={{ justifyContent: "center" }}>← Back to ladder</Btn>}

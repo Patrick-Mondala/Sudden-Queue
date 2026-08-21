@@ -1,5 +1,4 @@
 import {
-  ABANDON_RATING_PENALTY,
   DEFAULT_RATING,
   REPORT_WINDOW_SECONDS,
   type Result,
@@ -203,7 +202,6 @@ export class MatchReporting {
       .select({
         userId: matchParticipants.userId,
         team: matchParticipants.team,
-        abandoned: matchParticipants.abandoned,
         rating: playerRatings.rating,
         gamesPlayed: playerRatings.gamesPlayed,
         peakRating: playerRatings.peakRating,
@@ -233,8 +231,6 @@ export class MatchReporting {
               gamesPlayed,
               opponentTeamRating: opponentRating,
               won,
-              abandoned: p.abandoned,
-              abandonPenalty: ABANDON_RATING_PENALTY,
             });
 
       // Recording both halves is what makes a moderator's reversal exact

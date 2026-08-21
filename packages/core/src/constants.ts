@@ -34,8 +34,6 @@ export const K_PLACEMENT = 24;
 export const K_CALIBRATION = 40;
 export const K_STEADY = 24;
 
-/** Flat extra deduction on top of the Elo loss for abandoning a match. */
-export const ABANDON_RATING_PENALTY = 75;
 
 /**
  * Matchmaking search window. Starts narrow around the party's rating and widens

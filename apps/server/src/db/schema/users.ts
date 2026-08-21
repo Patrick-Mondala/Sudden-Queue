@@ -65,7 +65,6 @@ export const playerRatings = pgTable(
 
     /** Reliability counters, surfaced on the public profile. */
     missedAccepts: integer("missed_accepts").notNull().default(0),
-    abandons: integer("abandons").notNull().default(0),
     disputesInvolved: integer("disputes_involved").notNull().default(0),
 
     /** Set while serving a missed-accept cooldown. */
