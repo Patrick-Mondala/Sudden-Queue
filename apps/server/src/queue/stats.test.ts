@@ -1,6 +1,8 @@
 import { isOk } from "@suddenqueue/core";
+import { eq } from "drizzle-orm";
 import { describe, expect, it, beforeAll, afterAll, beforeEach } from "vitest";
 
+import { users } from "../db/schema/index.js";
 import { MatchLifecycle } from "../match/lifecycle.js";
 import { makeParty, setupTestDatabase, truncateAll } from "../test/helpers.js";
 import { QueueRepository } from "./repository.js";
@@ -132,5 +134,46 @@ describe("what a client is allowed to see", () => {
 
     expect(unplaced!.tier).toBeNull();
     expect(unplaced!.placementsRemaining).toBe(3);
+  });
+});
+
+describe("a match missing players", () => {
+  it("is not offered as something the client can draw", async () => {
+    // Deleting a user cascades their participant rows away. A match left with
+    // half a roster used to sit in history as a row that could not be opened,
+    // so the view has to be honest about what it can still produce.
+    const parties = [];
+    for (let i = 0; i < 10; i += 1) {
+      const p = await makeParty(handle, 1, { gamesPlayed: 40 });
+      await queue.join({ partyId: p.partyId, regions: ["na"], ratingSnapshot: 1200, size: 1 });
+      parties.push(p);
+    }
+
+    const created = await lifecycle.createFromDecision(
+      {
+        anchorPartyId: parties[0]!.partyId,
+        team1PartyIds: parties.slice(0, 5).map((p) => p.partyId),
+        team2PartyIds: parties.slice(5).map((p) => p.partyId),
+        team1Rating: 1200,
+        team2Rating: 1200,
+        gap: 0,
+        allowedGap: 100,
+        symmetryScore: 0,
+      },
+      "na",
+    );
+    if (!isOk(created)) throw new Error("staging failed");
+
+    const full = await lifecycle.view(created.data.matchId);
+    expect(full!.team2).toHaveLength(5);
+
+    // Remove one side the way deleting an account does.
+    for (const p of parties.slice(5)) {
+      await handle.db.delete(users).where(eq(users.id, p.userIds[0]!));
+    }
+
+    const gutted = await lifecycle.view(created.data.matchId);
+    expect(gutted!.team1).toHaveLength(5);
+    expect(gutted!.team2).toHaveLength(0);
   });
 });

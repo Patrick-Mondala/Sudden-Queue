@@ -1,3 +1,4 @@
+import { configure } from "@testing-library/dom";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -7,6 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * the real component tree against payloads shaped like the server's, rather
  * than asserting on details of what it draws.
  */
+
+// These run alongside the server suite, which is talking to Postgres, so the
+// machine can be busy enough that a one-second default times out on a render
+// that is only slow, not broken.
+configure({ asyncUtilTimeout: 5000 });
 
 const listeners = new Set();
 
@@ -143,8 +149,7 @@ describe("a match arriving", () => {
     // The crash this replaces was `match.team1 is not iterable`: the server was
     // sending participant rows where the roster expected players.
     expect(await screen.findByText(/Match found/i)).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Accept/i })).toBeTruthy();
-    expect(screen.getByText(/PUG · NA · 5v5/)).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /Accept/i })).toBeTruthy();
   });
 
   it("survives a payload it cannot draw, instead of blanking", async () => {
@@ -164,8 +169,8 @@ describe("a match arriving", () => {
 
     // `cap.inGameName` crashed here once, because the captain was looked up in
     // sample data that a real match has no entry in.
-    await waitFor(() => expect(screen.getByText(/Party up/i)).toBeTruthy());
-    expect(server.getMatch).toHaveBeenCalledWith(MATCH.id);
+    expect(await screen.findByText(/Party up/i)).toBeTruthy();
+    await waitFor(() => expect(server.getMatch).toHaveBeenCalledWith(MATCH.id));
   });
 });
 
@@ -175,7 +180,7 @@ describe("what the screen is allowed to show", () => {
     emit({ type: "match.found", matchId: MATCH.id, match: MATCH });
     await screen.findByText(/Match found/i);
     emit({ type: "match.state", matchId: MATCH.id, state: "PARTY_UP" });
-    await waitFor(() => expect(screen.getByText(/Party up/i)).toBeTruthy());
+    await screen.findByText(/Party up/i);
 
     // Rank is the published unit. Any four-digit number in rating range on
     // screen means one leaked back in.

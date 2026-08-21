@@ -111,7 +111,77 @@ async function serverIsUp(): Promise<boolean> {
   }
 }
 
+/**
+ * Removes the seeded accounts and everything they touched.
+ *
+ * The order matters. Deleting a user cascades their participant rows away, so
+ * doing that first guts the roster of every match they played and leaves a stub
+ * behind: a row in your history that cannot be opened, because five of the ten
+ * players no longer exist. Matches are dealt with while the evidence is still
+ * there.
+ *
+ * Rating is put back too. A match against bots should not leave your real ladder
+ * position moved with no record explaining it, and the ledger makes that exact
+ * rather than a recomputation -- rating_before and rating_delta were written per
+ * participant for precisely this kind of unwind.
+ */
 async function removeSeeded(): Promise<number> {
+  // Two kinds of match go: one a bot played in, and one already missing players
+  // -- the second being the wreckage of an earlier cleanup that deleted the
+  // users first. Both statements below recompute this set rather than passing a
+  // list of ids between them; nothing else is writing inside the transaction, so
+  // the two see the same rows.
+  const doomedMatches = sql`
+    SELECT m.id
+    FROM matches m
+    WHERE EXISTS (
+            SELECT 1
+            FROM match_participants p
+            JOIN users u ON u.id = p.user_id
+            WHERE p.match_id = m.id AND u.discord_id LIKE ${SEED_PREFIX + "%"}
+          )
+       OR (SELECT COUNT(*) FROM match_participants p WHERE p.match_id = m.id) < ${MATCH_SIZE}
+  `;
+
+  const repaired = await db.transaction(async (tx) => {
+    // Undo the rating each player took from these matches, before the delete
+    // takes the evidence with it. Peak is left alone: it is a high-water mark
+    // over a whole history, and this cannot know what it was before.
+    await tx.execute(sql`
+      UPDATE player_ratings pr
+      SET rating = pr.rating - agg.delta,
+          games_played = GREATEST(pr.games_played - agg.games, 0),
+          wins = GREATEST(pr.wins - agg.wins, 0),
+          losses = GREATEST(pr.losses - agg.losses, 0),
+          updated_at = now()
+      FROM (
+        SELECT p.user_id,
+               COALESCE(SUM(p.rating_delta), 0) AS delta,
+               COUNT(*) AS games,
+               COUNT(*) FILTER (
+                 WHERE (p.team = 1 AND m.result = 'TEAM1')
+                    OR (p.team = 2 AND m.result = 'TEAM2')
+               ) AS wins,
+               COUNT(*) FILTER (
+                 WHERE m.result IS NOT NULL
+                   AND NOT ((p.team = 1 AND m.result = 'TEAM1')
+                         OR (p.team = 2 AND m.result = 'TEAM2'))
+               ) AS losses
+        FROM match_participants p
+        JOIN matches m ON m.id = p.match_id
+        WHERE p.match_id IN (${doomedMatches}) AND p.rating_delta IS NOT NULL
+        GROUP BY p.user_id
+      ) AS agg
+      WHERE pr.user_id = agg.user_id
+    `);
+
+    const gone = await tx.execute(sql`
+      DELETE FROM matches WHERE id IN (${doomedMatches}) RETURNING id
+    `);
+
+    return [...gone].length;
+  });
+
   const rows = await db
     .delete(users)
     .where(like(users.discordId, `${SEED_PREFIX}%`))
@@ -123,21 +193,8 @@ async function removeSeeded(): Promise<number> {
     WHERE NOT EXISTS (SELECT 1 FROM party_members m WHERE m.party_id = p.id)
   `);
 
-  // Deleting the bots cascades away their participant rows but leaves the match
-  // itself standing, short of players. An unfinished match nobody can finish is
-  // a zombie: it counts its survivors as "in match" indefinitely and, once its
-  // report window lapses, lands in the dispute queue for a moderator who will
-  // find nothing there. Finished matches are history and are left alone.
-  const zombies = await db.execute(sql`
-    DELETE FROM matches m
-    WHERE m.state IN ('PENDING_ACCEPT', 'PARTY_UP', 'LIVE', 'REPORTED')
-      AND (SELECT COUNT(*) FROM match_participants p WHERE p.match_id = m.id) < ${MATCH_SIZE}
-    RETURNING m.id
-  `);
-
-  const orphaned = Array.isArray(zombies) ? zombies.length : (zombies?.length ?? 0);
-  if (orphaned > 0) {
-    console.log(`Cleared ${orphaned} unfinished match(es) left without enough players.`);
+  if (repaired > 0) {
+    console.log(`Removed ${repaired} test match(es) and put back the rating they moved.`);
   }
 
   return rows.length;
