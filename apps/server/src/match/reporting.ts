@@ -5,7 +5,10 @@ import {
   type Result,
   applyMatchResult,
   fail,
+  isPlaced,
   ok,
+  placementGamesRemaining,
+  tierForRating,
 } from "@suddenqueue/core";
 import { and, eq, inArray, sql } from "drizzle-orm";
 
@@ -25,7 +28,24 @@ export interface ReportOutcome {
   state: "REPORTED" | "COMPLETED" | "DISPUTED";
   winner: Winner | null;
   /** Present only once a result is agreed and rating has been applied. */
-  ratingChanges?: { userId: string; before: number; delta: number; after: number }[];
+  ratingChanges?: RatingChange[];
+}
+
+/**
+ * What a resolved match did to one player.
+ *
+ * Points are carried for the ledger and for reversal arithmetic; the tiers are
+ * what a player is ever shown, since rank is the public unit and the number
+ * behind it is not published.
+ */
+export interface RatingChange {
+  userId: string;
+  before: number;
+  delta: number;
+  after: number;
+  tierBefore: string | null;
+  tierAfter: string | null;
+  placementsRemaining: number;
 }
 
 type ReportError =
@@ -178,7 +198,7 @@ export class MatchReporting {
     winner: Winner,
     type: "PUG" | "SCRIM",
     snapshots: { team1Rating: number; team2Rating: number },
-  ): Promise<{ userId: string; before: number; delta: number; after: number }[]> {
+  ): Promise<RatingChange[]> {
     const participants = await tx
       .select({
         userId: matchParticipants.userId,
@@ -194,7 +214,7 @@ export class MatchReporting {
       .leftJoin(playerRatings, eq(playerRatings.userId, matchParticipants.userId))
       .where(eq(matchParticipants.matchId, matchId));
 
-    const changes: { userId: string; before: number; delta: number; after: number }[] = [];
+    const changes: RatingChange[] = [];
 
     for (const p of participants) {
       const won = (p.team === 1 && winner === "TEAM1") || (p.team === 2 && winner === "TEAM2");
@@ -245,11 +265,19 @@ export class MatchReporting {
         })
         .where(eq(playerRatings.userId, p.userId));
 
+      // This match is the one that just counted, so the "after" side is judged
+      // on the incremented total: the fifth game is what ends placements and
+      // reveals a rank for the first time.
+      const gamesAfter = gamesPlayed + 1;
+
       changes.push({
         userId: p.userId,
         before: applied.ratingBefore,
         delta: applied.ratingDelta,
         after: applied.ratingAfter,
+        tierBefore: isPlaced(gamesPlayed) ? tierForRating(applied.ratingBefore) : null,
+        tierAfter: isPlaced(gamesAfter) ? tierForRating(applied.ratingAfter) : null,
+        placementsRemaining: placementGamesRemaining(gamesAfter),
       });
     }
 
@@ -380,7 +408,8 @@ export class MatchReporting {
         state: matches.state,
         result: matches.result,
         team: matchParticipants.team,
-        ratingDelta: matchParticipants.ratingDelta,
+        // No delta: a history of point swings reconstructs the rating the rank
+        // is meant to stand in for.
         resolvedAt: matches.resolvedAt,
         createdAt: matches.createdAt,
       })

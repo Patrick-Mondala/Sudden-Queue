@@ -34,6 +34,8 @@ const TIERS = ["F-","F","F+","D-","D","D+","C-","C","C+","B-","B","B+","A-","A",
  * legitimately has — rank stays hidden until placements are done, and a crash
  * here takes the whole app down with it.
  */
+/** Ladder order, lowest first. Mirrors TIERS in @suddenqueue/core. */
+const TIER_ORDER = ["F-","F","F+","D-","D","D+","C-","C","C+","B-","B","B+","A-","A","A+","G-","G","G+","S-","S","S+"];
 const tierColor = (t) => {
   if (!t) return "#4E5966";
   if (t.startsWith("S")) return "#F2A93B";
@@ -89,10 +91,34 @@ function adaptMatch(m) {
     state: m.state,
     captain1: m.captain1,
     captain2: m.captain2,
+    team1Tier: m.team1Tier,
+    team2Tier: m.team2Tier,
     team1: m.team1.map(player),
     team2: m.team2.map(player),
     acceptDeadline: m.acceptDeadline,
     partyUpDeadline: m.partyUpDeadline,
+  };
+}
+
+/**
+ * Server profile -> the player shape the screens render.
+ *
+ * No rating field: rank is the only strength the UI shows, so carrying the
+ * number would just be inviting something to display it again.
+ */
+function profileToPlayer(profile) {
+  return {
+    id: profile.userId,
+    discordName: profile.discordName,
+    inGameName: profile.inGameName ?? profile.discordName,
+    avatarColor: AV_COLORS[Math.abs(hashString(profile.userId)) % AV_COLORS.length],
+    tier: profile.tier,
+    placementsRemaining: profile.placementsRemaining,
+    gamesPlayed: profile.gamesPlayed,
+    wins: profile.wins,
+    losses: profile.losses,
+    disputes: 0,
+    live: true,
   };
 }
 
@@ -241,10 +267,10 @@ const TOUR_STEPS = [
   { id: "partyup", type: "info", nav: null, target: "match-rosters", title: "Party up", body: "Both rosters, captains marked in gold. You're the captain here, so your teammates add YOU in-game and join YOUR party. When you're not the captain, you add your own team's captain instead — there's a copy-name button on their card. The timer is 2 minutes live.", advance: "skip-party" },
   { id: "queue-casual", type: "info", nav: null, target: "match-banner", title: "Queue Casual together", body: "On this signal, both captains hit Casual queue in-game at the same moment. Empty queues mean the two parties land in the same lobby.", advance: "go-live" },
   { id: "report", type: "action", nav: null, target: "report-bar", title: "Report the result", body: "The match is live. When it ends, each captain reports the result — honestly. This is what moves ratings. Report either result now.", hint: "Report a result", when: (c) => ["reported", "completed", "dispute"].includes(c.matchPhase) },
-  { id: "reported", type: "info", nav: null, target: "match-banner", title: "Waiting on the other captain", body: "Your report is in. If the other captain's report agrees, ratings update and the match closes. If they disagree, the match goes to dispute and a mod settles it with both teams.", advance: "confirm-report" },
-  { id: "completed", type: "info", nav: null, target: "match-banner", title: "Match closed", body: "Both reports agree — rating updated." },
+  { id: "reported", type: "info", nav: null, target: "match-banner", title: "Waiting on the other captain", body: "Your report is in. If the other captain's report agrees, ranks update and the match closes. If they disagree, the match goes to dispute and a mod settles it with both teams.", advance: "confirm-report" },
+  { id: "completed", type: "info", nav: null, target: "match-banner", title: "Match closed", body: "Both reports agree — your rank is updated. Ranks are the only strength shown anywhere; the number behind them is never published." },
   { id: "lobby", type: "action", nav: null, target: "back-lobby", title: "Back to the lobby", body: "The result is locked in.", hint: "Click Back to lobby", when: (c) => !c.match },
-  { id: "history-row", type: "action", nav: "play", target: "history-row", title: "Match history", body: "There's the match you just played, rating change and all. Every match is clickable.", hint: "Click the match", when: (c) => !!c.viewMatch },
+  { id: "history-row", type: "action", nav: "play", target: "history-row", title: "Match history", body: "There's the match you just played. Every match is clickable.", hint: "Click the match", when: (c) => !!c.viewMatch },
   { id: "match-modal", type: "info", nav: "play", target: "match-modal", title: "Full match detail", body: "Both rosters exactly as they were. From here you can click any player to open their profile. Disputed matches stay marked until a mod resolves them." , advance: "close-modal" },
   { id: "ladder-row", type: "action", nav: "ladder", target: "ladder-row", title: "The ladder", body: "Every active player, ranked. The letter tiers are percentile buckets — F- to S+ — so every tier stays populated whatever the playerbase size. Open the top player.", hint: "Click the top player", when: (c) => !!c.viewProfile },
   { id: "profile", type: "info", nav: null, target: "profile-card", title: "Player profiles", body: "Rating, record, streak — plus reliability: disputes, missed accepts, abandons. Only matchmaker data is public, never in-game stats.", advance: "close-profile" },
@@ -316,10 +342,26 @@ const Avatar = ({ p, size = 32, ring }) => (
     {(p?.discordName || "?")[0].toUpperCase()}
   </div>
 );
-/** Renders a tier, or a dash while the player is still in placements. */
+/**
+ * Renders a rank.
+ *
+ * Rank is the only strength a player is ever shown -- the rating behind it is
+ * deliberately not published -- so an unranked player needs to read as
+ * "no rank yet", not as a missing value.
+ */
 const Tier = ({ tier, size = 12 }) => (
   <span style={{ fontFamily: T.display, fontWeight: 800, fontSize: size, color: tierColor(tier), letterSpacing: "0.02em", minWidth: size * 1.6, display: "inline-block", textAlign: "center" }}>{tier ?? "—"}</span>
 );
+/** Rank, or how many placement games are left before there is one. */
+const Rank = ({ tier, placementsRemaining, size = 12 }) => {
+  if (tier) return <Tier tier={tier} size={size} />;
+  const left = placementsRemaining;
+  return (
+    <span style={{ fontFamily: T.mono, fontSize: size * 0.85, color: T.dim, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>
+      {typeof left === "number" && left > 0 ? `${left} to rank` : "unranked"}
+    </span>
+  );
+};
 const Tag = ({ children, color = T.muted, bg }) => (
   <span style={{ fontFamily: T.mono, fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", color, background: bg || "transparent", border: `1px solid ${bg ? "transparent" : T.line2}`, borderRadius: 3, padding: "2px 6px" }}>{children}</span>
 );
@@ -571,7 +613,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
                   {p ? <>
                     <Avatar p={p} size={34} ring={i === 0 ? T.captain : null} />
                     <div style={{ fontSize: 12, fontWeight: 600, maxWidth: "100%", textAlign: "center", whiteSpace: "nowrap" }}>{p.discordName}</div>
-                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}><Tier tier={p.tier} size={11} /><span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted }}>{p.rating}</span></div>
+                    <Rank tier={p.tier} placementsRemaining={p.placementsRemaining} size={11} />
                     {i > 0 && queue.state !== "queued" && <button onClick={(e) => { e.stopPropagation(); kick(p.id); }} title="Remove" style={{ position: "absolute", top: 4, right: 4, background: "transparent", border: "none", color: T.dim, padding: 2 }}><X size={12} /></button>}
                     {i === 0 && <span style={{ position: "absolute", top: 4, left: 6 }}><Star size={11} color={T.captain} fill={T.captain} /></span>}
                   </> : <div style={{ color: T.dim, fontSize: 12, margin: "auto" }}>Open slot</div>}
@@ -591,7 +633,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
                 <span style={{ fontFamily: T.mono, fontSize: 11.5, color: T.muted }}>{m.region.toUpperCase()}</span>
                 <span style={{ color: T.muted }}>{ago(m.ts)}</span>
                 <span style={{ fontFamily: T.mono, fontSize: 11.5, color: m.state === "in dispute" ? T.captain : m.state === "in progress" ? T.accent : T.muted }}>{m.state}</span>
-                <span style={{ fontFamily: T.mono, fontWeight: 600, textAlign: "right", color: m.result === "win" ? T.ok : m.result === "loss" ? T.danger : T.muted }}>{m.result === "win" ? "W" : m.result === "loss" ? "L" : "—"} {m.delta ? (m.delta > 0 ? `+${m.delta}` : m.delta) : ""}</span>
+                <span style={{ fontFamily: T.mono, fontWeight: 600, textAlign: "right", color: m.result === "win" ? T.ok : m.result === "loss" ? T.danger : T.muted }}>{m.result === "win" ? "W" : m.result === "loss" ? "L" : "—"}</span>
               </div>
             ))}
           </div>
@@ -609,7 +651,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
             </div>
             <div style={{ textAlign: "right" }}>
               <Tier tier={me.tier} size={22} />
-              <div style={{ fontFamily: T.mono, fontSize: 11, color: T.muted }}>{me.rating}</div>
+              <div style={{ fontFamily: T.mono, fontSize: 11, color: T.muted }}>{me.tier ? `Rank ${me.tier}` : me.placementsRemaining > 0 ? `${me.placementsRemaining} placement${me.placementsRemaining === 1 ? "" : "s"} left` : "Unranked"}</div>
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 14 }}>
@@ -789,7 +831,7 @@ function TeamsScreen({ me, teams, setTeams, myTeam, notify, history, onViewMatch
               <div key={id} className="row-hover" onClick={() => onView?.(p)} style={{ display: "grid", gridTemplateColumns: "minmax(160px, 1fr) 76px 68px 66px 64px", gap: 10, alignItems: "center", padding: "8px", borderRadius: 4, fontSize: 13, cursor: onView ? "pointer" : "default" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}><Avatar p={p} size={28} ring={role === "Captain" ? T.captain : null} /><div style={{ minWidth: 0 }}><div style={{ fontWeight: 600, whiteSpace: "nowrap" }}>{p.discordName}{id === me.id && <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span>}</div><div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{p.inGameName}</div></div></div>
                 <span style={{ color: role === "Captain" ? T.captain : role === "Officer" ? T.accent : T.muted, fontSize: 12, display: "flex", gap: 5, alignItems: "center", whiteSpace: "nowrap" }}>{role === "Captain" ? <Star size={12} fill={T.captain} /> : role === "Officer" ? <Shield size={12} /> : null}{role}</span>
-                <div style={{ display: "flex", gap: 6, alignItems: "center", whiteSpace: "nowrap" }}><Tier tier={p.tier} /><span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted }}>{p.rating}</span></div>
+                <Rank tier={p.tier} placementsRemaining={p.placementsRemaining} />
                 <span style={{ fontFamily: T.mono, fontSize: 12, whiteSpace: "nowrap" }}>{p.wins}–{p.losses}</span>
                 <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
                   {isCap && id !== me.id && <button title={myTeam.officers.includes(id) ? "Demote" : "Make officer"} onClick={(e) => { e.stopPropagation(); toggleOfficer(id); }} style={{ width: 26, height: 26, display: "grid", placeItems: "center", background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, color: T.muted, flexShrink: 0 }}><Shield size={13} /></button>}
@@ -804,7 +846,7 @@ function TeamsScreen({ me, teams, setTeams, myTeam, notify, history, onViewMatch
             : myTeam.applications.length === 0 ? <div style={{ fontSize: 12.5, color: T.dim, padding: "20px 0", textAlign: "center" }}>{myTeam.applicationsOpen ? "No pending applications." : "Applications are closed."}</div>
             : myTeam.applications.map((a) => { const p = byId(a.playerId); return (
               <div key={a.playerId} style={{ background: T.raised, borderRadius: 5, padding: 10, marginBottom: 8 }}>
-                <div onClick={() => onView?.(p)} style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, cursor: onView ? "pointer" : "default" }}><Avatar p={p} size={30} /><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>{p.discordName}</div><div style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11, whiteSpace: "nowrap" }}><Tier tier={p.tier} size={11} /><span style={{ fontFamily: T.mono, color: T.muted }}>{p.rating} · {p.wins}–{p.losses}</span></div></div></div>
+                <div onClick={() => onView?.(p)} style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, cursor: onView ? "pointer" : "default" }}><Avatar p={p} size={30} /><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>{p.discordName}</div><div style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11, whiteSpace: "nowrap" }}><Tier tier={p.tier} size={11} /><span style={{ fontFamily: T.mono, color: T.muted }}>{p.wins}–{p.losses}</span></div></div></div>
                 {a.note && <div style={{ fontSize: 12, color: T.muted, marginTop: 8, fontStyle: "italic" }}>“{a.note}”</div>}
                 <div style={{ display: "flex", gap: 6, marginTop: 10 }}><Btn size="sm" kind="primary" style={{ flex: 1, justifyContent: "center" }} onClick={() => decide(a.playerId, true)}><Check size={13} /> Accept</Btn><Btn size="sm" style={{ flex: 1, justifyContent: "center" }} onClick={() => decide(a.playerId, false)}><X size={13} /> Deny</Btn></div>
               </div>); })}
@@ -930,7 +972,7 @@ function LadderScreen({ me, onView }) {
             <span style={{ fontFamily: T.mono, color: T.muted, fontSize: 12 }}>{i + 1}</span>
             <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}><Avatar p={p} size={26} /><div style={{ minWidth: 0, whiteSpace: "nowrap" }}><span style={{ fontWeight: 600 }}>{p.discordName}</span> <span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, marginLeft: 6 }}>{p.inGameName}</span></div></div>
             <Tier tier={p.tier} size={14} />
-            <span style={{ fontFamily: T.mono, textAlign: "right" }}>{p.rating}</span>
+            <span style={{ fontFamily: T.mono, textAlign: "right", color: T.muted }}>{p.wins}–{p.losses}</span>
             <span style={{ fontFamily: T.mono, textAlign: "right", fontSize: 12 }}>{p.wins}–{p.losses}</span>
             <span style={{ fontFamily: T.mono, textAlign: "right", fontSize: 12 }}>{winRate(p.wins, p.losses)}</span>
             <span style={{ fontFamily: T.mono, textAlign: "right", fontSize: 12, color: p.disputes ? T.captain : T.dim }}>{p.disputes}</span>
@@ -966,8 +1008,8 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch }) {
             </div>
             <div style={{ textAlign: "right" }}><Tier tier={p.tier} size={40} />{knowsPercentile && <Eyebrow>Top {Math.max(1, Math.round((1 - p.percentile) * 100))}%</Eyebrow>}</div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginTop: 20 }}>
-            {[["Rating", p.rating], ["Matches", live ? (p.gamesPlayed ?? total) : total], ["Record", `${p.wins ?? 0}–${p.losses ?? 0}`], ["Win rate", winRate(p.wins ?? 0, p.losses ?? 0)], live ? ["Peak", p.peakRating ?? "—"] : ["Streak", `W${streak}`]].map(([k, v]) => (
+          <div style={{ display: "grid", gridTemplateColumns: live ? "repeat(4, 1fr)" : "repeat(5, 1fr)", gap: 8, marginTop: 20 }}>
+            {[["Rank", p.tier ?? "—"], ["Matches", live ? (p.gamesPlayed ?? total) : total], ["Record", `${p.wins ?? 0}–${p.losses ?? 0}`], ["Win rate", winRate(p.wins ?? 0, p.losses ?? 0)], ...(live ? [] : [["Streak", `W${streak}`]])].map(([k, v]) => (
               <div key={k} style={{ background: T.raised, borderRadius: 4, padding: "10px 12px" }}><Eyebrow style={{ fontSize: 9.5 }}>{k}</Eyebrow><div style={{ fontFamily: T.mono, fontSize: 18, fontWeight: 600, marginTop: 4 }}>{v}</div></div>
             ))}
           </div>
@@ -984,7 +1026,7 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch }) {
               <div key={m.id} className="row-hover" onClick={() => m.team1 && onViewMatch(m)} style={{ display: "grid", gridTemplateColumns: "60px 60px 1fr 100px 60px", alignItems: "center", gap: 10, padding: "8px", borderRadius: 4, fontSize: 13, cursor: m.team1 ? "pointer" : "default" }}>
                 <Tag>{m.type}</Tag><span style={{ fontFamily: T.mono, fontSize: 11.5, color: T.muted }}>{m.region.toUpperCase()}</span><span style={{ color: T.muted }}>{ago(m.ts)}</span>
                 <span style={{ fontFamily: T.mono, fontSize: 11.5, color: m.state === "in dispute" ? T.captain : m.state === "in progress" ? T.accent : T.muted }}>{m.state}</span>
-                <span style={{ fontFamily: T.mono, fontWeight: 600, textAlign: "right", color: m.result === "win" ? T.ok : m.result === "loss" ? T.danger : T.muted }}>{m.result === "win" ? "W" : m.result === "loss" ? "L" : "—"} {m.delta ? (m.delta > 0 ? `+${m.delta}` : m.delta) : ""}</span>
+                <span style={{ fontFamily: T.mono, fontWeight: 600, textAlign: "right", color: m.result === "win" ? T.ok : m.result === "loss" ? T.danger : T.muted }}>{m.result === "win" ? "W" : m.result === "loss" ? "L" : "—"}</span>
               </div>
             ))}
           </div>
@@ -1194,13 +1236,13 @@ function AcceptOverlay({ match, me, onAccepted, onFail, fast, live }) {
   );
 }
 
-function Roster({ team, captainId, me, side, label, phase, onView }) {
+function Roster({ team, captainId, me, side, label, phase, onView, tier }) {
   const isMySide = team.some((x) => x.id === me.id); // copy-name only makes sense for YOUR captain
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
         <Eyebrow color={side === 1 ? T.accent : T.muted}>{label}</Eyebrow>
-        <span style={{ fontFamily: T.mono, fontSize: 11, color: T.muted }}>avg {Math.round(team.reduce((a, p) => a + p.rating, 0) / team.length)}</span>
+        {tier && <span style={{ fontFamily: T.mono, fontSize: 11, color: T.muted }}>avg {tier}</span>}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8 }}>
         {team.map((p) => {
@@ -1211,7 +1253,7 @@ function Roster({ team, captainId, me, side, label, phase, onView }) {
               <Avatar p={p} size={40} ring={cap ? T.captain : isMe ? T.accent : null} />
               <div style={{ fontFamily: T.mono, fontSize: 11.5, fontWeight: 600, letterSpacing: "0.02em", textAlign: "center", maxWidth: "100%", whiteSpace: "nowrap" }}>{p.inGameName}</div>
               <div style={{ fontSize: 11, color: T.muted, textAlign: "center", maxWidth: "100%", whiteSpace: "nowrap" }}>{p.discordName}{isMe ? " (you)" : ""}</div>
-              <div style={{ display: "flex", gap: 5, alignItems: "center" }}><Tier tier={p.tier} size={11} /><span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.dim }}>{p.rating}</span></div>
+              <Rank tier={p.tier} placementsRemaining={p.placementsRemaining} size={11} />
               {cap && phase === "party" && isMySide && !isMe && <button onClick={(e) => { e.stopPropagation(); navigator.clipboard?.writeText(p.inGameName); }} title="Copy your captain's in-game name" style={{ marginTop: 2, background: "transparent", border: `1px solid ${T.captain}`, color: T.captain, borderRadius: 3, fontSize: 10.5, padding: "3px 8px", display: "inline-flex", gap: 4, alignItems: "center", fontFamily: T.mono }}><Copy size={10} /> copy name</button>}
             </div>
           );
@@ -1232,7 +1274,7 @@ function MatchHistoryModal({ m, me, onClose, onView }) {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18 }}>
             <div>
               <Eyebrow style={{ marginBottom: 6 }}>{m.type} · {m.region.toUpperCase()} · {ago(m.ts)} · match {m.id.slice(-5)}</Eyebrow>
-              <H size={24} style={{ color: resultColor }}>{resultLabel}{m.delta ? <span style={{ fontFamily: T.mono, fontSize: 15, marginLeft: 10, color: resultColor }}>{m.delta > 0 ? `+${m.delta}` : m.delta}</span> : null}</H>
+              <H size={24} style={{ color: resultColor }}>{resultLabel}</H>
             </div>
             <button onClick={onClose} style={{ background: "transparent", border: "none", color: T.muted, padding: 4 }}><X size={18} /></button>
           </div>
@@ -1270,7 +1312,7 @@ function TeamDetailModal({ team, teams, history, me, onClose, onViewMatch, onVie
               <div key={p.id} className="row-hover" onClick={() => onView?.(p)} style={{ display: "grid", gridTemplateColumns: "minmax(160px, 1fr) 76px 68px 66px", gap: 10, alignItems: "center", padding: "8px", borderRadius: 4, fontSize: 13, cursor: onView ? "pointer" : "default" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}><Avatar p={p} size={28} ring={role === "Captain" ? T.captain : null} /><div style={{ minWidth: 0 }}><div style={{ fontWeight: 600, whiteSpace: "nowrap" }}>{p.discordName}{me && p.id === me.id && <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span>}</div><div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{p.inGameName}</div></div></div>
                 <span style={{ color: role === "Captain" ? T.captain : role === "Officer" ? T.accent : T.muted, fontSize: 12, display: "flex", gap: 5, alignItems: "center", whiteSpace: "nowrap" }}>{role === "Captain" ? <Star size={12} fill={T.captain} /> : role === "Officer" ? <Shield size={12} /> : null}{role}</span>
-                <div style={{ display: "flex", gap: 6, alignItems: "center", whiteSpace: "nowrap" }}><Tier tier={p.tier} /><span style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted }}>{p.rating}</span></div>
+                <Rank tier={p.tier} placementsRemaining={p.placementsRemaining} />
                 <span style={{ fontFamily: T.mono, fontSize: 12, whiteSpace: "nowrap" }}>{p.wins}–{p.losses}</span>
               </div>
             );
@@ -1358,7 +1400,7 @@ function MatchScreen({ match, me, onFinished, notify, onView, tutorial, onPhaseC
   const PARTY_S = 120;
   const [phase, setPhase] = useState("party"); // party → queue → live → reported → completed | dispute
   const [left, setLeft] = useState(PARTY_S);
-  const [delta, setDelta] = useState(null);
+  const [rankMove, setRankMove] = useState(null); // { tierBefore, tierAfter, placementsRemaining }
   const [myReport, setMyReport] = useState(null);
   const [theirReport, setTheirReport] = useState(null);
   const [outcome, setOutcome] = useState(null);
@@ -1452,7 +1494,11 @@ function MatchScreen({ match, me, onFinished, notify, onView, tutorial, onPhaseC
       if (e.type === "match.resolved") {
         const iWon =
           (e.result === "TEAM1" && myTeamIsOne) || (e.result === "TEAM2" && !myTeamIsOne);
-        setDelta(e.ratingDelta ?? null);
+        setRankMove({
+          tierBefore: e.tierBefore ?? null,
+          tierAfter: e.tierAfter ?? null,
+          placementsRemaining: e.placementsRemaining ?? 0,
+        });
         setOutcome(iWon ? "win" : "loss");
         setTheirReport(iWon ? "loss" : "win");
         setPhase("completed");
@@ -1487,12 +1533,32 @@ function MatchScreen({ match, me, onFinished, notify, onView, tutorial, onPhaseC
     }, 2500);
   };
 
+  /**
+   * What the result did to your rank.
+   *
+   * Most matches move a rating without crossing a threshold, and saying
+   * "rank unchanged" is the honest version of that -- the alternative is
+   * quoting the points that moved, which is the thing we do not publish.
+   */
+  const rankSummary = (() => {
+    if (!rankMove) return "Both captains agree. Your rank has been updated.";
+    const { tierBefore, tierAfter, placementsRemaining } = rankMove;
+    if (!tierAfter) {
+      return placementsRemaining > 0
+        ? `Both captains agree. ${placementsRemaining} placement match${placementsRemaining === 1 ? "" : "es"} to go before you are ranked.`
+        : "Both captains agree.";
+    }
+    if (!tierBefore) return `Both captains agree. Placements complete — you are ${tierAfter}.`;
+    if (tierBefore === tierAfter) return `Both captains agree. You are still ${tierAfter}.`;
+    return `Both captains agree. ${TIER_ORDER.indexOf(tierAfter) > TIER_ORDER.indexOf(tierBefore) ? "Promoted" : "Demoted"} to ${tierAfter}.`;
+  })();
+
   const banner = {
     party: { color: T.captain, title: "Party up", sub: iAmCaptain ? "You're the captain — your teammates add you in-game and join your party. Queue starts in" : `Add ${cap?.inGameName ?? "your captain"} — your captain — in-game and join their party. Queue starts in` },
     queue: { color: T.accent, title: "Queue casual now", sub: "Both captains hit Casual queue on this signal. Stay in party." },
     live: { color: T.accent, title: "Match in progress", sub: iAmCaptain ? "When it ends, report the result below." : "Your captain reports the result when the match ends." },
     reported: { color: T.muted, title: "Waiting for the other captain", sub: `You reported a ${myReport}. Awaiting the other side's report.` },
-    completed: { color: T.ok, title: outcome === "win" ? "Victory" : "Defeat", sub: match.type === "SCRIM" ? "Both captains agree. Scrims are unrated — no rating change." : `Both captains agree. Rating updated ${delta === null ? (outcome === "win" ? "+17" : "−13") : `${delta > 0 ? "+" : ""}${delta}`}.` },
+    completed: { color: T.ok, title: outcome === "win" ? "Victory" : "Defeat", sub: match.type === "SCRIM" ? "Both captains agree. Scrims are unrated — no rank change." : rankSummary },
     dispute: { color: T.captain, title: "In dispute", sub: "Captains reported different results. A mod will resolve this with both teams — this stays open until then." },
   }[phase];
 
@@ -1521,9 +1587,9 @@ function MatchScreen({ match, me, onFinished, notify, onView, tutorial, onPhaseC
       </Panel>
 
       <Panel pad={20} data-tour="match-rosters" style={{ flexShrink: 0, maxHeight: "60%", overflow: "auto" }}>
-        <Roster team={match.team1} captainId={match.captain1} me={me} side={1} label={myTeamIsOne ? "Your team" : "Team 1"} phase={phase} onView={onView} />
+        <Roster team={match.team1} captainId={match.captain1} me={me} side={1} label={myTeamIsOne ? "Your team" : "Team 1"} phase={phase} onView={onView} tier={match.team1Tier} />
         <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "22px 0" }}><div style={{ flex: 1, height: 1, background: T.line }} /><span style={{ fontFamily: T.display, fontWeight: 800, fontSize: 18, color: T.dim, letterSpacing: "0.1em" }}>VS</span><div style={{ flex: 1, height: 1, background: T.line }} /></div>
-        <Roster team={match.team2} captainId={match.captain2} me={me} side={2} label={myTeamIsOne ? "Opponents" : "Your team"} phase={phase} onView={onView} />
+        <Roster team={match.team2} captainId={match.captain2} me={me} side={2} label={myTeamIsOne ? "Opponents" : "Your team"} phase={phase} onView={onView} tier={match.team2Tier} />
         {(phase === "reported" || phase === "completed" || phase === "dispute") && (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 20 }}>
             {[["Your captain reported", myReport], ["Their captain reported", theirReport]].map(([k, v]) => (
@@ -1685,8 +1751,12 @@ export default function App() {
           break;
         case "match.resolved":
           notify(
-            e.ratingDelta ? `Match complete · ${e.ratingDelta > 0 ? "+" : ""}${e.ratingDelta}` : "Match complete",
+            e.tierAfter && e.tierBefore && e.tierAfter !== e.tierBefore
+              ? `Match complete · now ${e.tierAfter}`
+              : "Match complete",
           );
+          // Rank, record and placement count all just moved.
+          void refreshProfile();
           break;
         case "notification":
           notify(e.text);
@@ -1769,24 +1839,25 @@ export default function App() {
    * The prototype's player shape is kept rather than rewritten, so every screen
    * keeps working while the data behind it becomes real.
    */
+  /**
+   * Re-reads the profile after a match resolves.
+   *
+   * Rank, record and the placement countdown all move at that moment, and the
+   * lobby would otherwise keep showing the pre-match ones until a restart.
+   */
+  const refreshProfile = useCallback(async () => {
+    try {
+      const profile = await server.me();
+      setMe((prev) => (prev?.live ? { ...prev, ...profileToPlayer(profile) } : prev));
+    } catch {
+      // Cosmetic refresh; the next one will pick it up.
+    }
+  }, []);
+
   const adoptServerSession = useCallback(async () => {
     const profile = await server.me();
 
-    setMe({
-      id: profile.userId,
-      discordName: profile.discordName,
-      inGameName: profile.inGameName ?? profile.discordName,
-      avatarColor: AV_COLORS[Math.abs(hashString(profile.userId)) % AV_COLORS.length],
-      rating: profile.rating,
-      peakRating: profile.peakRating,
-      tier: profile.tier,
-      placementsRemaining: profile.placementsRemaining,
-      wins: profile.wins,
-      losses: profile.losses,
-      disputes: 0,
-      percentile: 0,
-      live: true,
-    });
+    setMe(profileToPlayer(profile));
 
     setParty(
       (profile.party?.members ?? []).map((m) => ({
@@ -1794,8 +1865,8 @@ export default function App() {
         discordName: m.discordName,
         inGameName: m.inGameName ?? m.discordName,
         avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length],
-        rating: m.rating,
-        tier: null,
+        tier: m.tier ?? null,
+        placementsRemaining: m.placementsRemaining ?? 0,
         wins: 0,
         losses: 0,
       })),
@@ -1818,7 +1889,7 @@ export default function App() {
           type: r.type,
           result: r.result === null ? "—" : (r.result === "TEAM1") === (r.team === 1) ? "win" : "loss",
           state: r.state === "DISPUTED" ? "in dispute" : "completed",
-          delta: r.ratingDelta ?? 0,
+          delta: 0,
         })),
       );
     } catch {

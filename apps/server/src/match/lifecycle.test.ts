@@ -355,8 +355,11 @@ describe("client view", () => {
       expect(p.id).toBeTruthy();
       expect(p.discordName).toBeTruthy();
       expect(p.inGameName).toBeTruthy();
-      expect(typeof p.rating).toBe("number");
       expect(p.accepted).toBe(false);
+      // Rank is the published unit; the number behind it must not leave the
+      // server on a roster anyone in the match can read.
+      expect(p).not.toHaveProperty("rating");
+      expect(p).not.toHaveProperty("peakRating");
     }
   });
 

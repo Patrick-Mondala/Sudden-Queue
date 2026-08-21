@@ -18,7 +18,15 @@ export type ServerEvent =
   | { type: "match.accept.progress"; matchId: string; accepted: number; total: number }
   | { type: "match.state"; matchId: string; state: string; match?: unknown }
   | { type: "match.cancelled"; matchId: string; reason: string; atFault: boolean }
-  | { type: "match.resolved"; matchId: string; result: string; ratingDelta?: number }
+  | {
+      type: "match.resolved";
+      matchId: string;
+      result: string;
+      /** Rank before and after. Null while the player is still in placements. */
+      tierBefore: string | null;
+      tierAfter: string | null;
+      placementsRemaining: number;
+    }
   | { type: "chat.message"; channel: string; message: unknown }
   | { type: "notification"; level: "info" | "warn" | "error"; text: string };
 

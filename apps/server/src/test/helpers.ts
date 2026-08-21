@@ -92,7 +92,7 @@ export async function makeUser(
 export async function makeParty(
   handle: Awaited<ReturnType<typeof setupTestDatabase>>,
   size: number,
-  opts: { rating?: number } = {},
+  opts: { rating?: number; gamesPlayed?: number } = {},
 ): Promise<{ partyId: string; userIds: string[] }> {
   const userIds: string[] = [];
   for (let i = 0; i < size; i += 1) {

@@ -670,13 +670,16 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
     } else if (result.data.state === "DISPUTED") {
       notifier.toUsers(userIds, { type: "match.state", matchId: id, state: "DISPUTED" });
     } else {
-      // Each player is told their own delta, not the whole table.
+      // Each player is told their own outcome, not the whole table, and in
+      // ranks rather than points.
       for (const change of result.data.ratingChanges ?? []) {
         notifier.toUser(change.userId, {
           type: "match.resolved",
           matchId: id,
           result: result.data.winner ?? "",
-          ratingDelta: change.delta,
+          tierBefore: change.tierBefore,
+          tierAfter: change.tierAfter,
+          placementsRemaining: change.placementsRemaining,
         });
       }
     }
@@ -737,7 +740,9 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
         type: "match.resolved",
         matchId: id,
         result: result.data.winner ?? "",
-        ratingDelta: change.delta,
+        tierBefore: change.tierBefore,
+        tierAfter: change.tierAfter,
+        placementsRemaining: change.placementsRemaining,
       });
     }
 

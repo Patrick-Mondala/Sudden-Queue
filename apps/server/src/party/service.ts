@@ -1,9 +1,13 @@
 import {
+  DEFAULT_RATING,
   INVITE_EXPIRATION_SECONDS,
   MAX_PARTY_SIZE,
   type Result,
   fail,
+  isPlaced,
   ok,
+  placementGamesRemaining,
+  tierForRating,
 } from "@suddenqueue/core";
 import { and, eq, gt, inArray, sql } from "drizzle-orm";
 
@@ -22,7 +26,9 @@ export interface PartyMemberView {
   discordName: string;
   inGameName: string | null;
   avatarUrl: string | null;
-  rating: number;
+  /** Rank only; the rating behind it is not published. */
+  tier: string | null;
+  placementsRemaining: number;
   gamesPlayed: number;
   isLeader: boolean;
 }
@@ -124,7 +130,10 @@ export class PartyService {
         discordName: r.discordName,
         inGameName: r.inGameName,
         avatarUrl: r.avatarUrl,
-        rating: r.rating ?? 0,
+        // Rank, not rating: a party member's points are no more publishable
+        // than an opponent's.
+        tier: isPlaced(r.gamesPlayed ?? 0) ? tierForRating(r.rating ?? DEFAULT_RATING) : null,
+        placementsRemaining: placementGamesRemaining(r.gamesPlayed ?? 0),
         gamesPlayed: r.gamesPlayed ?? 0,
         isLeader: r.userId === party.leaderId,
       })),

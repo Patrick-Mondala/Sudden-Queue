@@ -9,6 +9,7 @@ import {
   fail,
   isPlaced,
   ok,
+  placementGamesRemaining,
   tierForRating,
 } from "@suddenqueue/core";
 import { and, eq, inArray, isNull, lt, sql } from "drizzle-orm";
@@ -29,14 +30,13 @@ export interface MatchViewPlayer {
   discordName: string;
   inGameName: string;
   avatarUrl: string | null;
-  rating: number;
-  peakRating: number;
+  /** Rank only. The number behind it is deliberately not published. */
   tier: string | null;
+  placementsRemaining: number;
   gamesPlayed: number;
   wins: number;
   losses: number;
   accepted: boolean;
-  ratingDelta: number | null;
 }
 
 export interface MatchView {
@@ -49,8 +49,9 @@ export interface MatchView {
   partyUpDeadline: string | null;
   reportDeadline: string | null;
   createdAt: string;
-  team1Rating: number;
-  team2Rating: number;
+  /** Team strength as a rank, for the same reason as the players'. */
+  team1Tier: string;
+  team2Tier: string;
   captain1: string | null;
   captain2: string | null;
   team1: MatchViewPlayer[];
@@ -455,7 +456,6 @@ export class MatchLifecycle {
         team: matchParticipants.team,
         isCaptain: matchParticipants.isCaptain,
         acceptedAt: matchParticipants.acceptedAt,
-        ratingDelta: matchParticipants.ratingDelta,
         discordName: users.discordName,
         inGameName: users.inGameName,
         avatarUrl: users.avatarUrl,
@@ -482,15 +482,13 @@ export class MatchLifecycle {
         // find each other in-game -- so fall back to something addressable.
         inGameName: r.inGameName ?? r.discordName,
         avatarUrl: r.avatarUrl,
-        rating,
-        peakRating: r.peakRating ?? rating,
         // Same rule as /me: no rank until placements are done.
         tier: isPlaced(gamesPlayed) ? tierForRating(rating) : null,
+        placementsRemaining: placementGamesRemaining(gamesPlayed),
         gamesPlayed,
         wins: r.wins ?? 0,
         losses: r.losses ?? 0,
         accepted: r.acceptedAt !== null,
-        ratingDelta: r.ratingDelta,
       };
     };
 
@@ -504,8 +502,10 @@ export class MatchLifecycle {
       partyUpDeadline: match.partyUpDeadline?.toISOString() ?? null,
       reportDeadline: match.reportDeadline?.toISOString() ?? null,
       createdAt: match.createdAt.toISOString(),
-      team1Rating: match.team1Rating,
-      team2Rating: match.team2Rating,
+      // Derived from the averages frozen at creation, so the two sides read as
+      // comparable strengths without either number leaving the server.
+      team1Tier: tierForRating(match.team1Rating),
+      team2Tier: tierForRating(match.team2Rating),
       captain1: rows.find((r) => r.team === 1 && r.isCaptain)?.userId ?? null,
       captain2: rows.find((r) => r.team === 2 && r.isCaptain)?.userId ?? null,
       team1: rows.filter((r) => r.team === 1).map(toPlayer),

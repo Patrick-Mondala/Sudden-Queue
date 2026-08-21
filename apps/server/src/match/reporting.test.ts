@@ -408,7 +408,9 @@ describe("history", () => {
     expect(history).toHaveLength(1);
     expect(history[0]!.result).toBe("TEAM1");
     expect(history[0]!.team).toBe(1);
-    expect(history[0]!.ratingDelta).toBe(12);
+    // A run of point swings reconstructs the rating the rank stands in for, so
+    // history carries the result and not the delta.
+    expect(history[0]!).not.toHaveProperty("ratingDelta");
   });
 
   it("omits matches that are still in progress", async () => {

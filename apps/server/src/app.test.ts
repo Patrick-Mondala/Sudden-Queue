@@ -548,7 +548,7 @@ describe("reporting through the API", () => {
     expect(second.json().winner).toBe("TEAM1");
   });
 
-  it("shows the settled match in the player's history with their delta", async () => {
+  it("shows the settled match in the player's history, without the delta", async () => {
     const m = await liveMatch();
     await app.server.inject({
       method: "POST",
@@ -571,7 +571,9 @@ describe("reporting through the API", () => {
 
     const rows = history.json();
     expect(rows).toHaveLength(1);
-    expect(rows[0].ratingDelta).toBeGreaterThan(0);
+    expect(rows[0].result).toBe("TEAM1");
+    // Rank is the published unit; a run of deltas would rebuild the rating.
+    expect(rows[0]).not.toHaveProperty("ratingDelta");
   });
 
   it("disagreement opens a dispute", async () => {

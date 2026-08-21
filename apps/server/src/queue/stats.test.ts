@@ -62,3 +62,75 @@ describe("population counts", () => {
     expect(await lifecycle.countPlayersInMatches()).toBe(10);
   });
 });
+
+describe("what a client is allowed to see", () => {
+  it("never sends a rating number on a roster", async () => {
+    const parties = [];
+    for (let i = 0; i < 10; i += 1) {
+      const p = await makeParty(handle, 1, { rating: 1500, gamesPlayed: 40 });
+      await queue.join({ partyId: p.partyId, regions: ["na"], ratingSnapshot: 1500, size: 1 });
+      parties.push(p);
+    }
+
+    const created = await lifecycle.createFromDecision(
+      {
+        anchorPartyId: parties[0]!.partyId,
+        team1PartyIds: parties.slice(0, 5).map((p) => p.partyId),
+        team2PartyIds: parties.slice(5).map((p) => p.partyId),
+        team1Rating: 1500,
+        team2Rating: 1500,
+        gap: 0,
+        allowedGap: 100,
+        symmetryScore: 0,
+      },
+      "na",
+    );
+    if (!isOk(created)) throw new Error("staging failed");
+
+    const view = await lifecycle.view(created.data.matchId);
+    const wire = JSON.stringify(view);
+
+    // Rank is what a player is shown. Shipping the number and hiding it in the
+    // UI would leave the rule one devtools tab from being false.
+    expect(wire).not.toMatch(/1500/);
+    expect(view!.team1Tier).toBeTruthy();
+    for (const p of [...view!.team1, ...view!.team2]) {
+      expect(p).not.toHaveProperty("rating");
+      expect(p.tier).toBe("G");
+      expect(p.placementsRemaining).toBe(0);
+    }
+  });
+
+  it("shows a placement player as unranked rather than as a number", async () => {
+    const p = await makeParty(handle, 1, { rating: 1200, gamesPlayed: 2 });
+    await queue.join({ partyId: p.partyId, regions: ["na"], ratingSnapshot: 1200, size: 1 });
+
+    const others = [];
+    for (let i = 0; i < 9; i += 1) {
+      const q = await makeParty(handle, 1, { rating: 1200, gamesPlayed: 40 });
+      await queue.join({ partyId: q.partyId, regions: ["na"], ratingSnapshot: 1200, size: 1 });
+      others.push(q);
+    }
+
+    const created = await lifecycle.createFromDecision(
+      {
+        anchorPartyId: p.partyId,
+        team1PartyIds: [p.partyId, ...others.slice(0, 4).map((x) => x.partyId)],
+        team2PartyIds: others.slice(4).map((x) => x.partyId),
+        team1Rating: 1200,
+        team2Rating: 1200,
+        gap: 0,
+        allowedGap: 100,
+        symmetryScore: 0,
+      },
+      "na",
+    );
+    if (!isOk(created)) throw new Error("staging failed");
+
+    const view = await lifecycle.view(created.data.matchId);
+    const unplaced = [...view!.team1, ...view!.team2].find((x) => x.id === p.userIds[0]);
+
+    expect(unplaced!.tier).toBeNull();
+    expect(unplaced!.placementsRemaining).toBe(3);
+  });
+});
