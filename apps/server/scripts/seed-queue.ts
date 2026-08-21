@@ -19,7 +19,12 @@
  *   npm run seed -- --cleanup
  */
 
-import { DEFAULT_RATING, MATCH_SIZE, REGIONS } from "@suddenqueue/core";
+import {
+  DEFAULT_RATING,
+  MATCH_SIZE,
+  QUEUE_HEARTBEAT_INTERVAL_SECONDS,
+  REGIONS,
+} from "@suddenqueue/core";
 import { and, eq, inArray, like, sql } from "drizzle-orm";
 
 import { SessionService } from "../src/auth/sessions.js";
@@ -71,6 +76,9 @@ interface Bot {
   name: string;
   token: string;
 }
+
+/** Set once the bots are connected; closes their sockets on the way out. */
+let disconnectBots: () => void = () => {};
 
 async function send(
   path: string,
@@ -169,6 +177,62 @@ async function seed(): Promise<Bot[]> {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Holds each bot's queue slot open.
+ *
+ * A queue ticket is only alive while its client keeps heartbeating -- twenty
+ * seconds of silence and the matchmaker prunes it as a closed app. Bots with no
+ * socket therefore evaporate before you finish queueing, and you watch the
+ * count climb and then collapse. Connecting for real is also the honest test:
+ * these are the same sockets the notifier pushes match.found down.
+ */
+function connectBots(bots: Bot[]): () => void {
+  const wsBase = baseUrl.replace(/^http/, "ws");
+  const sockets: WebSocket[] = [];
+  const timers: NodeJS.Timeout[] = [];
+
+  for (const bot of bots) {
+    const socket = new WebSocket(`${wsBase}/ws?token=${encodeURIComponent(bot.token)}`);
+    sockets.push(socket);
+
+    socket.addEventListener("open", () => {
+      const beat = () => {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: "heartbeat" }));
+        }
+      };
+      beat();
+      timers.push(setInterval(beat, QUEUE_HEARTBEAT_INTERVAL_SECONDS * 1000));
+    });
+
+    // Nothing to do with what the server pushes; the script watches the
+    // database directly. The socket exists to prove liveness.
+    socket.addEventListener("error", () => {});
+  }
+
+  return () => {
+    for (const t of timers) clearInterval(t);
+    for (const s of sockets) {
+      try {
+        s.close();
+      } catch {
+        // Already closing.
+      }
+    }
+  };
+}
+
+/** Resolves once every bot is connected, or the wait runs out. */
+async function waitForConnections(botCount: number): Promise<void> {
+  const until = Date.now() + 10_000;
+  while (Date.now() < until) {
+    const res = await fetch(`${baseUrl}/queue/stats`).catch(() => null);
+    const stats = (await res?.json().catch(() => null)) as { online?: number } | null;
+    if ((stats?.online ?? 0) >= botCount) return;
+    await sleep(250);
+  }
+}
 
 /** The match these bots were pulled into, if the matchmaker has run. */
 async function findMatch(botIds: string[]): Promise<string | null> {
@@ -294,6 +358,13 @@ async function main(): Promise<void> {
   console.log(`Seeding ${count} player(s) into the ${region.toUpperCase()} queue at ~${baseRating}...`);
   const bots = await seed();
   console.log(`  created ${bots.length} queued bot(s)`);
+
+  // Without this they are pruned twenty seconds later and the queue count
+  // collapses back to just you.
+  disconnectBots = connectBots(bots);
+  await waitForConnections(bots.length);
+  console.log(`  ${bots.length} bot(s) connected and holding their queue slots`);
+
   console.log("");
   console.log(`Queue up in ${region.toUpperCase()} now — the matchmaker runs every 2s.`);
 
@@ -314,6 +385,11 @@ async function main(): Promise<void> {
       console.log(`  match ${matchId}`);
       await playMatch(matchId, bots);
     }
+  } else {
+    // The bots exist only as long as this process holds their sockets open, so
+    // exiting here would prune them twenty seconds later and undo the seed.
+    console.log("Holding the queue open. Ctrl+C to release the bots.");
+    await new Promise<void>((resolve) => process.once("SIGINT", () => resolve()));
   }
 
   console.log("");
@@ -325,4 +401,7 @@ main()
     console.error(err);
     process.exitCode = 1;
   })
-  .finally(() => close());
+  .finally(() => {
+    disconnectBots();
+    return close();
+  });
