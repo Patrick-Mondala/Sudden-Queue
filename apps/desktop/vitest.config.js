@@ -16,5 +16,8 @@ export default defineConfig({
     globals: false,
     include: ["src/**/*.test.jsx"],
     restoreMocks: true,
+    // Above the testing-library async timeout, so a failing query reports what
+    // it could not find instead of the test being cut off first.
+    testTimeout: 15000,
   },
 });

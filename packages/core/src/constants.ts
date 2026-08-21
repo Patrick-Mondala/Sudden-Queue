@@ -60,6 +60,15 @@ export const REPORT_WINDOW_SECONDS = 60 * 30;
 /** Escalating cooldowns for missing an accept, by recent offence count. */
 export const MISSED_ACCEPT_COOLDOWNS_SECONDS = [300, 900, 1_800, 3_600];
 
+/**
+ * How long a clean run has to be before the escalation resets.
+ *
+ * Without this the schedule is a life sentence: one miss a year apart would
+ * still walk someone up to an hour. What it punishes is a bad session, not a
+ * bad record.
+ */
+export const MISSED_ACCEPT_DECAY_SECONDS = 24 * 60 * 60;
+
 /** A queue ticket whose client has gone quiet this long is treated as gone. */
 export const QUEUE_HEARTBEAT_INTERVAL_SECONDS = 5;
 export const QUEUE_STALE_AFTER_SECONDS = 20;

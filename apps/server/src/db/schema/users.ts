@@ -71,6 +71,16 @@ export const playerRatings = pgTable(
     /** Set while serving a missed-accept cooldown. */
     queueCooldownUntil: timestamp("queue_cooldown_until", { withTimezone: true }),
 
+    /**
+     * The escalating half of the same thing.
+     *
+     * missedAccepts above is a lifetime total for the profile; this one decays,
+     * because the schedule is meant to punish a bad session rather than a bad
+     * record, and needs to know when the last offence was to forget it.
+     */
+    recentMissedAccepts: integer("recent_missed_accepts").notNull().default(0),
+    lastMissedAcceptAt: timestamp("last_missed_accept_at", { withTimezone: true }),
+
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

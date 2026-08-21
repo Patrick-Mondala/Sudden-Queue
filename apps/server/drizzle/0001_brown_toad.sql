@@ -1,0 +1,2 @@
+ALTER TABLE "player_ratings" ADD COLUMN "recent_missed_accepts" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "player_ratings" ADD COLUMN "last_missed_accept_at" timestamp with time zone;

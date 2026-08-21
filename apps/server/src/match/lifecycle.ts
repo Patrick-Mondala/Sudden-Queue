@@ -8,6 +8,7 @@ import {
   type Result,
   fail,
   isPlaced,
+  missedAcceptPenalty,
   ok,
   placementGamesRemaining,
   tierForRating,
@@ -317,10 +318,18 @@ export class MatchLifecycle {
    * A decline kills the match immediately rather than waiting out the timer —
    * there is no point making nine people watch a countdown that cannot succeed.
    */
+  /**
+   * A declined match is cancelled for all ten, so it carries the same cooldown
+   * as letting the clock run out.
+   *
+   * Declining is the more considerate of the two -- it frees the other nine in
+   * seconds rather than making them wait out the timer -- but the harm to them
+   * is the same, and pricing it lower would just make dodging cheaper.
+   */
   async decline(
     matchId: string,
     userId: string,
-  ): Promise<Result<{ cancelled: boolean }, "NOT_PENDING">> {
+  ): Promise<Result<{ cancelled: boolean; cooldownSeconds: number }, "NOT_PENDING">> {
     return this.db.transaction(async (tx) => {
       const [match] = await tx
         .select({ state: matches.state })
@@ -349,7 +358,8 @@ export class MatchLifecycle {
         })
         .where(eq(matches.id, matchId));
 
-      return ok({ cancelled: true });
+      const [penalty] = await this.penaliseMissedAccepts([userId], new Date());
+      return ok({ cancelled: true, cooldownSeconds: penalty?.cooldownSeconds ?? 0 });
     });
   }
 
@@ -360,13 +370,24 @@ export class MatchLifecycle {
    * Returns what it touched so the caller can notify and requeue.
    */
   async sweepExpired(): Promise<{
-    cancelled: { matchId: string; missedUserIds: string[]; keptUserIds: string[] }[];
+    cancelled: {
+      matchId: string;
+      missedUserIds: string[];
+      keptUserIds: string[];
+      /** What the miss cost each person at fault, so they can be told. */
+      penalties: { userId: string; cooldownSeconds: number }[];
+    }[];
     startedLive: string[];
     disputed: string[];
   }> {
     const now = new Date();
 
-    const cancelled: { matchId: string; missedUserIds: string[]; keptUserIds: string[] }[] = [];
+    const cancelled: {
+      matchId: string;
+      missedUserIds: string[];
+      keptUserIds: string[];
+      penalties: { userId: string; cooldownSeconds: number }[];
+    }[] = [];
 
     // 1. Accept window blown: cancel, and separate who is at fault.
     const staleAccepts = await this.db
@@ -396,7 +417,8 @@ export class MatchLifecycle {
         })
         .where(eq(matches.id, m.id));
 
-      cancelled.push({ matchId: m.id, missedUserIds: missed, keptUserIds: kept });
+      const penalties = await this.penaliseMissedAccepts(missed, now);
+      cancelled.push({ matchId: m.id, missedUserIds: missed, keptUserIds: kept, penalties });
     }
 
     // 2. Party-up window elapsed: the match is considered under way.
@@ -527,6 +549,58 @@ export class MatchLifecycle {
       .where(inArray(matches.state, ["PENDING_ACCEPT", "PARTY_UP", "LIVE", "REPORTED"]));
 
     return row?.total ?? 0;
+  }
+
+  /**
+   * Charges a queue cooldown to everyone who let the accept lapse.
+   *
+   * A missed accept costs nine other people their match, so it has to cost the
+   * person who missed it something, or the cheapest way to pick your matches is
+   * to sit on the prompt. The schedule escalates within a session and forgets
+   * after a clean day -- see missedAcceptPenalty.
+   */
+  private async penaliseMissedAccepts(
+    userIds: string[],
+    now: Date,
+  ): Promise<{ userId: string; cooldownSeconds: number }[]> {
+    if (userIds.length === 0) return [];
+
+    const rows = await this.db
+      .select({
+        userId: playerRatings.userId,
+        recent: playerRatings.recentMissedAccepts,
+        lastAt: playerRatings.lastMissedAcceptAt,
+      })
+      .from(playerRatings)
+      .where(inArray(playerRatings.userId, userIds));
+
+    const known = new Map(rows.map((r) => [r.userId, r]));
+    const applied: { userId: string; cooldownSeconds: number }[] = [];
+
+    for (const userId of userIds) {
+      const state = known.get(userId);
+      const penalty = missedAcceptPenalty(
+        { recent: state?.recent ?? 0, lastAt: state?.lastAt ?? null },
+        now,
+      );
+
+      await this.db
+        .update(playerRatings)
+        .set({
+          // The lifetime counter is for the profile; the recent one drives the
+          // schedule and is reset by missedAcceptPenalty when it has decayed.
+          missedAccepts: sql`${playerRatings.missedAccepts} + 1`,
+          recentMissedAccepts: penalty.offence,
+          lastMissedAcceptAt: now,
+          queueCooldownUntil: penalty.cooldownUntil,
+          updatedAt: now,
+        })
+        .where(eq(playerRatings.userId, userId));
+
+      applied.push({ userId, cooldownSeconds: penalty.cooldownSeconds });
+    }
+
+    return applied;
   }
 
   /** Rating snapshot for a set of users, defaulting anyone unseen. */

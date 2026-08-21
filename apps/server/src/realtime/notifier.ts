@@ -28,7 +28,14 @@ export type ServerEvent =
   | { type: "match.found"; matchId: string; acceptDeadline: string; match: unknown }
   | { type: "match.accept.progress"; matchId: string; accepted: number; total: number }
   | { type: "match.state"; matchId: string; state: string; match?: unknown }
-  | { type: "match.cancelled"; matchId: string; reason: string; atFault: boolean }
+  | {
+      type: "match.cancelled";
+      matchId: string;
+      reason: string;
+      atFault: boolean;
+      /** Seconds of queue cooldown this cost. Zero for everyone not at fault. */
+      cooldownSeconds: number;
+    }
   | {
       type: "match.resolved";
       matchId: string;

@@ -178,7 +178,13 @@ export class MatchSweeper {
   constructor(
     private readonly lifecycle: MatchLifecycle,
     private readonly events: {
-      onCancelled?: (matchId: string, missed: string[], kept: string[]) => void | Promise<void>;
+      onCancelled?: (
+        matchId: string,
+        missed: string[],
+        kept: string[],
+        /** What the miss cost each person at fault. */
+        penalties: { userId: string; cooldownSeconds: number }[],
+      ) => void | Promise<void>;
       onLive?: (matchId: string) => void | Promise<void>;
       onDisputed?: (matchId: string) => void | Promise<void>;
       onError?: (error: unknown) => void;
@@ -191,7 +197,7 @@ export class MatchSweeper {
       const result = await this.lifecycle.sweepExpired();
 
       for (const c of result.cancelled) {
-        await this.events.onCancelled?.(c.matchId, c.missedUserIds, c.keptUserIds);
+        await this.events.onCancelled?.(c.matchId, c.missedUserIds, c.keptUserIds, c.penalties);
       }
       for (const id of result.startedLive) await this.events.onLive?.(id);
       for (const id of result.disputed) await this.events.onDisputed?.(id);

@@ -349,3 +349,60 @@ describe("receiving invites", () => {
     await waitFor(() => expect(screen.queryByText("Inviter2")).toBeNull(), { timeout: 4000 });
   });
 });
+
+describe("missing a match", () => {
+  /**
+   * The lobby has a standing line about cooldowns in its help text, so these
+   * match the heading exactly rather than anywhere the word appears.
+   */
+  const HEADING = "On cooldown";
+
+  it("locks the queue for as long as the server says", async () => {
+    await signedIn();
+    emit({ type: "match.found", matchId: MATCH.id, match: MATCH });
+    await screen.findByText(/Match found/i);
+
+    emit({
+      type: "match.cancelled",
+      matchId: MATCH.id,
+      reason: "ACCEPT_TIMEOUT",
+      atFault: true,
+      cooldownSeconds: 300,
+    });
+
+    expect(await screen.findByText(HEADING)).toBeTruthy();
+    // The countdown is the server's number, not one the client picked.
+    expect(screen.getByText("5:00")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Queue/i }).disabled).toBe(true);
+  });
+
+  it("does not punish you for someone else's no-show", async () => {
+    await signedIn();
+    emit({ type: "match.found", matchId: MATCH.id, match: MATCH });
+    await screen.findByText(/Match found/i);
+
+    emit({
+      type: "match.cancelled",
+      matchId: MATCH.id,
+      reason: "ACCEPT_TIMEOUT",
+      atFault: false,
+      cooldownSeconds: 0,
+    });
+
+    expect(await screen.findByText(/didn't accept/i)).toBeTruthy();
+    expect(screen.queryByText(HEADING)).toBeNull();
+    expect(screen.getByRole("button", { name: /Queue/i }).disabled).toBe(false);
+  });
+
+  it("still knows about a cooldown after a reload", async () => {
+    server.me.mockResolvedValue({ ...PROFILE, queueCooldownSeconds: 120 });
+    render(<App />);
+
+    // Otherwise the lobby offers a queue button the server will refuse. Note
+    // this cannot wait for the usual signed-in marker: the heading it would
+    // wait for is the very thing the cooldown replaces.
+    expect(await screen.findByText(HEADING)).toBeTruthy();
+    expect(screen.getByText("2:00")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Queue/i }).disabled).toBe(true);
+  });
+});

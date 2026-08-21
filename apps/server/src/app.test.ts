@@ -1,9 +1,9 @@
 import { INVITE_RATE_LIMIT, isOk } from "@suddenqueue/core";
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { type App, buildApp } from "./app.js";
-import { matches, users } from "./db/schema/index.js";
+import { matchParticipants, matches, playerRatings, users } from "./db/schema/index.js";
 import { AuthService } from "./auth/service.js";
 import { DiscordAuth } from "./auth/discord.js";
 import type { Config } from "./config.js";
@@ -1082,5 +1082,219 @@ describe("someone closing the app", () => {
 
     const after = await app.server.inject({ method: "GET", url: "/party", headers: authed(a.token) });
     expect(after.json().partyId).toBe(before.json().partyId);
+  });
+});
+
+describe("missing a match you were matched into", () => {
+  /**
+   * Ten queued solos, matched, so the accept window can be blown.
+   *
+   * `include` puts an existing player in the match rather than a fresh one,
+   * which is what a second offence needs: the same person, twice.
+   */
+  async function matchTen(include?: { token: string; userId: string }) {
+    const players = include ? [include] : [];
+    if (include) {
+      await app.server.inject({
+        method: "POST",
+        url: "/queue/join",
+        headers: authed(include.token),
+        payload: { regions: ["na"] },
+      });
+    }
+
+    while (players.length < 10) {
+      const u = await login();
+      await app.server.inject({
+        method: "POST",
+        url: "/queue/join",
+        headers: authed(u.token),
+        payload: { regions: ["na"] },
+      });
+      players.push(u);
+    }
+
+    await app.matchmaker.runPass();
+    const [match] = await handle.db
+      .select()
+      .from(matches)
+      .orderBy(desc(matches.createdAt))
+      .limit(1);
+    if (!match) throw new Error("no match formed");
+    return { players, matchId: match.id };
+  }
+
+  /** Blows the accept window without waiting it out. */
+  async function expireAccepts(matchId: string) {
+    await handle.db
+      .update(matches)
+      .set({ acceptDeadline: new Date(Date.now() - 1000) })
+      .where(eq(matches.id, matchId));
+    await app.sweeper.sweepOnce();
+  }
+
+  it("puts the people who missed it on a cooldown, and nobody else", async () => {
+    const { players, matchId } = await matchTen();
+
+    // Nine accept; one sits on the prompt.
+    for (const p of players.slice(0, 9)) {
+      await app.server.inject({
+        method: "POST",
+        url: `/match/${matchId}/accept`,
+        headers: authed(p.token),
+      });
+    }
+    await expireAccepts(matchId);
+
+    const dodger = players[9]!;
+    const blocked = await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(dodger.token),
+      payload: { regions: ["na"] },
+    });
+    expect(blocked.statusCode).toBe(403);
+    expect(blocked.json().error).toBe("QUEUE_COOLDOWN");
+    expect(blocked.json().secondsRemaining).toBeGreaterThan(0);
+
+    // The nine who did accept are not punished for someone else's no-show.
+    const innocent = await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(players[0]!.token),
+      payload: { regions: ["na"] },
+    });
+    expect(innocent.statusCode).toBe(200);
+  });
+
+  it("escalates a second miss beyond the first", async () => {
+    const first = await matchTen();
+    await expireAccepts(first.matchId);
+
+    const dodger = first.players[0]!;
+    const one = await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(dodger.token),
+      payload: { regions: ["na"] },
+    });
+    const firstWait = one.json().secondsRemaining;
+
+    // Clear the cooldown so they can reach a second match, leaving the offence
+    // count behind -- which is the thing being tested.
+    await handle.db
+      .update(playerRatings)
+      .set({ queueCooldownUntil: null })
+      .where(eq(playerRatings.userId, dodger.userId));
+
+    const second = await matchTen(dodger);
+
+    // Everyone but the dodger accepts, so only they are at fault this time.
+    await handle.db
+      .update(matchParticipants)
+      .set({ acceptedAt: new Date() })
+      .where(eq(matchParticipants.matchId, second.matchId));
+    await handle.db
+      .update(matchParticipants)
+      .set({ acceptedAt: null })
+      .where(
+        and(
+          eq(matchParticipants.matchId, second.matchId),
+          eq(matchParticipants.userId, dodger.userId),
+        ),
+      );
+    await expireAccepts(second.matchId);
+
+    const two = await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(dodger.token),
+      payload: { regions: ["na"] },
+    });
+    expect(two.json().secondsRemaining).toBeGreaterThan(firstWait);
+  });
+
+  it("blocks the whole party when one member is cooling off", async () => {
+    const { players, matchId } = await matchTen();
+    await expireAccepts(matchId);
+
+    const dodger = players[0]!;
+    const friend = await login();
+
+    // The friend leads, so the cooldown is not theirs; it still stops the party.
+    const inv = await app.server.inject({
+      method: "POST",
+      url: "/party/invite",
+      headers: authed(friend.token),
+      payload: { userId: dodger.userId },
+    });
+    await app.server.inject({
+      method: "POST",
+      url: `/party/invite/${inv.json().inviteId}/accept`,
+      headers: authed(dodger.token),
+    });
+
+    const res = await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(friend.token),
+      payload: { regions: ["na"] },
+    });
+
+    // Otherwise a cooldown is just "ask a friend to carry you past it".
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe("QUEUE_COOLDOWN");
+    expect(res.json().message).toMatch(/cooldown/i);
+  });
+
+  it("declining costs the same as sitting on it", async () => {
+    const { players, matchId } = await matchTen();
+
+    await app.server.inject({
+      method: "POST",
+      url: `/match/${matchId}/decline`,
+      headers: authed(players[0]!.token),
+    });
+
+    const res = await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(players[0]!.token),
+      payload: { regions: ["na"] },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe("QUEUE_COOLDOWN");
+  });
+
+  it("stops a banned account queueing, which it never did before", async () => {
+    const a = await login();
+    await handle.db
+      .update(users)
+      .set({ bannedUntil: new Date(Date.now() + 60_000) })
+      .where(eq(users.id, a.userId));
+
+    const res = await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(a.token),
+      payload: { regions: ["na"] },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe("BANNED");
+  });
+
+  it("reports the remaining cooldown on the profile", async () => {
+    const { players, matchId } = await matchTen();
+    await expireAccepts(matchId);
+
+    const me = await app.server.inject({
+      method: "GET",
+      url: "/me",
+      headers: authed(players[0]!.token),
+    });
+
+    expect(me.json().queueCooldownSeconds).toBeGreaterThan(0);
+    expect(me.json().missedAccepts).toBe(1);
   });
 });

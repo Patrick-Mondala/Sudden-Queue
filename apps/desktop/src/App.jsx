@@ -111,6 +111,11 @@ function profileToPlayer(profile) {
     avatarColor: AV_COLORS[Math.abs(hashString(profile.userId)) % AV_COLORS.length],
     tier: profile.tier,
     placementsRemaining: profile.placementsRemaining,
+    // An absolute moment rather than a duration, so it keeps counting down
+    // correctly across re-renders and reconnects.
+    cooldownUntil: profile.queueCooldownSeconds
+      ? Date.now() + profile.queueCooldownSeconds * 1000
+      : 0,
     gamesPlayed: profile.gamesPlayed,
     wins: profile.wins,
     losses: profile.losses,
@@ -331,10 +336,13 @@ function Login({ onSignedIn }) {
 /* ─────────────────────────────────────────────────────────────
    PUG QUEUE
    ───────────────────────────────────────────────────────────── */
-function PlayScreen({ me, party, setParty, queue, setQueue, history, notify, onViewMatch, onView, onInvite }) {
+function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, history, notify, onViewMatch, onView, onInvite }) {
   const [regions, setRegions] = usePersistentState("sq.pug.regions", ["na", "eu"]);
-  useTick(queue.state === "queued");
+  useTick(queue.state === "queued" || cooldownUntil > Date.now());
   const elapsed = queue.state === "queued" ? Math.floor((Date.now() - queue.since) / 1000) : 0;
+  const cooling = cooldownUntil > Date.now();
+  const coolLeft = Math.ceil((cooldownUntil - Date.now()) / 1000);
+
   // search radius: fast-widening ramp, plateaus at ~3 min. Same curve the backend will use.
   const radius = Math.round(Math.min(600, 60 + elapsed * 6));
 
@@ -370,12 +378,12 @@ function PlayScreen({ me, party, setParty, queue, setQueue, history, notify, onV
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", position: "relative" }}>
             <div>
               <Eyebrow style={{ marginBottom: 6 }}>PUG · 5v5 · rated</Eyebrow>
-              <H size={26}>{queue.state === "queued" ? "Searching" : "Ready to queue"}</H>
+              <H size={26}>{queue.state === "queued" ? "Searching" : cooling ? "On cooldown" : "Ready to queue"}</H>
               <div style={{ color: T.muted, fontSize: 13, marginTop: 6 }}>
-                {/* A missed accept has no penalty yet. When it does, the
-                    queue-join rejection is what will carry it. */}
                 {queue.state === "queued"
                   ? <span>Search radius <span style={{ fontFamily: T.mono, color: T.text }}>±{radius}</span> · widens with time</span>
+                  : cooling
+                  ? <span>You left a match short. The queue reopens in <span style={{ fontFamily: T.mono, color: T.danger }}>{fmt(coolLeft)}</span></span>
                   : <span>Pick regions, then queue. Any region you select can pop first.</span>}
               </div>
             </div>
@@ -388,7 +396,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, history, notify, onV
             <div><RegionPicker value={queue.state === "queued" ? queue.regions : regions} onChange={queue.state === "queued" ? () => {} : setRegions} /></div>
             {queue.state === "queued"
               ? <Btn kind="danger" onClick={stop}><X size={14} /> Leave queue</Btn>
-              : <Btn kind="primary" onClick={start} disabled={!regions.length}><Crosshair size={14} /> Queue {party.length > 1 ? `as ${party.length}` : "solo"}</Btn>}
+              : <Btn kind="primary" onClick={start} disabled={cooling || !regions.length}><Crosshair size={14} /> Queue {party.length > 1 ? `as ${party.length}` : "solo"}</Btn>}
           </div>
         </Panel>
 
@@ -1130,6 +1138,7 @@ export default function App() {
   const [viewMatch, setViewMatch] = useState(null);
   const [toasts, setToasts] = useState([]);
   const [invites, setInvites] = useState([]);
+  const [cooldownUntil, setCooldownUntil] = useState(0);
   const [inviteOpen, setInviteOpen] = useState(false);
   const notify = useCallback((text) => { const id = Date.now() + Math.random(); setToasts((t) => [...t, { id, text }]); setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3800); }, []);
 
@@ -1252,7 +1261,9 @@ export default function App() {
   const adoptServerSession = useCallback(async () => {
     const profile = await server.me();
 
-    setMe(profileToPlayer(profile));
+    const mapped = profileToPlayer(profile);
+    setMe(mapped);
+    setCooldownUntil(mapped.cooldownUntil);
 
     setParty(
       (profile.party?.members ?? []).map((m) => ({
@@ -1317,10 +1328,23 @@ export default function App() {
           setQueue({ state: "idle" });
           if (e.reason === "CONNECTION_LOST") notify("Connection dropped — you left the queue");
           break;
-        case "match.cancelled":
+        case "match.cancelled": {
           setPendingMatch(null);
-          notify(e.atFault ? "You missed the accept — cooldown applied" : "A player didn't accept");
+          setQueue({ state: "idle" });
+          if (!e.atFault) {
+            notify("A player didn't accept — the match was cancelled");
+            break;
+          }
+          // The server owns the penalty and states it; this only displays it.
+          const seconds = e.cooldownSeconds ?? 0;
+          if (seconds > 0) setCooldownUntil(Date.now() + seconds * 1000);
+          notify(
+            seconds > 0
+              ? `You left a match short — queue locked for ${fmt(seconds)}`
+              : "You left a match short",
+          );
           break;
+        }
         case "match.resolved":
           notify(
             e.tierAfter && e.tierBefore && e.tierAfter !== e.tierBefore
@@ -1422,7 +1446,7 @@ export default function App() {
     void refreshHistory();
   }} />;
   else if (viewProfile) content = <ProfileScreen p={viewProfile} me={me} history={history} onBack={() => setViewProfile(null)} onViewMatch={openMatch} />;
-  else if (nav === "play") content = <PlayScreen me={me} party={party} setParty={setParty} queue={queue} setQueue={setQueue} history={history} notify={notify} onViewMatch={openMatch} onView={setViewProfile} onInvite={() => setInviteOpen(true)} />;
+  else if (nav === "play") content = <PlayScreen me={me} party={party} setParty={setParty} queue={queue} setQueue={setQueue} cooldownUntil={cooldownUntil} history={history} notify={notify} onViewMatch={openMatch} onView={setViewProfile} onInvite={() => setInviteOpen(true)} />;
   // These three have no server endpoints yet, so they say so rather than
   // standing in for them.
   else if (nav === "scrims")

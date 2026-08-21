@@ -221,6 +221,11 @@ async function seed(): Promise<Bot[]> {
         discordId: `${SEED_PREFIX}${stamp}`,
         discordName: name,
         inGameName: `BOT_${String(i + 1).padStart(2, "0")}`,
+        // Queue liveness is per member now, and this script writes tickets
+        // straight to the table rather than going through /queue/join, which is
+        // what would otherwise stamp them. Without this every bot reads as
+        // never-seen and the whole seed is pruned before it can match.
+        lastSeenAt: new Date(),
       })
       .returning({ id: users.id });
 

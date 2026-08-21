@@ -3,6 +3,7 @@ import {
   INVITE_EXPIRATION_SECONDS,
   MAX_PARTY_SIZE,
   PARTY_DISCONNECT_GRACE_SECONDS,
+  cooldownRemainingSeconds,
   REGIONS,
   isFail,
   isPlaced,
@@ -22,7 +23,7 @@ import { LoginHandoff } from "./auth/handoff.js";
 import { SessionService, type SessionUser } from "./auth/sessions.js";
 import type { Config } from "./config.js";
 import type { Database } from "./db/client.js";
-import { partyInvites, playerRatings, users } from "./db/schema/index.js";
+import { partyInvites, partyMembers, playerRatings, users } from "./db/schema/index.js";
 import { MatchLifecycle } from "./match/lifecycle.js";
 import { MatchReporting } from "./match/reporting.js";
 import { Matchmaker, MatchSweeper } from "./matchmaker/loop.js";
@@ -182,20 +183,26 @@ export async function buildApp({
   });
 
   const sweeper = new MatchSweeper(lifecycle, {
-    onCancelled: async (matchId, missed, kept) => {
+    onCancelled: async (matchId, missed, kept, penalties = []) => {
       // Everyone hears about it, but only the people who missed are told they
-      // are at fault — the other nine did nothing wrong.
-      notifier.toUsers(missed, {
-        type: "match.cancelled",
-        matchId,
-        reason: "ACCEPT_TIMEOUT",
-        atFault: true,
-      });
+      // are at fault — the other nine did nothing wrong, and only they are
+      // told what it cost, since the cooldown is theirs alone.
+      const bySeconds = new Map(penalties.map((p) => [p.userId, p.cooldownSeconds]));
+      for (const userId of missed) {
+        notifier.toUser(userId, {
+          type: "match.cancelled",
+          matchId,
+          reason: "ACCEPT_TIMEOUT",
+          atFault: true,
+          cooldownSeconds: bySeconds.get(userId) ?? 0,
+        });
+      }
       notifier.toUsers(kept, {
         type: "match.cancelled",
         matchId,
         reason: "ACCEPT_TIMEOUT",
         atFault: false,
+        cooldownSeconds: 0,
       });
     },
     onLive: async (matchId) => {
@@ -383,6 +390,8 @@ export async function buildApp({
         wins: playerRatings.wins,
         losses: playerRatings.losses,
         peakRating: playerRatings.peakRating,
+        queueCooldownUntil: playerRatings.queueCooldownUntil,
+        missedAccepts: playerRatings.missedAccepts,
       })
       .from(playerRatings)
       .where(eq(playerRatings.userId, user.userId))
@@ -408,6 +417,10 @@ export async function buildApp({
       peakRating: stats?.peakRating ?? rating,
       party: await party.view(partyId),
       avatarUrl: profile?.avatarUrl ?? null,
+      // So a client that reloads mid-cooldown still knows about it, rather
+      // than offering a queue button that will be refused.
+      queueCooldownSeconds: cooldownRemainingSeconds(stats?.queueCooldownUntil ?? null),
+      missedAccepts: stats?.missedAccepts ?? 0,
     };
   });
 
@@ -620,6 +633,55 @@ export async function buildApp({
     return result.data;
   });
 
+  /**
+   * Whether anyone in the party is barred from queueing, and why.
+   *
+   * Covers both a missed-accept cooldown and a moderator ban. The ban was
+   * already stored and never checked, so it did not actually stop anyone.
+   */
+  async function blockedFromQueue(
+    partyId: string,
+  ): Promise<{ error: string; message: string; secondsRemaining: number } | null> {
+    const rows = await db
+      .select({
+        discordName: users.discordName,
+        bannedUntil: users.bannedUntil,
+        cooldownUntil: playerRatings.queueCooldownUntil,
+      })
+      .from(partyMembers)
+      .innerJoin(users, eq(users.id, partyMembers.userId))
+      .leftJoin(playerRatings, eq(playerRatings.userId, partyMembers.userId))
+      .where(eq(partyMembers.partyId, partyId));
+
+    const solo = rows.length === 1;
+
+    for (const row of rows) {
+      const banned = cooldownRemainingSeconds(row.bannedUntil ?? null);
+      if (banned > 0) {
+        return {
+          error: "BANNED",
+          message: solo
+            ? "Your account is suspended."
+            : row.discordName + "'s account is suspended.",
+          secondsRemaining: banned,
+        };
+      }
+
+      const cooling = cooldownRemainingSeconds(row.cooldownUntil ?? null);
+      if (cooling > 0) {
+        return {
+          error: "QUEUE_COOLDOWN",
+          message: solo
+            ? "You missed a match you accepted into. The queue reopens shortly."
+            : row.discordName + " is on a queue cooldown.",
+          secondsRemaining: cooling,
+        };
+      }
+    }
+
+    return null;
+  }
+
   async function broadcastParty(partyId: string): Promise<void> {
     const view = await party.view(partyId);
     if (!view) return;
@@ -659,6 +721,12 @@ export async function buildApp({
     if (size > MAX_PARTY_SIZE) {
       return reply.code(409).send({ error: "PARTY_FULL", message: "Party is too large" });
     }
+
+    // One member on a cooldown blocks the party. Letting the rest queue without
+    // them would turn a penalty into "ask a friend to carry you past it", and
+    // silently dropping them from the party is not ours to do.
+    const blocked = await blockedFromQueue(partyId);
+    if (blocked) return reply.code(403).send(blocked);
 
     const rating = await party.averageRating(partyId, DEFAULT_RATING);
     const ticket = await queue.join({
@@ -753,6 +821,7 @@ export async function buildApp({
         matchId: id,
         reason: "DECLINED",
         atFault: p.userId === user.userId,
+        cooldownSeconds: p.userId === user.userId ? result.data.cooldownSeconds : 0,
       });
     }
 
