@@ -30,6 +30,7 @@ export interface MatchViewPlayer {
   inGameName: string;
   avatarUrl: string | null;
   rating: number;
+  peakRating: number;
   tier: string | null;
   gamesPlayed: number;
   wins: number;
@@ -459,6 +460,7 @@ export class MatchLifecycle {
         inGameName: users.inGameName,
         avatarUrl: users.avatarUrl,
         rating: playerRatings.rating,
+        peakRating: playerRatings.peakRating,
         gamesPlayed: playerRatings.gamesPlayed,
         wins: playerRatings.wins,
         losses: playerRatings.losses,
@@ -481,6 +483,7 @@ export class MatchLifecycle {
         inGameName: r.inGameName ?? r.discordName,
         avatarUrl: r.avatarUrl,
         rating,
+        peakRating: r.peakRating ?? rating,
         // Same rule as /me: no rank until placements are done.
         tier: isPlaced(gamesPlayed) ? tierForRating(rating) : null,
         gamesPlayed,

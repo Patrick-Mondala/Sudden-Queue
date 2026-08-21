@@ -943,8 +943,17 @@ function LadderScreen({ me, onView }) {
 
 function ProfileScreen({ p, me, history, onBack, onViewMatch }) {
   const isMe = p.id === me.id;
-  const total = p.wins + p.losses;
+  const total = (p.wins ?? 0) + (p.losses ?? 0);
   const streak = 3;
+
+  // There is no endpoint for another player's profile yet. What we know about
+  // them is whatever the roster we clicked through carried, so the sample
+  // extras -- percentile, streak, reliability, and a match history that is
+  // actually our own -- have nothing behind them and are left out rather than
+  // rendered as confident-looking noise.
+  const live = !!me.live;
+  const knowsPercentile = !live && typeof p.percentile === "number";
+  const ownHistory = isMe ? history : [];
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16, height: "100%" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
@@ -955,18 +964,23 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch }) {
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}><H size={26}>{p.discordName}</H>{isMe && <Tag color={T.accent}>You</Tag>}</div>
               <div style={{ fontFamily: T.mono, fontSize: 12, color: T.muted, marginTop: 4 }}>{p.inGameName} · Discord linked</div>
             </div>
-            <div style={{ textAlign: "right" }}><Tier tier={p.tier} size={40} /><Eyebrow>Top {Math.max(1, Math.round((1 - p.percentile) * 100))}%</Eyebrow></div>
+            <div style={{ textAlign: "right" }}><Tier tier={p.tier} size={40} />{knowsPercentile && <Eyebrow>Top {Math.max(1, Math.round((1 - p.percentile) * 100))}%</Eyebrow>}</div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginTop: 20 }}>
-            {[["Rating", p.rating], ["Matches", total], ["Record", `${p.wins}–${p.losses}`], ["Win rate", winRate(p.wins, p.losses)], ["Streak", `W${streak}`]].map(([k, v]) => (
+            {[["Rating", p.rating], ["Matches", live ? (p.gamesPlayed ?? total) : total], ["Record", `${p.wins ?? 0}–${p.losses ?? 0}`], ["Win rate", winRate(p.wins ?? 0, p.losses ?? 0)], live ? ["Peak", p.peakRating ?? "—"] : ["Streak", `W${streak}`]].map(([k, v]) => (
               <div key={k} style={{ background: T.raised, borderRadius: 4, padding: "10px 12px" }}><Eyebrow style={{ fontSize: 9.5 }}>{k}</Eyebrow><div style={{ fontFamily: T.mono, fontSize: 18, fontWeight: 600, marginTop: 4 }}>{v}</div></div>
             ))}
           </div>
         </Panel>
         <Panel style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
           <Eyebrow style={{ marginBottom: 10 }}>Match history</Eyebrow>
+          {live && !isMe && (
+            <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>
+              Another player's match history isn't available yet.
+            </div>
+          )}
           <div style={{ overflow: "auto", flex: 1 }}>
-            {history.map((m) => (
+            {ownHistory.map((m) => (
               <div key={m.id} className="row-hover" onClick={() => m.team1 && onViewMatch(m)} style={{ display: "grid", gridTemplateColumns: "60px 60px 1fr 100px 60px", alignItems: "center", gap: 10, padding: "8px", borderRadius: 4, fontSize: 13, cursor: m.team1 ? "pointer" : "default" }}>
                 <Tag>{m.type}</Tag><span style={{ fontFamily: T.mono, fontSize: 11.5, color: T.muted }}>{m.region.toUpperCase()}</span><span style={{ color: T.muted }}>{ago(m.ts)}</span>
                 <span style={{ fontFamily: T.mono, fontSize: 11.5, color: m.state === "in dispute" ? T.captain : m.state === "in progress" ? T.accent : T.muted }}>{m.state}</span>
@@ -979,7 +993,12 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <Panel>
           <Eyebrow style={{ marginBottom: 8 }}>Reliability</Eyebrow>
-          {[["Disputes", p.disputes, p.disputes ? T.captain : T.ok], ["Missed accepts (30d)", isMe ? 1 : 0, T.muted], ["Abandons", 0, T.ok]].map(([k, v, c]) => (
+          {live && (
+            <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>
+              Disputes, missed accepts and abandons aren't published yet.
+            </div>
+          )}
+          {!live && [["Disputes", p.disputes, p.disputes ? T.captain : T.ok], ["Missed accepts (30d)", isMe ? 1 : 0, T.muted], ["Abandons", 0, T.ok]].map(([k, v, c]) => (
             <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderTop: `1px solid ${T.line}`, fontSize: 13 }}><span style={{ color: T.muted }}>{k}</span><span style={{ fontFamily: T.mono, color: c, fontWeight: 600 }}>{v}</span></div>
           ))}
         </Panel>
@@ -1283,7 +1302,7 @@ function TeamDetailModal({ team, teams, history, me, onClose, onViewMatch, onVie
   );
 }
 
-function MatchChat({ match, me, onView }) {
+function MatchChat({ match, me, onView, live }) {
   const myTeam = match.team1.some((p) => p.id === me.id) ? match.team1 : match.team2;
   const allPlayers = [...match.team1, ...match.team2];
   const [tab, setTab] = useState("team");
@@ -1293,6 +1312,8 @@ function MatchChat({ match, me, onView }) {
   const push = (ch, m) => setMsgs((s) => ({ ...s, [ch]: [...s[ch], m].slice(-80) }));
 
   useEffect(() => {
+    // Sample account only -- see ChatDock.
+    if (live) return;
     const iv = setInterval(() => {
       if (Math.random() < 0.55) return;
       const ch = Math.random() < 0.6 ? "team" : "match";
@@ -1316,7 +1337,7 @@ function MatchChat({ match, me, onView }) {
         ))}
       </div>
       <div style={{ flex: 1, overflow: "auto", padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-        {msgs[tab].length === 0 ? <div style={{ margin: "auto", color: T.dim, fontSize: 12.5 }}>No messages yet.</div>
+        {msgs[tab].length === 0 ? <div style={{ margin: "auto", color: T.dim, fontSize: 12.5, textAlign: "center", padding: 16, lineHeight: 1.5 }}>{live ? "Chat isn't wired up yet — use your captain's in-game party." : "No messages yet."}</div>
           : msgs[tab].map((m, i) => (
             <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", animation: "sqRise .2s ease" }}>
               <div onClick={() => onView?.(m.from)} style={{ cursor: onView ? "pointer" : "default", flexShrink: 0 }}><Avatar p={m.from} size={22} /></div>
@@ -1326,8 +1347,8 @@ function MatchChat({ match, me, onView }) {
         <div ref={endRef} />
       </div>
       <div style={{ padding: 8, borderTop: `1px solid ${T.line}`, display: "flex", gap: 6 }}>
-        <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder={`Message ${tab === "team" ? "team" : "match"}…`} style={{ flex: 1, background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13 }} />
-        <Btn size="sm" kind="primary" onClick={send} disabled={!text.trim()}><Send size={13} /></Btn>
+        <input value={text} disabled={live} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder={live ? "Chat isn't wired up yet" : `Message ${tab === "team" ? "team" : "match"}…`} style={{ flex: 1, background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: live ? T.dim : T.text, fontSize: 13 }} />
+        <Btn size="sm" kind="primary" onClick={send} disabled={live || !text.trim()}><Send size={13} /></Btn>
       </div>
     </Panel>
   );
@@ -1511,7 +1532,7 @@ function MatchScreen({ match, me, onFinished, notify, onView, tutorial, onPhaseC
           </div>
         )}
       </Panel>
-      <MatchChat match={match} me={me} onView={onView} />
+      <MatchChat match={match} me={me} onView={onView} live={live} />
     </div>
   );
 }
@@ -1526,15 +1547,19 @@ function ChatDock({ me, party, open, setOpen, onView }) {
   const endRef = useRef(null);
   const push = (m) => { setMsgs((s) => [...s, m].slice(-80)); if (!open) setUnread((u) => u + 1); };
 
-  // fake incoming traffic
+  // Simulated traffic, for the sample account only. Inventing lines and
+  // attributing them to real people you are about to play with is worse than
+  // an empty window.
+  const live = !!me.live;
   useEffect(() => {
+    if (live) return;
     const iv = setInterval(() => {
       if (party.length < 2 || Math.random() < 0.6) return;
       const from = pick(party.filter((p) => p.id !== me.id), 1)[0]; if (!from) return;
       push({ from, text: CANNED.party[rnd(0, CANNED.party.length - 1)], ts: Date.now() });
     }, 4000);
     return () => clearInterval(iv);
-  }, [party, open]);
+  }, [party, open, live]);
   useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [msgs]);
   useEffect(() => { if (open) setUnread(0); }, [open]);
 
@@ -1545,7 +1570,9 @@ function ChatDock({ me, party, open, setOpen, onView }) {
       <MessageSquare size={14} /> Chat {unread > 0 && <span style={{ background: T.accent, color: "#07110F", borderRadius: 10, fontSize: 10.5, padding: "1px 6px", fontFamily: T.mono }}>{unread}</span>}
     </button>
   );
-  const disabled = party.length < 2;
+  // Nothing carries a message to the other end yet, so the box stays shut
+  // rather than swallowing what you type.
+  const disabled = live || party.length < 2;
   return (
     <div data-tour="chat-toggle" style={{ position: "absolute", right: 16, bottom: 16, width: 300, height: 380, background: T.panel, border: `1px solid ${T.line2}`, borderRadius: 8, boxShadow: "0 16px 40px rgba(0,0,0,.5)", display: "flex", flexDirection: "column", zIndex: 55, animation: "sqRise .2s ease", overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${T.line}`, padding: "10px 12px" }}>
@@ -1553,7 +1580,7 @@ function ChatDock({ me, party, open, setOpen, onView }) {
         <button onClick={() => setOpen(false)} style={{ background: "transparent", border: "none", color: T.muted, padding: 4 }}><X size={14} /></button>
       </div>
       <div style={{ flex: 1, overflow: "auto", padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-        {disabled ? <div style={{ margin: "auto", color: T.dim, fontSize: 12.5, textAlign: "center", padding: 20, lineHeight: 1.5 }}>Invite someone to your party to chat.</div>
+        {disabled ? <div style={{ margin: "auto", color: T.dim, fontSize: 12.5, textAlign: "center", padding: 20, lineHeight: 1.5 }}>{live ? "Chat isn't wired up yet." : "Invite someone to your party to chat."}</div>
           : msgs.length === 0 ? <div style={{ margin: "auto", color: T.dim, fontSize: 12.5 }}>No messages yet.</div>
           : msgs.map((m, i) => (
             <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", animation: "sqRise .2s ease" }}>
@@ -1751,6 +1778,7 @@ export default function App() {
       inGameName: profile.inGameName ?? profile.discordName,
       avatarColor: AV_COLORS[Math.abs(hashString(profile.userId)) % AV_COLORS.length],
       rating: profile.rating,
+      peakRating: profile.peakRating,
       tier: profile.tier,
       placementsRemaining: profile.placementsRemaining,
       wins: profile.wins,
@@ -1898,6 +1926,9 @@ export default function App() {
         onAccepted={() => { setMatch(pendingMatch); setPendingMatch(null); go("play"); }}
         onFail={(who) => { setPendingMatch(null);
           if (tourStep >= 0) { setQueue({ state: "idle" }); setTourStep(TOUR_STEPS.findIndex((x) => x.id === "queue")); notify("No cooldown during the tutorial — queue again"); return; }
+          // The server decides the penalty and whether anyone is re-queued, and
+          // says so over the socket. Guessing here would contradict it.
+          if (me.live) { setQueue({ state: "idle" }); return; }
           if (who === "you") { setCooldownUntil(Date.now() + 30000); notify("You didn't accept — 30s cooldown (5 min in production)"); } else { notify("A player didn't accept. You're back in queue with priority."); setQueue({ state: "queued", since: Date.now() - 20000, regions: ["na", "eu"] }); api.joinQueue({ regions: ["na", "eu"], partyIds: party.map((p) => p.id) }); } }} />}
 
       {viewMatch && <MatchHistoryModal m={viewMatch} me={me} onClose={() => setViewMatch(null)} onView={(p) => { setViewMatch(null); setViewProfile(p); }} />}
