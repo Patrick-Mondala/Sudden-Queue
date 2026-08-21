@@ -64,6 +64,17 @@ export const MISSED_ACCEPT_COOLDOWNS_SECONDS = [300, 900, 1_800, 3_600];
 export const QUEUE_HEARTBEAT_INTERVAL_SECONDS = 5;
 export const QUEUE_STALE_AFTER_SECONDS = 20;
 
+/**
+ * How long a disconnected player keeps their place in a party.
+ *
+ * Longer than the queue's window on purpose. A dropped socket is usually a
+ * blip, and the client reconnects with backoff; being turfed out of a
+ * five-stack because a router hiccuped would be worse than the stale roster
+ * this avoids. The queue can afford to be twitchier because leaving it costs
+ * nothing but a re-queue.
+ */
+export const PARTY_DISCONNECT_GRACE_SECONDS = 90;
+
 /** Party invites auto-expire. */
 export const INVITE_EXPIRATION_SECONDS = 30;
 

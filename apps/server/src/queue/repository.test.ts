@@ -1,8 +1,8 @@
 import { QUEUE_STALE_AFTER_SECONDS } from "@suddenqueue/core";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { queueTickets } from "../db/schema/index.js";
+import { queueTickets, users } from "../db/schema/index.js";
 import { makeParty, setupTestDatabase, truncateAll } from "../test/helpers.js";
 import { QueueRepository } from "./repository.js";
 
@@ -113,20 +113,20 @@ describe("region pools", () => {
 
 describe("heartbeat and staleness", () => {
   it("heartbeat extends a live ticket", async () => {
-    const { partyId } = await makeParty(handle, 1);
+    const { partyId, userIds } = await makeParty(handle, 1);
     await repo.join({ partyId, regions: ["na"], ratingSnapshot: 1200, size: 1 });
 
     const before = (await repo.getByPartyId(partyId))!.heartbeatAt;
     await new Promise((r) => setTimeout(r, 25));
-    expect(await repo.heartbeat(partyId)).toBe(true);
+    expect(await repo.heartbeat(partyId, userIds[0]!)).toBe(true);
 
     const after = (await repo.getByPartyId(partyId))!.heartbeatAt;
     expect(after.getTime()).toBeGreaterThan(before.getTime());
   });
 
   it("heartbeat on a missing ticket reports failure rather than creating one", async () => {
-    const { partyId } = await makeParty(handle, 1);
-    expect(await repo.heartbeat(partyId)).toBe(false);
+    const { partyId, userIds } = await makeParty(handle, 1);
+    expect(await repo.heartbeat(partyId, userIds[0]!)).toBe(false);
   });
 
   it("prunes tickets whose client went quiet, and leaves fresh ones alone", async () => {
@@ -173,5 +173,49 @@ describe("locking", () => {
       expect(locked).toHaveLength(1);
       expect(locked[0]!.partyId).toBe(a.partyId);
     });
+  });
+});
+
+describe("a party is only queueable while all of it is there", () => {
+  /** Backdates a member's last-seen, the way closing the app does. */
+  async function goQuiet(userId: string, secondsAgo: number) {
+    await handle.db
+      .update(users)
+      .set({ lastSeenAt: new Date(Date.now() - secondsAgo * 1000) })
+      .where(eq(users.id, userId));
+  }
+
+  it("drops a party whose ticket is fresh but whose members are not", async () => {
+    const { partyId, userIds } = await makeParty(handle, 5);
+    await repo.join({ partyId, regions: ["na"], ratingSnapshot: 1200, size: 5 });
+
+    // One member keeps heartbeating; the other four close the app. The ticket
+    // itself stays fresh, which is exactly how a stack of ghosts used to reach
+    // a match and make ten people eat the cancellation.
+    await repo.heartbeat(partyId, userIds[0]!);
+    for (const id of userIds.slice(1)) await goQuiet(id, QUEUE_STALE_AFTER_SECONDS + 5);
+
+    const pruned = await repo.pruneStale();
+    expect(pruned).toContain(partyId);
+    expect(await repo.countQueuedPlayers()).toBe(0);
+  });
+
+  it("leaves a party alone while every member is still checking in", async () => {
+    const { partyId, userIds } = await makeParty(handle, 3);
+    await repo.join({ partyId, regions: ["na"], ratingSnapshot: 1200, size: 3 });
+
+    for (const id of userIds) await repo.heartbeat(partyId, id);
+
+    expect(await repo.pruneStale()).not.toContain(partyId);
+    expect(await repo.countQueuedPlayers()).toBe(3);
+  });
+
+  it("treats joining as a sign of life, so a fresh ticket survives its first tick", async () => {
+    // Nobody has heartbeated yet at this point; without the stamp on join the
+    // whole party would read as absent and be pruned immediately.
+    const { partyId } = await makeParty(handle, 4);
+    await repo.join({ partyId, regions: ["na"], ratingSnapshot: 1200, size: 4 });
+
+    expect(await repo.pruneStale()).not.toContain(partyId);
   });
 });

@@ -56,6 +56,16 @@ export interface Connection {
 export class Notifier {
   private readonly byUser = new Map<string, Set<Connection>>();
 
+  /**
+   * Called when a user's last connection goes, wherever it went from.
+   *
+   * Sockets drop in three places -- a close, an error, and a send that throws
+   * on an already-dead socket -- and only this class sees all three. Anything
+   * that has to happen when someone actually goes offline hangs off here rather
+   * than off one of those paths.
+   */
+  onUserOffline?: (userId: string) => void;
+
   add(userId: string, conn: Connection): void {
     const set = this.byUser.get(userId);
     if (set) set.add(conn);
@@ -66,7 +76,12 @@ export class Notifier {
     const set = this.byUser.get(userId);
     if (!set) return;
     set.delete(conn);
-    if (set.size === 0) this.byUser.delete(userId);
+    if (set.size === 0) this.dropUser(userId);
+  }
+
+  private dropUser(userId: string): void {
+    this.byUser.delete(userId);
+    this.onUserOffline?.(userId);
   }
 
   isOnline(userId: string): boolean {
@@ -96,7 +111,7 @@ export class Notifier {
         set.delete(conn);
       }
     }
-    if (set.size === 0) this.byUser.delete(userId);
+    if (set.size === 0) this.dropUser(userId);
   }
 
   toUsers(userIds: readonly string[], event: ServerEvent): void {

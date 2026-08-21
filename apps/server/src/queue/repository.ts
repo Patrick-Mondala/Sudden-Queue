@@ -2,7 +2,7 @@ import { QUEUE_STALE_AFTER_SECONDS, type QueueTicket } from "@suddenqueue/core";
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
 
 import type { Database, Executor } from "../db/client.js";
-import { partyMembers, queueTickets } from "../db/schema/index.js";
+import { partyMembers, queueTickets, users } from "../db/schema/index.js";
 
 /**
  * Queue ticket persistence.
@@ -41,6 +41,24 @@ export class QueueRepository {
       .onConflictDoNothing({ target: queueTickets.partyId })
       .returning({ id: queueTickets.id });
 
+    // Stamp everyone as seen at the moment they enter the queue, so a member
+    // who has not sent their first heartbeat yet is not mistaken for one who
+    // has already gone.
+    if (rows[0]) {
+      await this.db
+        .update(users)
+        .set({ lastSeenAt: new Date() })
+        .where(
+          inArray(
+            users.id,
+            this.db
+              .select({ id: partyMembers.userId })
+              .from(partyMembers)
+              .where(eq(partyMembers.partyId, params.partyId)),
+          ),
+        );
+    }
+
     return rows[0] ?? null;
   }
 
@@ -53,8 +71,19 @@ export class QueueRepository {
     return rows.length > 0;
   }
 
-  /** Extends a ticket's life. Called on the client's WebSocket heartbeat. */
-  async heartbeat(partyId: string): Promise<boolean> {
+  /**
+   * Extends a ticket's life, and records that this particular member is alive.
+   *
+   * Both halves matter. The ticket keeps its own timestamp so a party nobody is
+   * heartbeating for still expires, and the per-member stamp is what stops one
+   * connected player holding a queue slot for four who have closed the app.
+   */
+  async heartbeat(partyId: string, userId: string): Promise<boolean> {
+    await this.db
+      .update(users)
+      .set({ lastSeenAt: new Date() })
+      .where(eq(users.id, userId));
+
     const rows = await this.db
       .update(queueTickets)
       .set({ heartbeatAt: new Date() })
@@ -70,9 +99,25 @@ export class QueueRepository {
    */
   async pruneStale(): Promise<string[]> {
     const cutoff = new Date(Date.now() - QUEUE_STALE_AFTER_SECONDS * 1000);
+
+    // A party is only queueable while all of it is still there. Checking the
+    // ticket alone let one connected member hold the slot for a whole stack
+    // that had gone: the match would form, the absent ones could not accept,
+    // and ten people would eat the cancellation.
     const rows = await this.db
       .delete(queueTickets)
-      .where(lt(queueTickets.heartbeatAt, cutoff))
+      .where(
+        // The cutoff goes in as an ISO string with an explicit cast: a raw Date
+        // inside a template reaches the driver as an object it will not encode.
+        sql`${queueTickets.heartbeatAt} < ${cutoff.toISOString()}::timestamptz
+            OR EXISTS (
+              SELECT 1
+              FROM party_members pm
+              JOIN users u ON u.id = pm.user_id
+              WHERE pm.party_id = ${queueTickets.partyId}
+                AND (u.last_seen_at IS NULL OR u.last_seen_at < ${cutoff.toISOString()}::timestamptz)
+            )`,
+      )
       .returning({ partyId: queueTickets.partyId });
 
     return rows.map((r) => r.partyId);

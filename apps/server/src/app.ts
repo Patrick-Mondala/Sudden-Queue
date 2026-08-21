@@ -2,6 +2,7 @@ import {
   DEFAULT_RATING,
   INVITE_EXPIRATION_SECONDS,
   MAX_PARTY_SIZE,
+  PARTY_DISCONNECT_GRACE_SECONDS,
   REGIONS,
   isFail,
   isPlaced,
@@ -40,6 +41,8 @@ export interface AppDeps {
   config: Config;
   /** Injected so tests can drive the loop by hand instead of on a timer. */
   autoStart?: boolean;
+  /** Injected for the same reason: a test cannot wait out the real grace. */
+  partyDisconnectGraceMs?: number;
 }
 
 export interface App {
@@ -78,7 +81,12 @@ const SIGNED_IN_PAGE = `<!doctype html>
   <p>You can close this tab and return to the app.</p>
 </div>`;
 
-export async function buildApp({ db, config, autoStart = true }: AppDeps): Promise<App> {
+export async function buildApp({
+  db,
+  config,
+  autoStart = true,
+  partyDisconnectGraceMs = PARTY_DISCONNECT_GRACE_SECONDS * 1000,
+}: AppDeps): Promise<App> {
   const server = Fastify({ logger: config.NODE_ENV !== "test" });
 
   /**
@@ -503,6 +511,8 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
       // Throttling is a "not yet", not a "no" -- worth its own status so the
       // client can show a countdown rather than a rejection.
       const throttled = result.code === "RATE_LIMITED" || result.code === "RECENTLY_INVITED";
+      // TARGET_QUEUED is a plain conflict: waiting will not fix it, they have
+      // to leave the queue.
       return reply
         .code(throttled ? 429 : 409)
         .send({ error: result.code, message: result.message });
@@ -542,6 +552,11 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
     }
 
     await broadcastParty(result.data.partyId);
+
+    // The party they walked out of has to hear it too, or its remaining members
+    // keep a roster with someone in it who has gone.
+    if (result.data.leftPartyId) await broadcastParty(result.data.leftPartyId);
+
     return result.data;
   });
 
@@ -867,6 +882,55 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
 
   // ---------------------------------------------------------------- websocket
 
+  /**
+   * Players whose socket has dropped but whose seat is still being held.
+   *
+   * A dropped socket is usually a blip and the client reconnects on its own, so
+   * a party is not disbanded the instant one goes quiet. If they are still gone
+   * when the timer fires, they are taken out of the party -- otherwise a closed
+   * app occupies a slot in a five-stack forever, and the leader has to notice
+   * and kick a ghost.
+   */
+  const disconnectTimers = new Map<string, NodeJS.Timeout>();
+
+  // Fires only when the last of a user's connections has gone: two windows
+  // open means closing one is not a disconnect.
+  notifier.onUserOffline = (userId) => scheduleDisconnectCheck(userId);
+
+  async function dropFromPartyIfStillGone(userId: string): Promise<void> {
+    disconnectTimers.delete(userId);
+    if (notifier.isOnline(userId)) return;
+
+    const partyId = await party.partyIdFor(userId);
+    if (!partyId) return;
+    if ((await party.memberCount(partyId)) <= 1) return; // A solo party is theirs to keep.
+
+    const result = await party.leave(userId);
+    if (isFail(result)) return;
+
+    // The party they left needs to hear about it; the fresh solo party they
+    // landed in has nobody else in it to tell.
+    await broadcastParty(partyId);
+  }
+
+  function scheduleDisconnectCheck(userId: string): void {
+    clearTimeout(disconnectTimers.get(userId));
+    const timer = setTimeout(() => {
+      void dropFromPartyIfStillGone(userId).catch((err) =>
+        server.log.error({ err, userId }, "disconnect cleanup failed"),
+      );
+    }, partyDisconnectGraceMs);
+
+    // Never hold the process open for a timer whose only job is tidying up.
+    timer.unref?.();
+    disconnectTimers.set(userId, timer);
+  }
+
+  server.addHook("onClose", async () => {
+    for (const timer of disconnectTimers.values()) clearTimeout(timer);
+    disconnectTimers.clear();
+  });
+
   server.get("/ws", { websocket: true }, async (socket, req) => {
     const token =
       (req.query as Record<string, string>)?.token ??
@@ -885,6 +949,9 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
     };
 
     notifier.add(userId, conn);
+    // They are back, so whatever was counting down for them can stop.
+    clearTimeout(disconnectTimers.get(userId));
+    disconnectTimers.delete(userId);
 
     socket.on("message", (raw: Buffer) => {
       let msg: { type?: string };
@@ -898,7 +965,7 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
       // sending these is pruned, so a closed app does not hold a queue slot.
       if (msg.type === "heartbeat") {
         void party.partyIdFor(userId).then((partyId) => {
-          if (partyId) void queue.heartbeat(partyId);
+          if (partyId) void queue.heartbeat(partyId, userId);
         });
       }
     });

@@ -26,7 +26,7 @@ beforeAll(async () => {
   handle = await setupTestDatabase();
   // autoStart off: tests drive the matchmaker explicitly so a background timer
   // cannot consume a queue mid-assertion.
-  app = await buildApp({ db: handle.db, config: CONFIG, autoStart: false });
+  app = await buildApp({ db: handle.db, config: CONFIG, autoStart: false, partyDisconnectGraceMs: 60 });
   await app.server.ready();
 }, 60_000);
 
@@ -880,5 +880,207 @@ describe("invite throttling", () => {
       payload: { userId: targets[0]!.userId },
     });
     expect(res.statusCode).toBe(200);
+  });
+});
+
+describe("party rules that only bite in a race", () => {
+  async function queueUp(token: string) {
+    return app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(token),
+      payload: { regions: ["na"] },
+    });
+  }
+
+  it("will not invite someone who is in the queue", async () => {
+    const a = await login();
+    const b = await login();
+    expect((await queueUp(b.token)).statusCode).toBe(200);
+
+    // Accepting would delete their solo party and take its ticket with it, so
+    // they would lose their place in line without being asked.
+    const res = await app.server.inject({
+      method: "POST",
+      url: "/party/invite",
+      headers: authed(a.token),
+      payload: { userId: b.userId },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("TARGET_QUEUED");
+  });
+
+  it("refuses an invite from someone who no longer leads the party", async () => {
+    const a = await login();
+    const b = await login();
+    const c = await login();
+
+    // a builds a party with c, then invites b, then walks out. Leadership
+    // passes to c, who never invited anyone.
+    const toC = await app.server.inject({
+      method: "POST",
+      url: "/party/invite",
+      headers: authed(a.token),
+      payload: { userId: c.userId },
+    });
+    await app.server.inject({
+      method: "POST",
+      url: `/party/invite/${toC.json().inviteId}/accept`,
+      headers: authed(c.token),
+    });
+
+    const toB = await app.server.inject({
+      method: "POST",
+      url: "/party/invite",
+      headers: authed(a.token),
+      payload: { userId: b.userId },
+    });
+    expect(toB.statusCode).toBe(200);
+
+    await app.server.inject({ method: "POST", url: "/party/leave", headers: authed(a.token) });
+
+    const accept = await app.server.inject({
+      method: "POST",
+      url: `/party/invite/${toB.json().inviteId}/accept`,
+      headers: authed(b.token),
+    });
+
+    expect(accept.statusCode).toBe(409);
+    expect(accept.json().error).toBe("INVITER_NOT_LEADER");
+  });
+
+  it("tells the party you walked out of that you have gone", async () => {
+    const a = await login();
+    const b = await login();
+    const c = await login();
+
+    // b and c are a pair; then a poaches c.
+    const pair = await app.server.inject({
+      method: "POST",
+      url: "/party/invite",
+      headers: authed(b.token),
+      payload: { userId: c.userId },
+    });
+    await app.server.inject({
+      method: "POST",
+      url: `/party/invite/${pair.json().inviteId}/accept`,
+      headers: authed(c.token),
+    });
+
+    const poach = await app.server.inject({
+      method: "POST",
+      url: "/party/invite",
+      headers: authed(a.token),
+      payload: { userId: c.userId },
+    });
+    // c is in a party of two, so this is refused outright -- the same rule the
+    // earlier system enforced. c has to leave first.
+    expect(poach.statusCode).toBe(409);
+    expect(poach.json().error).toBe("TARGET_IN_PARTY");
+
+    await app.server.inject({ method: "POST", url: "/party/leave", headers: authed(c.token) });
+
+    const view = await app.server.inject({ method: "GET", url: "/party", headers: authed(b.token) });
+    expect(view.json().members).toHaveLength(1);
+    expect(view.json().leaderId).toBe(b.userId);
+  });
+
+  it("hands leadership on when the leader leaves", async () => {
+    const a = await login();
+    const b = await login();
+
+    const inv = await app.server.inject({
+      method: "POST",
+      url: "/party/invite",
+      headers: authed(a.token),
+      payload: { userId: b.userId },
+    });
+    await app.server.inject({
+      method: "POST",
+      url: `/party/invite/${inv.json().inviteId}/accept`,
+      headers: authed(b.token),
+    });
+
+    await app.server.inject({ method: "POST", url: "/party/leave", headers: authed(a.token) });
+
+    const view = await app.server.inject({ method: "GET", url: "/party", headers: authed(b.token) });
+    expect(view.json().leaderId).toBe(b.userId);
+    expect(view.json().members).toHaveLength(1);
+  });
+});
+
+describe("someone closing the app", () => {
+  function connect(userId: string) {
+    const conn = { send: () => {}, close: () => {} };
+    app.notifier.add(userId, conn);
+    return () => app.notifier.remove(userId, conn);
+  }
+
+  /** The grace is 60ms in tests; give it room without being flaky. */
+  const afterGrace = () => new Promise((r) => setTimeout(r, 400));
+
+  async function pairUp(a: { token: string }, b: { token: string; userId: string }) {
+    const inv = await app.server.inject({
+      method: "POST",
+      url: "/party/invite",
+      headers: authed(a.token),
+      payload: { userId: b.userId },
+    });
+    await app.server.inject({
+      method: "POST",
+      url: `/party/invite/${inv.json().inviteId}/accept`,
+      headers: authed(b.token),
+    });
+  }
+
+  it("takes them out of the party once they are really gone", async () => {
+    const a = await login();
+    const b = await login();
+    const stopA = connect(a.userId);
+    const stopB = connect(b.userId);
+    await pairUp(a, b);
+
+    stopB();
+    await afterGrace();
+
+    // Otherwise a closed app holds a slot in a five-stack and the leader has to
+    // notice and kick a ghost.
+    const view = await app.server.inject({ method: "GET", url: "/party", headers: authed(a.token) });
+    expect(view.json().members).toHaveLength(1);
+    expect(view.json().members[0].userId).toBe(a.userId);
+
+    stopA();
+  });
+
+  it("leaves the party alone if they come straight back", async () => {
+    const a = await login();
+    const b = await login();
+    const stopA = connect(a.userId);
+    let stopB = connect(b.userId);
+    await pairUp(a, b);
+
+    // A dropped socket is usually a blip, and the client reconnects on its own.
+    stopB();
+    stopB = connect(b.userId);
+    await afterGrace();
+
+    const view = await app.server.inject({ method: "GET", url: "/party", headers: authed(a.token) });
+    expect(view.json().members).toHaveLength(2);
+
+    stopA();
+    stopB();
+  });
+
+  it("leaves a solo party be, since it is theirs to come back to", async () => {
+    const a = await login();
+    const stop = connect(a.userId);
+    const before = await app.server.inject({ method: "GET", url: "/party", headers: authed(a.token) });
+
+    stop();
+    await afterGrace();
+
+    const after = await app.server.inject({ method: "GET", url: "/party", headers: authed(a.token) });
+    expect(after.json().partyId).toBe(before.json().partyId);
   });
 });

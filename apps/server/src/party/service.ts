@@ -55,7 +55,9 @@ type PartyError =
   | "NOT_A_MEMBER"
   | "QUEUED"
   | "RATE_LIMITED"
-  | "RECENTLY_INVITED";
+  | "RECENTLY_INVITED"
+  | "TARGET_QUEUED"
+  | "INVITER_NOT_LEADER";
 
 /**
  * Parties — ephemeral groups that queue together, distinct from persistent
@@ -225,6 +227,12 @@ export class PartyService {
     if (targetParty) {
       const n = await this.memberCount(targetParty);
       if (n > 1) return fail("TARGET_IN_PARTY", "That player is already in a party");
+
+      // Accepting would delete their solo party and take its queue ticket with
+      // it, so they would lose their place in line without being asked.
+      if (await this.isQueued(targetParty)) {
+        return fail("TARGET_QUEUED", "That player is in the queue right now");
+      }
     }
 
     const [invite] = await this.db
@@ -321,7 +329,7 @@ export class PartyService {
   async accept(
     userId: string,
     inviteId: string,
-  ): Promise<Result<{ partyId: string }, PartyError>> {
+  ): Promise<Result<{ partyId: string; leftPartyId: string | null }, PartyError>> {
     return this.db.transaction(async (tx) => {
       const [invite] = await tx
         .select()
@@ -358,15 +366,31 @@ export class PartyService {
 
       if (queued[0]) return fail("QUEUED", "That party is already in the queue");
 
+      // The invite was an offer from a leader. If they have since left or been
+      // replaced, accepting would drop you into a party nobody in it asked for.
+      const [host] = await tx
+        .select({ leaderId: parties.leaderId })
+        .from(parties)
+        .where(eq(parties.id, invite.partyId));
+
+      if (!host) return fail("INVITE_NOT_FOUND", "That party no longer exists");
+      if (host.leaderId !== invite.fromUserId) {
+        return fail("INVITER_NOT_LEADER", "Whoever invited you no longer leads that party");
+      }
+
       // Leave the old party, cleaning it up if it is left empty.
       const [current] = await tx
         .select({ partyId: partyMembers.partyId })
         .from(partyMembers)
         .where(eq(partyMembers.userId, userId));
 
+      // Accepting an invite leaves whatever you were in. The caller is handed
+      // the party you left so the people still in it can be told.
+      let leftPartyId: string | null = null;
       if (current) {
+        leftPartyId = current.partyId === invite.partyId ? null : current.partyId;
         await tx.delete(partyMembers).where(eq(partyMembers.userId, userId));
-        await this.deletePartyIfEmpty(tx, current.partyId);
+        await this.settleParty(tx, current.partyId);
       }
 
       await tx.insert(partyMembers).values({ partyId: invite.partyId, userId });
@@ -375,7 +399,7 @@ export class PartyService {
         .set({ status: "accepted" })
         .where(eq(partyInvites.id, inviteId));
 
-      return ok({ partyId: invite.partyId });
+      return ok({ partyId: invite.partyId, leftPartyId });
     });
   }
 
@@ -415,7 +439,7 @@ export class PartyService {
       if (queued[0]) return fail("QUEUED", "Leave the queue first");
 
       await tx.delete(partyMembers).where(eq(partyMembers.userId, userId));
-      await this.reassignOrDelete(tx, current.partyId, userId);
+      await this.settleParty(tx, current.partyId);
 
       const [fresh] = await tx
         .insert(parties)
@@ -485,7 +509,15 @@ export class PartyService {
   }
 
   /** Hands leadership to the longest-standing remaining member, or deletes. */
-  private async reassignOrDelete(tx: Executor, partyId: string, leavingUserId: string) {
+  /**
+   * Settles a party after someone leaves it.
+   *
+   * Deletes it when nobody is left, and promotes the longest-standing member
+   * when the leader is no longer among them. Keyed on whether the leader is
+   * still present rather than on who just left, so a party cannot end up
+   * pointing at a leader who is not in it by any route.
+   */
+  private async settleParty(tx: Executor, partyId: string) {
     const remaining = await tx
       .select({ userId: partyMembers.userId })
       .from(partyMembers)
@@ -502,33 +534,7 @@ export class PartyService {
       .from(parties)
       .where(eq(parties.id, partyId));
 
-    if (party?.leaderId === leavingUserId) {
-      await tx
-        .update(parties)
-        .set({ leaderId: remaining[0]!.userId })
-        .where(eq(parties.id, partyId));
-    }
-  }
-
-  private async deletePartyIfEmpty(tx: Executor, partyId: string) {
-    const remaining = await tx
-      .select({ userId: partyMembers.userId })
-      .from(partyMembers)
-      .where(eq(partyMembers.partyId, partyId))
-      .orderBy(partyMembers.joinedAt, partyMembers.userId);
-
-    if (remaining.length === 0) {
-      await tx.delete(parties).where(eq(parties.id, partyId));
-      return;
-    }
-
-    const [party] = await tx
-      .select({ leaderId: parties.leaderId })
-      .from(parties)
-      .where(eq(parties.id, partyId));
-
-    const stillPresent = remaining.some((r) => r.userId === party?.leaderId);
-    if (!stillPresent) {
+    if (!remaining.some((r) => r.userId === party?.leaderId)) {
       await tx
         .update(parties)
         .set({ leaderId: remaining[0]!.userId })
