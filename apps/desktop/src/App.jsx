@@ -933,6 +933,103 @@ export default function App() {
   const [toasts, setToasts] = useState([]);
   const notify = useCallback((text) => { const id = Date.now() + Math.random(); setToasts((t) => [...t, { id, text }]); setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3800); }, []);
 
+  /**
+   * Loads match history.
+   *
+   * Called on sign-in and again whenever a match closes, so the row you just
+   * played is the server's record of it rather than a local guess at what it
+   * wrote.
+   */
+  const refreshHistory = useCallback(async () => {
+    try {
+      const rows = await server.history();
+      setHistory(
+        rows.map((r) => ({
+          id: r.matchId,
+          ts: new Date(r.resolvedAt ?? r.createdAt).getTime(),
+          region: r.region,
+          type: r.type,
+          result: r.result === null ? "—" : (r.result === "TEAM1") === (r.team === 1) ? "win" : "loss",
+          state: r.state === "DISPUTED" ? "in dispute" : "completed",
+          // Rosters are fetched when a row is opened rather than shipped with
+          // every row; this flag is what makes the row clickable without them.
+          openable: true,
+        })),
+      );
+    } catch {
+      // History is not essential to signing in; an empty list is honest.
+    }
+  }, []);
+
+
+  /**
+   * Re-reads the profile after a match resolves.
+   *
+   * Rank, record and the placement countdown all move at that moment, and the
+   * lobby would otherwise keep showing the pre-match ones until a restart.
+   */
+  const refreshProfile = useCallback(async () => {
+    try {
+      const profile = await server.me();
+      setMe((prev) => (prev?.live ? { ...prev, ...profileToPlayer(profile) } : prev));
+    } catch {
+      // Cosmetic refresh; the next one will pick it up.
+    }
+  }, []);
+
+  /**
+   * Opens a match from a history row.
+   *
+   * The list endpoint returns results, not rosters -- ten players per row for
+   * twenty-five rows is a lot of payload for something most rows never show --
+   * so a live row fetches its own when clicked. Only the rosters are taken from
+   * the fetch: the row already phrases the result from our own side, and the
+   * match record states it as a winning team.
+   */
+  const openMatch = useCallback(async (m) => {
+    if (m.team1) { setViewMatch(m); return; }
+
+    try {
+      const full = adaptMatch(await server.getMatch(m.id));
+      if (!full) { notify("Couldn't load that match"); return; }
+      setViewMatch({
+        ...m,
+        team1: full.team1,
+        team2: full.team2,
+        captain1: full.captain1,
+        captain2: full.captain2,
+        team1Tier: full.team1Tier,
+        team2Tier: full.team2Tier,
+      });
+    } catch (err) {
+      notify(err?.message ?? "Couldn't load that match");
+    }
+  }, [notify]);
+
+
+  const adoptServerSession = useCallback(async () => {
+    const profile = await server.me();
+
+    setMe(profileToPlayer(profile));
+
+    setParty(
+      (profile.party?.members ?? []).map((m) => ({
+        id: m.userId,
+        discordName: m.discordName,
+        inGameName: m.inGameName ?? m.discordName,
+        avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length],
+        tier: m.tier ?? null,
+        placementsRemaining: m.placementsRemaining ?? 0,
+        wins: 0,
+        losses: 0,
+      })),
+    );
+
+    await refreshHistory();
+    setChatOpen(false);
+  }, [refreshHistory]);
+
+
   useEffect(() => { if (me) setParty([me]); }, [me]);
   useEffect(() => {
     if (!me) return;
@@ -1033,99 +1130,6 @@ export default function App() {
     win.requestUserAttention(UserAttentionType.Critical).catch(() => {});
   }, [pendingMatch]);
 
-  /**
-   * Re-reads the profile after a match resolves.
-   *
-   * Rank, record and the placement countdown all move at that moment, and the
-   * lobby would otherwise keep showing the pre-match ones until a restart.
-   */
-  /**
-   * Opens a match from a history row.
-   *
-   * The list endpoint returns results, not rosters -- ten players per row for
-   * twenty-five rows is a lot of payload for something most rows never show --
-   * so a live row fetches its own when clicked. Only the rosters are taken from
-   * the fetch: the row already phrases the result from our own side, and the
-   * match record states it as a winning team.
-   */
-  const openMatch = useCallback(async (m) => {
-    if (m.team1) { setViewMatch(m); return; }
-
-    try {
-      const full = adaptMatch(await server.getMatch(m.id));
-      if (!full) { notify("Couldn't load that match"); return; }
-      setViewMatch({
-        ...m,
-        team1: full.team1,
-        team2: full.team2,
-        captain1: full.captain1,
-        captain2: full.captain2,
-        team1Tier: full.team1Tier,
-        team2Tier: full.team2Tier,
-      });
-    } catch (err) {
-      notify(err?.message ?? "Couldn't load that match");
-    }
-  }, [notify]);
-
-  const refreshProfile = useCallback(async () => {
-    try {
-      const profile = await server.me();
-      setMe((prev) => (prev?.live ? { ...prev, ...profileToPlayer(profile) } : prev));
-    } catch {
-      // Cosmetic refresh; the next one will pick it up.
-    }
-  }, []);
-
-  /**
-   * Loads match history.
-   *
-   * Called on sign-in and again whenever a match closes, so the row you just
-   * played is the server's record of it rather than a local guess at what it
-   * wrote.
-   */
-  const refreshHistory = useCallback(async () => {
-    try {
-      const rows = await server.history();
-      setHistory(
-        rows.map((r) => ({
-          id: r.matchId,
-          ts: new Date(r.resolvedAt ?? r.createdAt).getTime(),
-          region: r.region,
-          type: r.type,
-          result: r.result === null ? "—" : (r.result === "TEAM1") === (r.team === 1) ? "win" : "loss",
-          state: r.state === "DISPUTED" ? "in dispute" : "completed",
-          // Rosters are fetched when a row is opened rather than shipped with
-          // every row; this flag is what makes the row clickable without them.
-          openable: true,
-        })),
-      );
-    } catch {
-      // History is not essential to signing in; an empty list is honest.
-    }
-  }, []);
-
-  const adoptServerSession = useCallback(async () => {
-    const profile = await server.me();
-
-    setMe(profileToPlayer(profile));
-
-    setParty(
-      (profile.party?.members ?? []).map((m) => ({
-        id: m.userId,
-        discordName: m.discordName,
-        inGameName: m.inGameName ?? m.discordName,
-        avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length],
-        tier: m.tier ?? null,
-        placementsRemaining: m.placementsRemaining ?? 0,
-        wins: 0,
-        losses: 0,
-      })),
-    );
-
-    await refreshHistory();
-    setChatOpen(false);
-  }, [refreshHistory]);
 
   if (!me)
     return (

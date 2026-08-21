@@ -51,6 +51,12 @@ export default [
         { varsIgnorePattern: "^[A-Z]", argsIgnorePattern: "^_", ignoreRestSiblings: true },
       ],
 
+      // The companion to no-undef, and the reason it is on: a const declared
+      // below the effect that lists it in a dependency array is a temporal dead
+      // zone crash, because dependency arrays evaluate during render while the
+      // effect body does not. Functions are hoisted and exempt.
+      "no-use-before-define": ["error", { functions: false, variables: true, classes: true }],
+
       // An empty catch is usually deliberate here -- a cosmetic refresh that
       // failed, a socket already closing -- and each one carries a comment.
       "no-empty": ["error", { allowEmptyCatch: true }],

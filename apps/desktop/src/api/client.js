@@ -1,3 +1,6 @@
+
+/** Small delay used by the login poll and the reconnect backoff. */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /**
  * Server client.
  *
@@ -145,7 +148,6 @@ export async function logout() {
   }
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* ─────────────────────────────────────────────────────────────
    API — mirrors the prototype's mock surface
