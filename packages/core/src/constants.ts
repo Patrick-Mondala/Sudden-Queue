@@ -67,5 +67,21 @@ export const QUEUE_STALE_AFTER_SECONDS = 20;
 /** Party invites auto-expire. */
 export const INVITE_EXPIRATION_SECONDS = 30;
 
+/**
+ * Invite throttling.
+ *
+ * Two separate limits, because they stop two different things. The window caps
+ * how fast one player can work through a list of everyone online; the repeat
+ * cooldown stops one person being invited over and over by the same player,
+ * which the window alone would allow.
+ *
+ * The cooldown is longer than the expiry on purpose: an invite that lapses
+ * unanswered should stay unanswered for a while rather than reappearing the
+ * moment it clears.
+ */
+export const INVITE_RATE_LIMIT = 10;
+export const INVITE_RATE_WINDOW_SECONDS = 60;
+export const INVITE_REPEAT_COOLDOWN_SECONDS = 60;
+
 export const CHAT_MAX_MESSAGE_LENGTH = 200;
 export const CHAT_MAX_STORED_MESSAGES = 100;

@@ -1,4 +1,4 @@
-import { isOk } from "@suddenqueue/core";
+import { INVITE_RATE_LIMIT, isOk } from "@suddenqueue/core";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -697,3 +697,188 @@ async function findMatchIdFor(userId: string): Promise<string | null> {
   });
   return rows[0]?.matchId ?? null;
 }
+
+describe("who you can invite", () => {
+  /** Marks a user online, which is a socket fact rather than a stored one. */
+  function goOnline(userId: string) {
+    const conn = { send: () => {}, close: () => {} };
+    app.notifier.add(userId, conn);
+    return () => app.notifier.remove(userId, conn);
+  }
+
+  it("lists everyone else connected, and never yourself", async () => {
+    const a = await login();
+    const b = await login();
+    const offline = await login();
+
+    const stopA = goOnline(a.userId);
+    const stopB = goOnline(b.userId);
+
+    const res = await app.server.inject({
+      method: "GET",
+      url: "/players/online",
+      headers: authed(a.token),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const ids = res.json().players.map((p: { id: string }) => p.id);
+    expect(ids).toContain(b.userId);
+    expect(ids).not.toContain(a.userId);
+    expect(ids).not.toContain(offline.userId);
+
+    stopA();
+    stopB();
+  });
+
+  it("publishes rank, never rating", async () => {
+    const a = await login();
+    const b = await login();
+    const stopA = goOnline(a.userId);
+    const stopB = goOnline(b.userId);
+
+    const res = await app.server.inject({
+      method: "GET",
+      url: "/players/online",
+      headers: authed(a.token),
+    });
+
+    const [player] = res.json().players;
+    expect(player).not.toHaveProperty("rating");
+    expect(player).toHaveProperty("tier");
+    expect(player).toHaveProperty("placementsRemaining");
+
+    stopA();
+    stopB();
+  });
+
+  it("still lists someone already in a party, and says why they are out", async () => {
+    const a = await login();
+    const b = await login();
+    const c = await login();
+
+    // b and c group up, so b is listed but not invitable.
+    const invite = await app.server.inject({
+      method: "POST",
+      url: "/party/invite",
+      headers: authed(b.token),
+      payload: { userId: c.userId },
+    });
+    await app.server.inject({
+      method: "POST",
+      url: `/party/invite/${invite.json().inviteId}/accept`,
+      headers: authed(c.token),
+    });
+
+    const stops = [a, b, c].map((u) => goOnline(u.userId));
+
+    const res = await app.server.inject({
+      method: "GET",
+      url: "/players/online",
+      headers: authed(a.token),
+    });
+
+    const found = res.json().players.find((p: { id: string }) => p.id === b.userId);
+    expect(found).toBeTruthy();
+    expect(found.unavailable).toBe("In a party");
+
+    for (const stop of stops) stop();
+  });
+});
+
+describe("invite throttling", () => {
+  it("refuses a second invite to the same player straight away", async () => {
+    const a = await login();
+    const b = await login();
+
+    const first = await app.server.inject({
+      method: "POST",
+      url: "/party/invite",
+      headers: authed(a.token),
+      payload: { userId: b.userId },
+    });
+    expect(first.statusCode).toBe(200);
+
+    const second = await app.server.inject({
+      method: "POST",
+      url: "/party/invite",
+      headers: authed(a.token),
+      payload: { userId: b.userId },
+    });
+
+    // A "not yet" rather than a "no", so the client can count down to it.
+    expect(second.statusCode).toBe(429);
+    expect(second.json().error).toBe("RECENTLY_INVITED");
+    expect(second.json().message).toMatch(/\d+s/);
+  });
+
+  it("declining does not reopen the cooldown", async () => {
+    const a = await login();
+    const b = await login();
+
+    const first = await app.server.inject({
+      method: "POST",
+      url: "/party/invite",
+      headers: authed(a.token),
+      payload: { userId: b.userId },
+    });
+
+    await app.server.inject({
+      method: "POST",
+      url: `/party/invite/${first.json().inviteId}/decline`,
+      headers: authed(b.token),
+    });
+
+    // Otherwise the quickest route to spamming someone is to have them decline.
+    const again = await app.server.inject({
+      method: "POST",
+      url: "/party/invite",
+      headers: authed(a.token),
+      payload: { userId: b.userId },
+    });
+    expect(again.statusCode).toBe(429);
+  });
+
+  it("caps how fast one player can work through the list", async () => {
+    const a = await login();
+    const targets = [];
+    for (let i = 0; i < INVITE_RATE_LIMIT + 1; i += 1) targets.push(await login());
+
+    const codes = [];
+    for (const t of targets) {
+      const res = await app.server.inject({
+        method: "POST",
+        url: "/party/invite",
+        headers: authed(a.token),
+        payload: { userId: t.userId },
+      });
+      codes.push(res.statusCode);
+    }
+
+    expect(codes.filter((c) => c === 200)).toHaveLength(INVITE_RATE_LIMIT);
+    expect(codes.at(-1)).toBe(429);
+  });
+
+  it("is per inviter, so one spammer cannot block everyone else", async () => {
+    const spammer = await login();
+    const innocent = await login();
+    const targets = [];
+    for (let i = 0; i < INVITE_RATE_LIMIT; i += 1) targets.push(await login());
+
+    for (const t of targets) {
+      await app.server.inject({
+        method: "POST",
+        url: "/party/invite",
+        headers: authed(spammer.token),
+        payload: { userId: t.userId },
+      });
+    }
+
+    const res = await app.server.inject({
+      method: "POST",
+      url: "/party/invite",
+      headers: authed(innocent.token),
+      payload: { userId: targets[0]!.userId },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+});

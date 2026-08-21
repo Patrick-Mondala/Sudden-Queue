@@ -1,5 +1,6 @@
 import { configure } from "@testing-library/dom";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /*
@@ -33,6 +34,11 @@ const server = {
   history: vi.fn(),
   queueStats: vi.fn(),
   getMatch: vi.fn(),
+  onlinePlayers: vi.fn(),
+  invite: vi.fn(),
+  getInvites: vi.fn(),
+  acceptInvite: vi.fn(),
+  declineInvite: vi.fn(),
   joinQueue: vi.fn(),
   leaveQueue: vi.fn(),
   accept: vi.fn(),
@@ -118,6 +124,8 @@ beforeEach(() => {
   server.queueStats.mockResolvedValue({ online: 1, inQueue: 0, inMatch: 0 });
   server.getMatch.mockResolvedValue(MATCH);
   server.accept.mockResolvedValue({});
+  server.onlinePlayers.mockResolvedValue({ players: [] });
+  server.getInvites.mockResolvedValue([]);
 });
 
 afterEach(cleanup);
@@ -193,5 +201,151 @@ describe("what the screen is allowed to show", () => {
     await signedIn();
 
     expect(screen.getByText(/3 placements left/i)).toBeTruthy();
+  });
+});
+
+describe("inviting people", () => {
+  const online = [
+    { id: "user-2", discordName: "Aria", inGameName: "ARIA", tier: "B+", placementsRemaining: 0, unavailable: null },
+    { id: "user-3", discordName: "Boreas", inGameName: "BOREAS", tier: null, placementsRemaining: 2, unavailable: null },
+    { id: "user-4", discordName: "Cinder", inGameName: "CINDER", tier: "A", placementsRemaining: 0, unavailable: "In a party" },
+  ];
+
+  beforeEach(() => {
+    server.onlinePlayers.mockResolvedValue({ players: online });
+    server.invite.mockResolvedValue({});
+    server.getInvites.mockResolvedValue([]);
+  });
+
+  async function openInvites() {
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Invite/i }));
+    // The lobby has its own Invite button, so the modal is returned and every
+    // query below is scoped to it rather than to the whole screen.
+    return screen.findByRole("dialog", { name: /Invite to party/i });
+  }
+
+  it("lists everyone online", async () => {
+    const modal = await openInvites();
+    for (const p of online) expect(within(modal).getByText(p.discordName)).toBeTruthy();
+  });
+
+  it("filters as you type", async () => {
+    const modal = await openInvites();
+    await userEvent.type(within(modal).getByLabelText(/Search players/i), "bor");
+
+    await waitFor(() => expect(within(modal).queryByText("Aria")).toBeNull());
+    expect(within(modal).getByText("Boreas")).toBeTruthy();
+  });
+
+  it("matches on in-game name too, since that is what people are called in game", async () => {
+    const modal = await openInvites();
+    await userEvent.type(within(modal).getByLabelText(/Search players/i), "CINDER");
+
+    await waitFor(() => expect(within(modal).queryByText("Aria")).toBeNull());
+    expect(within(modal).getByText("Cinder")).toBeTruthy();
+  });
+
+  it("shows someone already in a party without an Invite button", async () => {
+    const modal = await openInvites();
+    expect(within(modal).getByText("In a party")).toBeTruthy();
+    // Two invitable players, so two buttons.
+    expect(within(modal).getAllByRole("button", { name: /^Invite$/ })).toHaveLength(2);
+  });
+
+  it("puts a player on cooldown after inviting them", async () => {
+    const modal = await openInvites();
+    await userEvent.click(within(modal).getAllByRole("button", { name: /^Invite$/ })[0]);
+
+    await waitFor(() => expect(server.invite).toHaveBeenCalledWith("user-2"));
+    // The button explains itself rather than waiting to be refused.
+    expect(await within(modal).findByRole("button", { name: /\d+s/ })).toBeTruthy();
+  });
+
+  it("takes the wait from the server when it refuses", async () => {
+    server.invite.mockRejectedValue(
+      Object.assign(new Error("You invited them just now — try again in 42s"), { status: 429 }),
+    );
+    const modal = await openInvites();
+    await userEvent.click(within(modal).getAllByRole("button", { name: /^Invite$/ })[0]);
+
+    expect(await within(modal).findByRole("button", { name: /4[12]s/ })).toBeTruthy();
+  });
+});
+
+describe("receiving invites", () => {
+  const invite = (n, seconds = 30) => ({
+    inviteId: `inv-${n}`,
+    partyId: `party-${n}`,
+    fromUserId: `user-${n}`,
+    fromName: `Inviter${n}`,
+    fromTier: "B",
+    expiresAt: new Date(Date.now() + seconds * 1000).toISOString(),
+  });
+
+  beforeEach(() => {
+    server.getInvites.mockResolvedValue([]);
+    server.acceptInvite.mockResolvedValue({});
+    server.declineInvite.mockResolvedValue({});
+  });
+
+  it("shows a toast without blocking the screen underneath", async () => {
+    await signedIn();
+    emit({ type: "party.invite.received", invite: invite(2) });
+
+    expect(await screen.findByText("Inviter2")).toBeTruthy();
+    // The lobby is still there and still usable behind it.
+    expect(screen.getByText(/Ready to queue/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Queue/i })).toBeTruthy();
+  });
+
+  it("stacks several at once and counts the overflow", async () => {
+    await signedIn();
+    for (const n of [2, 3, 4, 5, 6]) emit({ type: "party.invite.received", invite: invite(n) });
+
+    // Being invited by five people at once is ordinary, so the stack is capped
+    // and the rest are counted rather than dropped.
+    expect(await screen.findByText("Inviter2")).toBeTruthy();
+    expect(screen.getByText("Inviter4")).toBeTruthy();
+    expect(screen.queryByText("Inviter5")).toBeNull();
+    expect(screen.getByText(/\+2 more invites waiting/i)).toBeTruthy();
+  });
+
+  it("ignores a duplicate arriving over a reconnect", async () => {
+    await signedIn();
+    emit({ type: "party.invite.received", invite: invite(2) });
+    emit({ type: "party.invite.received", invite: invite(2) });
+
+    await waitFor(() => expect(screen.getAllByText("Inviter2")).toHaveLength(1));
+  });
+
+  it("accepting one clears the rest, because you are now in a party", async () => {
+    await signedIn();
+    emit({ type: "party.invite.received", invite: invite(2) });
+    emit({ type: "party.invite.received", invite: invite(3) });
+
+    await userEvent.click((await screen.findAllByRole("button", { name: /Join/i }))[0]);
+
+    await waitFor(() => expect(server.acceptInvite).toHaveBeenCalledWith("inv-2"));
+    await waitFor(() => expect(screen.queryByText("Inviter3")).toBeNull());
+  });
+
+  it("declining removes only that one", async () => {
+    await signedIn();
+    emit({ type: "party.invite.received", invite: invite(2) });
+    emit({ type: "party.invite.received", invite: invite(3) });
+
+    await userEvent.click((await screen.findAllByRole("button", { name: /Decline/i }))[0]);
+
+    await waitFor(() => expect(screen.queryByText("Inviter2")).toBeNull());
+    expect(screen.getByText("Inviter3")).toBeTruthy();
+  });
+
+  it("drops an invite once it expires", async () => {
+    await signedIn();
+    emit({ type: "party.invite.received", invite: invite(2, 1) });
+    expect(await screen.findByText("Inviter2")).toBeTruthy();
+
+    await waitFor(() => expect(screen.queryByText("Inviter2")).toBeNull(), { timeout: 4000 });
   });
 });

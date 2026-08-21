@@ -331,7 +331,7 @@ function Login({ onSignedIn }) {
 /* ─────────────────────────────────────────────────────────────
    PUG QUEUE
    ───────────────────────────────────────────────────────────── */
-function PlayScreen({ me, party, setParty, queue, setQueue, history, notify, onViewMatch, onView }) {
+function PlayScreen({ me, party, setParty, queue, setQueue, history, notify, onViewMatch, onView, onInvite }) {
   const [regions, setRegions] = usePersistentState("sq.pug.regions", ["na", "eu"]);
   useTick(queue.state === "queued");
   const elapsed = queue.state === "queued" ? Math.floor((Date.now() - queue.since) / 1000) : 0;
@@ -397,9 +397,12 @@ function PlayScreen({ me, party, setParty, queue, setQueue, history, notify, onV
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <Eyebrow>Party · {party.length}/5</Eyebrow>
             <div style={{ display: "flex", gap: 6 }}>
-              {/* Inviting needs a player search the server does not expose
-                  yet, so the control is present but says so. */}
-              <Btn size="sm" title="Player search isn't wired up yet" disabled>
+              <Btn
+                size="sm"
+                onClick={onInvite}
+                disabled={party.length >= 5 || queue.state === "queued"}
+                title={queue.state === "queued" ? "Leave the queue to change your party" : undefined}
+              >
                 <Plus size={13} /> Invite
               </Btn>
             </div>
@@ -894,6 +897,201 @@ function MatchScreen({ match, me, onFinished, notify, onView }) {
  * Nothing carries a message between clients yet, so this is a placeholder that
  * says so rather than a composer that accepts text and drops it.
  */
+/**
+ * Who's online, and an Invite next to each.
+ *
+ * The list is fetched once and filtered here as you type. It is bounded by who
+ * is actually connected, so a request per keystroke to re-filter something
+ * already in hand would cost more than it saves.
+ *
+ * Players who cannot be invited are shown anyway, greyed with the reason.
+ * Hiding them reads as "they're offline" when they are sitting in someone
+ * else's party.
+ */
+/** How many invites are shown at once before the rest are counted instead. */
+const INVITE_STACK_LIMIT = 3;
+
+/**
+ * Incoming party invites.
+ *
+ * Several can be open at once -- being invited by four people the moment you
+ * come online is ordinary -- so this is a stack rather than one banner, oldest
+ * first, with the overflow counted rather than hidden silently.
+ *
+ * Non-blocking on purpose: the container ignores pointer events and only the
+ * cards themselves take clicks, so an invite arriving mid-queue cannot swallow
+ * a click meant for the app underneath.
+ */
+function InviteToasts({ invites, onAccept, onDecline }) {
+  useTick(invites.length > 0); // drives the expiry countdown
+
+  if (invites.length === 0) return null;
+  const shown = invites.slice(0, INVITE_STACK_LIMIT);
+  const hidden = invites.length - shown.length;
+
+  return (
+    <div style={{ position: "absolute", top: 54, right: 16, display: "flex", flexDirection: "column", gap: 8, zIndex: 65, pointerEvents: "none", width: 280 }}>
+      {shown.map((inv) => {
+        const left = Math.max(0, Math.ceil((Date.parse(inv.expiresAt) - Date.now()) / 1000));
+        return (
+          <div key={inv.inviteId} style={{ pointerEvents: "auto", background: T.panel, border: `1px solid ${T.line2}`, borderLeft: `3px solid ${T.captain}`, borderRadius: 5, padding: "10px 12px", boxShadow: "0 10px 30px rgba(0,0,0,.45)", animation: "sqRise .2s ease" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <Avatar p={{ discordName: inv.fromName, avatarColor: AV_COLORS[Math.abs(hashString(inv.fromUserId)) % AV_COLORS.length] }} size={24} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }}>{inv.fromName}</div>
+                <div style={{ fontSize: 11, color: T.muted }}>invited you to their party</div>
+              </div>
+              <Tier tier={inv.fromTier} size={12} />
+            </div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <Btn size="sm" kind="primary" style={{ flex: 1, justifyContent: "center" }} onClick={() => onAccept(inv)}>Join</Btn>
+              <Btn size="sm" style={{ justifyContent: "center" }} onClick={() => onDecline(inv)}>Decline</Btn>
+              <span style={{ fontFamily: T.mono, fontSize: 11, color: left <= 5 ? T.danger : T.dim, minWidth: 24, textAlign: "right" }}>{left}s</span>
+            </div>
+          </div>
+        );
+      })}
+      {hidden > 0 && (
+        <div style={{ pointerEvents: "none", background: T.raised, border: `1px solid ${T.line}`, borderRadius: 4, padding: "6px 10px", fontSize: 11.5, color: T.muted, textAlign: "center" }}>
+          +{hidden} more invite{hidden === 1 ? "" : "s"} waiting
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InviteModal({ party, onClose, notify }) {
+  const [players, setPlayers] = useState(null);
+  const [query, setQuery] = useState("");
+  const [error, setError] = useState(null);
+  const [sent, setSent] = useState({}); // userId -> epoch ms when invitable again
+  const [busy, setBusy] = useState(null);
+  useTick(true); // keeps the per-player cooldowns counting down
+
+  const load = useCallback(async () => {
+    try {
+      const res = await server.onlinePlayers();
+      setPlayers(res.players ?? []);
+      setError(null);
+    } catch (err) {
+      setError(err?.message ?? "Could not load the player list");
+      setPlayers([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    // People come and go while the modal is open; a slow poll keeps it honest
+    // without turning the list into a flicker.
+    const iv = setInterval(load, 10000);
+    return () => clearInterval(iv);
+  }, [load]);
+
+  const partyIds = new Set(party.map((p) => p.id));
+  const partyFull = party.length >= 5;
+
+  const matches = (players ?? []).filter((p) => {
+    if (partyIds.has(p.id)) return false;
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      p.discordName.toLowerCase().includes(q) || (p.inGameName ?? "").toLowerCase().includes(q)
+    );
+  });
+
+  const invite = async (p) => {
+    setBusy(p.id);
+    try {
+      await server.invite(p.id);
+      // Mirror the server's cooldown so the button explains itself rather than
+      // waiting to be refused.
+      setSent((s) => ({ ...s, [p.id]: Date.now() + 60000 }));
+      notify(`Invited ${p.discordName}`);
+    } catch (err) {
+      if (err?.status === 429) {
+        const seconds = Number(/(\d+)s/.exec(err.message ?? "")?.[1] ?? 60);
+        setSent((s) => ({ ...s, [p.id]: Date.now() + seconds * 1000 }));
+      }
+      notify(err?.message ?? "Could not send that invite");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 70, animation: "sqIn .2s ease" }} onClick={onClose}>
+      <div role="dialog" aria-modal="true" aria-label="Invite to party" style={{ width: 520, maxWidth: "90vw", maxHeight: "80vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+        <Panel pad={0} style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderBottom: `1px solid ${T.line}` }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <Eyebrow>Invite to party</Eyebrow>
+              <div style={{ fontSize: 12, color: T.muted, marginTop: 4 }}>
+                {party.length}/5 in your party
+                {partyFull ? " — full" : ""}
+              </div>
+            </div>
+            <button onClick={onClose} style={{ background: "transparent", border: "none", color: T.muted, padding: 4 }}><X size={18} /></button>
+          </div>
+
+          <div style={{ padding: "10px 16px", borderBottom: `1px solid ${T.line}` }}>
+            <input
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search players…"
+              aria-label="Search players"
+              style={{ width: "100%", background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13 }}
+            />
+          </div>
+
+          <div style={{ flex: 1, overflow: "auto", minHeight: 120, maxHeight: "48vh", padding: 8 }}>
+            {players === null ? (
+              <div style={{ margin: "auto", color: T.dim, fontSize: 12.5, textAlign: "center", padding: 24 }}>Loading…</div>
+            ) : error ? (
+              <div style={{ color: T.danger, fontSize: 12.5, textAlign: "center", padding: 24 }}>{error}</div>
+            ) : matches.length === 0 ? (
+              <div style={{ color: T.dim, fontSize: 12.5, textAlign: "center", padding: 24, lineHeight: 1.5 }}>
+                {query.trim() ? `Nobody online matches “${query.trim()}”.` : "Nobody else is online right now."}
+              </div>
+            ) : (
+              matches.map((p) => {
+                const until = sent[p.id] ?? 0;
+                const cooling = until > Date.now();
+                const left = Math.ceil((until - Date.now()) / 1000);
+                const blocked = p.unavailable || partyFull;
+
+                return (
+                  <div key={p.id} className="row-hover" style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 8px", borderRadius: 4, opacity: p.unavailable ? 0.55 : 1 }}>
+                    <Avatar p={{ ...p, avatarColor: AV_COLORS[Math.abs(hashString(p.id)) % AV_COLORS.length] }} size={30} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>{p.discordName}</div>
+                      <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{p.inGameName}</div>
+                    </div>
+                    <Rank tier={p.tier} placementsRemaining={p.placementsRemaining} size={11} />
+                    {p.unavailable ? (
+                      <span style={{ fontSize: 11, color: T.dim, minWidth: 74, textAlign: "right" }}>{p.unavailable}</span>
+                    ) : (
+                      <Btn
+                        size="sm"
+                        kind={cooling ? "ghost" : "primary"}
+                        disabled={blocked || cooling || busy === p.id}
+                        onClick={() => invite(p)}
+                        style={{ minWidth: 74, justifyContent: "center" }}
+                      >
+                        {cooling ? `${left}s` : busy === p.id ? "…" : "Invite"}
+                      </Btn>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
 function ChatDock({ open, setOpen }) {
   if (!open)
     return (
@@ -931,6 +1129,8 @@ export default function App() {
   const [viewProfile, setViewProfile] = useState(null);
   const [viewMatch, setViewMatch] = useState(null);
   const [toasts, setToasts] = useState([]);
+  const [invites, setInvites] = useState([]);
+  const [inviteOpen, setInviteOpen] = useState(false);
   const notify = useCallback((text) => { const id = Date.now() + Math.random(); setToasts((t) => [...t, { id, text }]); setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3800); }, []);
 
   /**
@@ -940,6 +1140,48 @@ export default function App() {
    * played is the server's record of it rather than a local guess at what it
    * wrote.
    */
+  /**
+   * Drops an invite from the stack.
+   *
+   * Used on accept, decline and expiry alike -- there is nothing different to
+   * do in each case beyond what the caller already did.
+   */
+  const dismissInvite = useCallback((inviteId) => {
+    setInvites((list) => list.filter((i) => i.inviteId !== inviteId));
+  }, []);
+
+  const acceptInvite = useCallback(async (inv) => {
+    try {
+      await server.acceptInvite(inv.inviteId);
+      // Joining someone settles every other invite: they were all offers to be
+      // in a party, and now you are in one.
+      setInvites([]);
+      notify(`Joined ${inv.fromName}'s party`);
+    } catch (err) {
+      dismissInvite(inv.inviteId);
+      notify(err?.message ?? "That invite is no longer valid");
+    }
+  }, [dismissInvite, notify]);
+
+  const declineInvite = useCallback(async (inv) => {
+    dismissInvite(inv.inviteId);
+    try {
+      await server.declineInvite(inv.inviteId);
+    } catch {
+      // Already gone or expired; it is off the screen either way.
+    }
+  }, [dismissInvite]);
+
+  // Expired invites disappear on their own, so a stack left alone drains
+  // rather than filling up with dead cards.
+  useEffect(() => {
+    if (invites.length === 0) return;
+    const iv = setInterval(() => {
+      setInvites((list) => list.filter((i) => Date.parse(i.expiresAt) > Date.now()));
+    }, 1000);
+    return () => clearInterval(iv);
+  }, [invites.length]);
+
   const refreshHistory = useCallback(async () => {
     try {
       const rows = await server.history();
@@ -1025,6 +1267,13 @@ export default function App() {
       })),
     );
 
+    // Anything sent while we were still connecting is waiting on the server.
+    try {
+      setInvites(await server.getInvites());
+    } catch {
+      // Not worth blocking sign-in; the socket carries the next one.
+    }
+
     await refreshHistory();
     setChatOpen(false);
   }, [refreshHistory]);
@@ -1081,6 +1330,29 @@ export default function App() {
           // Rank, record and placement count all just moved.
           void refreshProfile();
           break;
+        case "party.invite.received":
+          // Guard against a duplicate arriving over a reconnect.
+          setInvites((list) =>
+            list.some((i) => i.inviteId === e.invite.inviteId) ? list : [...list, e.invite],
+          );
+          break;
+        case "party.updated":
+          setParty(
+            (e.party?.members ?? []).map((m) => ({
+              id: m.userId,
+              discordName: m.discordName,
+              inGameName: m.inGameName ?? m.discordName,
+              avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length],
+              tier: m.tier ?? null,
+              placementsRemaining: m.placementsRemaining ?? 0,
+              wins: 0,
+              losses: 0,
+            })),
+          );
+          break;
+        case "party.invite.declined":
+          dismissInvite(e.inviteId);
+          break;
         case "notification":
           notify(e.text);
           break;
@@ -1098,7 +1370,7 @@ export default function App() {
       off();
       liveBus.disconnect();
     };
-  }, [me, notify, refreshProfile]);
+  }, [me, notify, refreshProfile, dismissInvite]);
 
   // Restore an existing session on launch rather than making the user sign in
   // again every time the app opens. Deliberately mount-only: re-running it when
@@ -1150,7 +1422,7 @@ export default function App() {
     void refreshHistory();
   }} />;
   else if (viewProfile) content = <ProfileScreen p={viewProfile} me={me} history={history} onBack={() => setViewProfile(null)} onViewMatch={openMatch} />;
-  else if (nav === "play") content = <PlayScreen me={me} party={party} setParty={setParty} queue={queue} setQueue={setQueue} history={history} notify={notify} onViewMatch={openMatch} onView={setViewProfile} />;
+  else if (nav === "play") content = <PlayScreen me={me} party={party} setParty={setParty} queue={queue} setQueue={setQueue} history={history} notify={notify} onViewMatch={openMatch} onView={setViewProfile} onInvite={() => setInviteOpen(true)} />;
   // These three have no server endpoints yet, so they say so rather than
   // standing in for them.
   else if (nav === "scrims")
@@ -1219,6 +1491,10 @@ export default function App() {
         // The server decides the penalty and whether anyone is re-queued, and
         // says so over the socket; guessing here would contradict it.
         onFail={() => { setPendingMatch(null); setQueue({ state: "idle" }); }} />}
+
+      <InviteToasts invites={invites} onAccept={acceptInvite} onDecline={declineInvite} />
+
+      {inviteOpen && <InviteModal party={party} notify={notify} onClose={() => setInviteOpen(false)} />}
 
       {viewMatch && <MatchHistoryModal m={viewMatch} me={me} onClose={() => setViewMatch(null)} onView={(p) => { setViewMatch(null); setViewProfile(p); }} />}
 

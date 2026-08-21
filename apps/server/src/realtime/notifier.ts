@@ -9,7 +9,18 @@
 
 export type ServerEvent =
   | { type: "party.updated"; party: unknown }
-  | { type: "party.invite.received"; invite: unknown }
+  | {
+      type: "party.invite.received";
+      invite: {
+        inviteId: string;
+        partyId: string;
+        fromUserId: string;
+        fromName: string;
+        fromTier: string | null;
+        /** The toast counts down to this, so the server states it. */
+        expiresAt: string;
+      };
+    }
   | { type: "party.invite.declined"; inviteId: string; byUserId: string }
   | { type: "queue.joined"; partyId: string; regions: string[]; joinedAt: number }
   | { type: "queue.left"; partyId: string; reason?: string }

@@ -160,6 +160,7 @@ export const api = {
 
   getParty: () => request("/party"),
   getInvites: () => request("/party/invites"),
+  onlinePlayers: () => request("/players/online"),
   invite: (userId) => request("/party/invite", { method: "POST", body: { userId } }),
   acceptInvite: (inviteId) => request(`/party/invite/${inviteId}/accept`, { method: "POST" }),
   declineInvite: (inviteId) => request(`/party/invite/${inviteId}/decline`, { method: "POST" }),

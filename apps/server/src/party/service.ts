@@ -1,6 +1,9 @@
 import {
   DEFAULT_RATING,
   INVITE_EXPIRATION_SECONDS,
+  INVITE_RATE_LIMIT,
+  INVITE_RATE_WINDOW_SECONDS,
+  INVITE_REPEAT_COOLDOWN_SECONDS,
   MAX_PARTY_SIZE,
   type Result,
   fail,
@@ -9,7 +12,7 @@ import {
   placementGamesRemaining,
   tierForRating,
 } from "@suddenqueue/core";
-import { and, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, sql } from "drizzle-orm";
 
 import type { Database, Executor } from "../db/client.js";
 import {
@@ -50,7 +53,9 @@ type PartyError =
   | "INVITE_EXPIRED"
   | "CANNOT_INVITE_SELF"
   | "NOT_A_MEMBER"
-  | "QUEUED";
+  | "QUEUED"
+  | "RATE_LIMITED"
+  | "RECENTLY_INVITED";
 
 /**
  * Parties — ephemeral groups that queue together, distinct from persistent
@@ -210,6 +215,11 @@ export class PartyService {
       return fail("PARTY_FULL", `A party holds at most ${MAX_PARTY_SIZE} players`);
     }
 
+    // Throttling is read back off the invite rows rather than held in memory,
+    // so a restart does not hand everyone a fresh allowance.
+    const throttle = await this.inviteThrottle(inviterId, targetUserId);
+    if (throttle) return throttle;
+
     // Someone already grouped up has to leave that party first.
     const targetParty = await this.partyIdFor(targetUserId);
     if (targetParty) {
@@ -228,6 +238,60 @@ export class PartyService {
       .returning({ id: partyInvites.id });
 
     return ok({ inviteId: invite!.id, partyId });
+  }
+
+  /**
+   * Whether this invite is allowed yet, and if not, when it will be.
+   *
+   * Declined and expired invites still count. Not counting them would mean the
+   * fastest way to keep inviting someone is to have them decline, which is
+   * exactly backwards.
+   */
+  private async inviteThrottle(
+    inviterId: string,
+    targetUserId: string,
+  ): Promise<Result<never, PartyError> | null> {
+    const windowStart = new Date(Date.now() - INVITE_RATE_WINDOW_SECONDS * 1000);
+    const repeatSince = new Date(Date.now() - INVITE_REPEAT_COOLDOWN_SECONDS * 1000);
+
+    // Two plain queries rather than one with aggregate FILTERs: Postgres cannot
+    // infer the type of a uuid parameter compared inside a FILTER clause, and
+    // the whole statement fails rather than the comparison.
+    const [repeat] = await this.db
+      .select({ at: partyInvites.createdAt })
+      .from(partyInvites)
+      .where(
+        and(
+          eq(partyInvites.fromUserId, inviterId),
+          eq(partyInvites.toUserId, targetUserId),
+          gt(partyInvites.createdAt, repeatSince),
+        ),
+      )
+      .orderBy(desc(partyInvites.createdAt))
+      .limit(1);
+
+    if (repeat) {
+      const readyAt = repeat.at.getTime() + INVITE_REPEAT_COOLDOWN_SECONDS * 1000;
+      const seconds = Math.max(1, Math.ceil((readyAt - Date.now()) / 1000));
+      return fail("RECENTLY_INVITED", `You invited them just now — try again in ${seconds}s`);
+    }
+
+    const inWindow = await this.db
+      .select({ at: partyInvites.createdAt })
+      .from(partyInvites)
+      .where(
+        and(eq(partyInvites.fromUserId, inviterId), gt(partyInvites.createdAt, windowStart)),
+      )
+      .orderBy(partyInvites.createdAt);
+
+    if (inWindow.length >= INVITE_RATE_LIMIT) {
+      // The allowance frees up as the oldest invite in the window ages out.
+      const readyAt = inWindow[0]!.at.getTime() + INVITE_RATE_WINDOW_SECONDS * 1000;
+      const seconds = Math.max(1, Math.ceil((readyAt - Date.now()) / 1000));
+      return fail("RATE_LIMITED", `Too many invites — try again in ${seconds}s`);
+    }
+
+    return null;
   }
 
   async pendingInvitesFor(userId: string) {

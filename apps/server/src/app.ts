@@ -1,5 +1,6 @@
 import {
   DEFAULT_RATING,
+  INVITE_EXPIRATION_SECONDS,
   MAX_PARTY_SIZE,
   REGIONS,
   isFail,
@@ -10,7 +11,7 @@ import {
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
-import { eq } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { z } from "zod";
 
@@ -20,7 +21,7 @@ import { LoginHandoff } from "./auth/handoff.js";
 import { SessionService, type SessionUser } from "./auth/sessions.js";
 import type { Config } from "./config.js";
 import type { Database } from "./db/client.js";
-import { playerRatings } from "./db/schema/index.js";
+import { partyInvites, playerRatings, users } from "./db/schema/index.js";
 import { MatchLifecycle } from "./match/lifecycle.js";
 import { MatchReporting } from "./match/reporting.js";
 import { Matchmaker, MatchSweeper } from "./matchmaker/loop.js";
@@ -426,6 +427,70 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
     party.pendingInvitesFor(requireUser(req).userId),
   );
 
+  /**
+   * Everyone else currently connected.
+   *
+   * Online is a property of the socket table, not the database, so this is the
+   * only place that knows it. The whole list is returned and filtered on the
+   * client: it is bounded by who is actually connected, and a request per
+   * keystroke to re-filter a list we already hold is a worse trade than the
+   * payload.
+   *
+   * Players who cannot be invited are still listed, marked with why. Hiding
+   * them would read as "that person is offline" when they are standing right
+   * there in someone else's party.
+   */
+  server.get("/players/online", { preHandler: authenticate }, async (req) => {
+    const user = requireUser(req);
+    const ids = notifier.onlineUserIds().filter((id) => id !== user.userId);
+    if (ids.length === 0) return { players: [] };
+
+    const rows = await db
+      .select({
+        id: users.id,
+        discordName: users.discordName,
+        inGameName: users.inGameName,
+        rating: playerRatings.rating,
+        gamesPlayed: playerRatings.gamesPlayed,
+        partySize: sql<number>`(
+          SELECT COUNT(*)::int FROM party_members pm2
+          WHERE pm2.party_id = (
+            SELECT pm3.party_id FROM party_members pm3 WHERE pm3.user_id = ${users.id} LIMIT 1
+          )
+        )`,
+        inMatch: sql<boolean>`EXISTS (
+          SELECT 1 FROM match_participants mp
+          JOIN matches m ON m.id = mp.match_id
+          WHERE mp.user_id = ${users.id}
+            AND m.state IN ('PENDING_ACCEPT', 'PARTY_UP', 'LIVE', 'REPORTED')
+        )`,
+      })
+      .from(users)
+      .leftJoin(playerRatings, eq(playerRatings.userId, users.id))
+      .where(inArray(users.id, ids))
+      .orderBy(users.discordName);
+
+    return {
+      players: rows.map((r) => {
+        const gamesPlayed = r.gamesPlayed ?? 0;
+        const unavailable = r.inMatch
+          ? "In a match"
+          : (r.partySize ?? 1) > 1
+            ? "In a party"
+            : null;
+
+        return {
+          id: r.id,
+          discordName: r.discordName,
+          inGameName: r.inGameName ?? r.discordName,
+          tier: isPlaced(gamesPlayed) ? tierForRating(r.rating ?? DEFAULT_RATING) : null,
+          placementsRemaining: placementGamesRemaining(gamesPlayed),
+          unavailable,
+        };
+      }),
+    };
+  });
+
   server.post("/party/invite", { preHandler: authenticate }, async (req, reply) => {
     const body = z.object({ userId: z.string().uuid() }).safeParse(req.body);
     if (!body.success) {
@@ -435,8 +500,21 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
     const user = requireUser(req);
     const result = await party.invite(user.userId, body.data.userId);
     if (isFail(result)) {
-      return reply.code(409).send({ error: result.code, message: result.message });
+      // Throttling is a "not yet", not a "no" -- worth its own status so the
+      // client can show a countdown rather than a rejection.
+      const throttled = result.code === "RATE_LIMITED" || result.code === "RECENTLY_INVITED";
+      return reply
+        .code(throttled ? 429 : 409)
+        .send({ error: result.code, message: result.message });
     }
+
+    const [inviter] = await db
+      .select({ rating: playerRatings.rating, gamesPlayed: playerRatings.gamesPlayed })
+      .from(playerRatings)
+      .where(eq(playerRatings.userId, user.userId))
+      .limit(1);
+
+    const games = inviter?.gamesPlayed ?? 0;
 
     notifier.toUser(body.data.userId, {
       type: "party.invite.received",
@@ -445,6 +523,9 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
         partyId: result.data.partyId,
         fromUserId: user.userId,
         fromName: user.discordName,
+        fromTier: isPlaced(games) ? tierForRating(inviter?.rating ?? DEFAULT_RATING) : null,
+        // The toast counts down to this, so it has to come from the server.
+        expiresAt: new Date(Date.now() + INVITE_EXPIRATION_SECONDS * 1000).toISOString(),
       },
     });
 
@@ -466,10 +547,29 @@ export async function buildApp({ db, config, autoStart = true }: AppDeps): Promi
 
   server.post("/party/invite/:id/decline", { preHandler: authenticate }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const result = await party.decline(requireUser(req).userId, id);
+    const user = requireUser(req);
+
+    // Read the inviter before declining: the row is still pending here, and
+    // after the update there is nobody obvious left to tell.
+    const [invite] = await db
+      .select({ fromUserId: partyInvites.fromUserId })
+      .from(partyInvites)
+      .where(eq(partyInvites.id, id))
+      .limit(1);
+
+    const result = await party.decline(user.userId, id);
     if (isFail(result)) {
       return reply.code(404).send({ error: result.code, message: result.message });
     }
+
+    if (invite) {
+      notifier.toUser(invite.fromUserId, {
+        type: "party.invite.declined",
+        inviteId: id,
+        byUserId: user.userId,
+      });
+    }
+
     return { ok: true };
   });
 
