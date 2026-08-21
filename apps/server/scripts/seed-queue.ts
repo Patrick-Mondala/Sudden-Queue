@@ -14,8 +14,13 @@
  * Every account it creates is prefixed `seed:` so `--cleanup` removes them
  * without touching real players.
  *
- *   npm run seed                          # 9 bots, played through
- *   npm run seed -- --count 10 --region eu --rating 1500
+ * The default is nine, one short of a match, so the tenth slot is yours and the
+ * matchmaker cannot fill it without you. Seeding a full ten is for testing the
+ * server unattended; see the warning below before doing it while queued.
+ *
+ *   npm run seed                          # 9 bots + you = one match
+ *   npm run seed -- --region eu --rating 1500
+ *   npm run seed -- --count 10 --play false   # a match with no human in it
  *   npm run seed -- --cleanup
  */
 
@@ -353,6 +358,18 @@ async function main(): Promise<void> {
   if (play && !(await serverIsUp())) {
     console.error(`No server at ${baseUrl}. Start it with "npm run server" first.`);
     process.exit(1);
+  }
+
+  if (count >= MATCH_SIZE) {
+    // The matchmaker anchors on the longest-waiting ticket, and these bots
+    // queue before you do. Give it a full ten and it can build a match out of
+    // bots alone and leave you sitting in the queue watching it happen.
+    console.warn(
+      `Warning: ${count} bots is a full match on its own. They queue ahead of you,` +
+        ` so they can match with each other and leave you queued.` +
+        ` Use ${MATCH_SIZE - 1} to keep a slot open for yourself.`,
+    );
+    console.log("");
   }
 
   console.log(`Seeding ${count} player(s) into the ${region.toUpperCase()} queue at ~${baseRating}...`);
