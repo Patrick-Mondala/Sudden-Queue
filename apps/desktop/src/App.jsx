@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Crosshair, Swords, Users, Trophy, User, MessageSquare, Send, X, Check, Shield, Star, Wifi, Timer, Copy, ChevronRight, LogOut, Bell, Filter, Plus, Minus, AlertTriangle, CircleDot, Lock, Unlock } from "lucide-react";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { signIn } from "./api/auth.js";
@@ -331,12 +331,10 @@ function Login({ onSignedIn }) {
 /* ─────────────────────────────────────────────────────────────
    PUG QUEUE
    ───────────────────────────────────────────────────────────── */
-function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, history, notify, onViewMatch, onView }) {
+function PlayScreen({ me, party, setParty, queue, setQueue, history, notify, onViewMatch, onView }) {
   const [regions, setRegions] = usePersistentState("sq.pug.regions", ["na", "eu"]);
-  useTick(queue.state === "queued" || cooldownUntil > Date.now());
+  useTick(queue.state === "queued");
   const elapsed = queue.state === "queued" ? Math.floor((Date.now() - queue.since) / 1000) : 0;
-  const cooling = cooldownUntil > Date.now();
-  const coolLeft = Math.ceil((cooldownUntil - Date.now()) / 1000);
   // search radius: fast-widening ramp, plateaus at ~3 min. Same curve the backend will use.
   const radius = Math.round(Math.min(600, 60 + elapsed * 6));
 
@@ -372,11 +370,12 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", position: "relative" }}>
             <div>
               <Eyebrow style={{ marginBottom: 6 }}>PUG · 5v5 · rated</Eyebrow>
-              <H size={26}>{queue.state === "queued" ? "Searching" : cooling ? "On cooldown" : "Ready to queue"}</H>
+              <H size={26}>{queue.state === "queued" ? "Searching" : "Ready to queue"}</H>
               <div style={{ color: T.muted, fontSize: 13, marginTop: 6 }}>
+                {/* A missed accept has no penalty yet. When it does, the
+                    queue-join rejection is what will carry it. */}
                 {queue.state === "queued"
                   ? <span>Search radius <span style={{ fontFamily: T.mono, color: T.text }}>±{radius}</span> · widens with time</span>
-                  : cooling ? <span>You didn't accept a match. Queue unlocks in <span style={{ fontFamily: T.mono, color: T.danger }}>{fmt(coolLeft)}</span></span>
                   : <span>Pick regions, then queue. Any region you select can pop first.</span>}
               </div>
             </div>
@@ -389,7 +388,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
             <div><RegionPicker value={queue.state === "queued" ? queue.regions : regions} onChange={queue.state === "queued" ? () => {} : setRegions} /></div>
             {queue.state === "queued"
               ? <Btn kind="danger" onClick={stop}><X size={14} /> Leave queue</Btn>
-              : <Btn kind="primary" onClick={start} disabled={cooling || !regions.length}><Crosshair size={14} /> Queue {party.length > 1 ? `as ${party.length}` : "solo"}</Btn>}
+              : <Btn kind="primary" onClick={start} disabled={!regions.length}><Crosshair size={14} /> Queue {party.length > 1 ? `as ${party.length}` : "solo"}</Btn>}
           </div>
         </Panel>
 
@@ -427,7 +426,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
         <Panel style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
           <Eyebrow style={{ marginBottom: 10 }}>Recent matches</Eyebrow>
           <div style={{ overflow: "auto", flex: 1 }}>
-            {history.map((m, i) => (
+            {history.map((m) => (
               <div key={m.id} className="row-hover" onClick={() => (m.team1 || m.openable) && onViewMatch(m)} style={{ display: "grid", gridTemplateColumns: "60px 60px 1fr 90px 60px", alignItems: "center", gap: 10, padding: "8px 8px", borderRadius: 4, fontSize: 13, cursor: m.team1 || m.openable ? "pointer" : "default" }}>
                 <Tag>{m.type}</Tag>
                 <span style={{ fontFamily: T.mono, fontSize: 11.5, color: T.muted }}>{m.region.toUpperCase()}</span>
@@ -563,7 +562,7 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch }) {
 /* ─────────────────────────────────────────────────────────────
    MATCH FLOW: accept overlay → match screen
    ───────────────────────────────────────────────────────────── */
-function AcceptOverlay({ match, me, onAccepted, onFail }) {
+function AcceptOverlay({ match, onAccepted, onFail }) {
   const ACCEPT_S = 20;
   const [left, setLeft] = useState(ACCEPT_S);
   const [acceptedCount, setAcceptedCount] = useState(0);
@@ -599,6 +598,11 @@ function AcceptOverlay({ match, me, onAccepted, onFail }) {
         onAccepted();
       }
     });
+    // Resubscribing whenever the parent re-renders would drop events between
+    // teardown and setup, so this keeps the socket handler for the life of the
+    // overlay. onAccepted closes over the match this was mounted for, which is
+    // the only one it can ever be asked about.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [match.id]);
 
   // Nothing happens when the clock runs out: the server owns what a missed
@@ -688,40 +692,25 @@ function MatchHistoryModal({ m, me, onClose, onView }) {
   );
 }
 
-function MatchChat({ match, me, onView }) {
-  const [tab, setTab] = useState("team");
-  const [msgs] = useState({ team: [], match: [] });
-  const [text, setText] = useState("");
-  const endRef = useRef(null);
-
-  useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [tab, msgs]);
-
+/**
+ * Match chat.
+ *
+ * Placeholder for the same reason as ChatDock: nothing delivers a message yet.
+ * The panel stays so the match screen keeps its shape, and so it is obvious
+ * where team and match chat will live.
+ */
+function MatchChat() {
   return (
-    <Panel pad={0} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 220 }}>
-      <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${T.line}` }}>
-        {[["team", "Team"], ["match", "Match"]].map(([id, label]) => (
-          <button key={id} onClick={() => setTab(id)} style={{ flex: 1, background: "transparent", border: "none", borderBottom: `2px solid ${tab === id ? T.accent : "transparent"}`, color: tab === id ? T.text : T.muted, padding: "10px 4px", fontSize: 12, fontWeight: 600 }}>{label}</button>
-        ))}
-      </div>
-      <div style={{ flex: 1, overflow: "auto", padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-        {msgs[tab].length === 0 ? <div style={{ margin: "auto", color: T.dim, fontSize: 12.5, textAlign: "center", padding: 16, lineHeight: 1.5 }}>Chat isn't wired up yet — use your captain's in-game party.</div>
-          : msgs[tab].map((m, i) => (
-            <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", animation: "sqRise .2s ease" }}>
-              <div onClick={() => onView?.(m.from)} style={{ cursor: onView ? "pointer" : "default", flexShrink: 0 }}><Avatar p={m.from} size={22} /></div>
-              <div style={{ minWidth: 0 }}><span onClick={() => onView?.(m.from)} style={{ fontSize: 12, fontWeight: 700, color: m.me ? T.accent : T.text, cursor: onView ? "pointer" : "default" }}>{m.from.discordName}</span> <span style={{ fontSize: 10.5, color: T.dim, fontFamily: T.mono }}>{new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span><div style={{ fontSize: 13, color: T.text, lineHeight: 1.4, wordBreak: "break-word" }}>{m.text}</div></div>
-            </div>
-          ))}
-        <div ref={endRef} />
-      </div>
-      <div style={{ padding: 8, borderTop: `1px solid ${T.line}`, display: "flex", gap: 6 }}>
-        <input value={text} disabled onChange={(e) => setText(e.target.value)} placeholder="Chat isn't wired up yet" style={{ flex: 1, background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.dim, fontSize: 13 }} />
-        <Btn size="sm" kind="primary" disabled><Send size={13} /></Btn>
+    <Panel style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 220 }}>
+      <Eyebrow style={{ marginBottom: 10 }}>Match chat</Eyebrow>
+      <div style={{ margin: "auto", color: T.dim, fontSize: 12.5, textAlign: "center", padding: 16, lineHeight: 1.5 }}>
+        Chat isn't wired up yet.<br />Use your captain's in-game party.
       </div>
     </Panel>
   );
 }
 
-function MatchScreen({ match, me, onFinished, notify, onView, onPhaseChange }) {
+function MatchScreen({ match, me, onFinished, notify, onView }) {
   const PARTY_S = 120;
   const [phase, setPhase] = useState("party"); // party → queue → live → reported → completed | dispute
   const [left, setLeft] = useState(PARTY_S);
@@ -747,7 +736,6 @@ function MatchScreen({ match, me, onFinished, notify, onView, onPhaseChange }) {
     const iv = setInterval(tick, 250);
     return () => clearInterval(iv);
   }, [phase]);
-  useEffect(() => { onPhaseChange?.(phase); }, [phase]);
 
   /**
    * Re-reads the match on entry.
@@ -780,6 +768,8 @@ function MatchScreen({ match, me, onFinished, notify, onView, onPhaseChange }) {
       });
 
     return () => { cancelled = true; };
+    // myTeamIsOne is derived from this match and cannot change while mounted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [match.id]);
 
   /**
@@ -890,7 +880,7 @@ function MatchScreen({ match, me, onFinished, notify, onView, onPhaseChange }) {
           </div>
         )}
       </Panel>
-      <MatchChat match={match} me={me} onView={onView} />
+      <MatchChat />
     </div>
   );
 }
@@ -898,50 +888,29 @@ function MatchScreen({ match, me, onFinished, notify, onView, onPhaseChange }) {
 /* ─────────────────────────────────────────────────────────────
    CHAT DOCK  (ephemeral — nothing persists)
    ───────────────────────────────────────────────────────────── */
-function ChatDock({ me, party, open, setOpen, onView }) {
-  const [msgs, setMsgs] = useState([]);
-  const [text, setText] = useState("");
-  const [unread, setUnread] = useState(0);
-  const endRef = useRef(null);
-  const push = (m) => { setMsgs((s) => [...s, m].slice(-80)); if (!open) setUnread((u) => u + 1); };
+/**
+ * Party chat.
+ *
+ * Nothing carries a message between clients yet, so this is a placeholder that
+ * says so rather than a composer that accepts text and drops it.
+ */
+function ChatDock({ open, setOpen }) {
+  if (!open)
+    return (
+      <button onClick={() => setOpen(true)} style={{ position: "absolute", right: 16, bottom: 16, background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 6, padding: "8px 12px", color: T.text, display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, fontWeight: 600 }}>
+        <MessageSquare size={14} /> Chat
+      </button>
+    );
 
-  useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [msgs]);
-  useEffect(() => { if (open) setUnread(0); }, [open]);
-
-
-
-  if (!open) return (
-    <button onClick={() => setOpen(true)} style={{ position: "absolute", right: 16, bottom: 16, background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 6, padding: "8px 12px", color: T.text, display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, fontWeight: 600 }}>
-      <MessageSquare size={14} /> Chat {unread > 0 && <span style={{ background: T.accent, color: "#07110F", borderRadius: 10, fontSize: 10.5, padding: "1px 6px", fontFamily: T.mono }}>{unread}</span>}
-    </button>
-  );
-  // Nothing carries a message to the other end yet, so the box stays shut
-  // rather than swallowing what you type.
-  // Nothing carries a message to the other end yet, so the box stays shut
-  // rather than swallowing what you type.
-  const disabled = true;
   return (
-    <div style={{ position: "absolute", right: 16, bottom: 16, width: 300, height: 380, background: T.panel, border: `1px solid ${T.line2}`, borderRadius: 8, boxShadow: "0 16px 40px rgba(0,0,0,.5)", display: "flex", flexDirection: "column", zIndex: 55, animation: "sqRise .2s ease", overflow: "hidden" }}>
+    <div style={{ position: "absolute", right: 16, bottom: 16, width: 300, background: T.panel, border: `1px solid ${T.line2}`, borderRadius: 8, boxShadow: "0 16px 40px rgba(0,0,0,.5)", display: "flex", flexDirection: "column", zIndex: 55, animation: "sqRise .2s ease", overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${T.line}`, padding: "10px 12px" }}>
         <div style={{ flex: 1, fontFamily: T.mono, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: T.text }}>Party chat</div>
         <button onClick={() => setOpen(false)} style={{ background: "transparent", border: "none", color: T.muted, padding: 4 }}><X size={14} /></button>
       </div>
-      <div style={{ flex: 1, overflow: "auto", padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-        {disabled ? <div style={{ margin: "auto", color: T.dim, fontSize: 12.5, textAlign: "center", padding: 20, lineHeight: 1.5 }}>Chat isn't wired up yet.</div>
-          : msgs.length === 0 ? <div style={{ margin: "auto", color: T.dim, fontSize: 12.5 }}>No messages yet.</div>
-          : msgs.map((m, i) => (
-            <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", animation: "sqRise .2s ease" }}>
-              <div onClick={() => onView?.(m.from)} style={{ cursor: onView ? "pointer" : "default", flexShrink: 0 }}><Avatar p={m.from} size={22} /></div>
-              <div style={{ minWidth: 0 }}><span onClick={() => onView?.(m.from)} style={{ fontSize: 12, fontWeight: 700, color: m.me ? T.accent : T.text, cursor: onView ? "pointer" : "default" }}>{m.from.discordName}</span> <span style={{ fontSize: 10.5, color: T.dim, fontFamily: T.mono }}>{new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span><div style={{ fontSize: 13, color: T.text, lineHeight: 1.4, wordBreak: "break-word" }}>{m.text}</div></div>
-            </div>
-          ))}
-        <div ref={endRef} />
+      <div style={{ padding: 20, color: T.dim, fontSize: 12.5, textAlign: "center", lineHeight: 1.5 }}>
+        Chat isn't wired up yet. Use your captain's in-game party.
       </div>
-      <div style={{ padding: 8, borderTop: `1px solid ${T.line}`, display: "flex", gap: 6 }}>
-        <input value={text} disabled={disabled} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder={disabled ? "" : "Message party…"} style={{ flex: 1, background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13 }} />
-        <Btn size="sm" kind="primary" onClick={send} disabled={disabled || !text.trim()}><Send size={13} /></Btn>
-      </div>
-      <div style={{ padding: "4px 10px 8px", fontSize: 10.5, color: T.dim, fontFamily: T.mono }}>chat is not saved</div>
     </div>
   );
 }
@@ -955,7 +924,6 @@ export default function App() {
   const [pop, setPop] = useState({ online: 0, inQueue: 0, inMatch: 0 });
   const [party, setParty] = useState([]);
   const [queue, setQueue] = useState({ state: "idle" });
-  const [cooldownUntil, setCooldownUntil] = useState(0);
   const [pendingMatch, setPendingMatch] = useState(null);
   const [match, setMatch] = useState(null);
   const [history, setHistory] = useState([]);
@@ -963,7 +931,6 @@ export default function App() {
   const [viewProfile, setViewProfile] = useState(null);
   const [viewMatch, setViewMatch] = useState(null);
   const [toasts, setToasts] = useState([]);
-  const [matchPhase, setMatchPhase] = useState(null);
   const notify = useCallback((text) => { const id = Date.now() + Math.random(); setToasts((t) => [...t, { id, text }]); setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3800); }, []);
 
   useEffect(() => { if (me) setParty([me]); }, [me]);
@@ -1034,10 +1001,11 @@ export default function App() {
       off();
       liveBus.disconnect();
     };
-  }, [me, notify]);
+  }, [me, notify, refreshProfile]);
 
   // Restore an existing session on launch rather than making the user sign in
-  // again every time the app opens.
+  // again every time the app opens. Deliberately mount-only: re-running it when
+  // `me` changes would re-adopt the session on every sign-in.
   useEffect(() => {
     if (me || !getToken()) return;
     let cancelled = false;
@@ -1054,7 +1022,9 @@ export default function App() {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
   useEffect(() => {
     if (!pendingMatch) return;
     const win = getCurrentWindow();
@@ -1062,7 +1032,6 @@ export default function App() {
     win.setFocus().catch(() => {});
     win.requestUserAttention(UserAttentionType.Critical).catch(() => {});
   }, [pendingMatch]);
-  useEffect(() => { if (!match) setMatchPhase(null); }, [match]);
 
   /**
    * Re-reads the profile after a match resolves.
@@ -1170,14 +1139,14 @@ export default function App() {
   const go = (id) => { setNav(id); setViewProfile(null); };
 
   let content;
-  if (match) content = <MatchScreen key={match.id} match={match} me={me} notify={notify} onView={setViewProfile} onPhaseChange={setMatchPhase} onFinished={() => {
+  if (match) content = <MatchScreen key={match.id} match={match} me={me} notify={notify} onView={setViewProfile} onFinished={() => {
     // The server already recorded it; re-reading is what makes the row real
     // rather than a local guess at what it wrote.
     setMatch(null);
     void refreshHistory();
   }} />;
   else if (viewProfile) content = <ProfileScreen p={viewProfile} me={me} history={history} onBack={() => setViewProfile(null)} onViewMatch={openMatch} />;
-  else if (nav === "play") content = <PlayScreen me={me} party={party} setParty={setParty} queue={queue} setQueue={setQueue} cooldownUntil={cooldownUntil} history={history} notify={notify} onViewMatch={openMatch} onView={setViewProfile} />;
+  else if (nav === "play") content = <PlayScreen me={me} party={party} setParty={setParty} queue={queue} setQueue={setQueue} history={history} notify={notify} onViewMatch={openMatch} onView={setViewProfile} />;
   // These three have no server endpoints yet, so they say so rather than
   // standing in for them.
   else if (nav === "scrims")
@@ -1241,7 +1210,7 @@ export default function App() {
         <div style={{ flex: 1, minWidth: 0, padding: 16, overflow: "auto", position: "relative" }}>{content}</div>
       </div>
 
-      {pendingMatch && <AcceptOverlay match={pendingMatch} me={me}
+      {pendingMatch && <AcceptOverlay match={pendingMatch}
         onAccepted={() => { setMatch(pendingMatch); setPendingMatch(null); go("play"); }}
         // The server decides the penalty and whether anyone is re-queued, and
         // says so over the socket; guessing here would contradict it.
@@ -1250,7 +1219,7 @@ export default function App() {
       {viewMatch && <MatchHistoryModal m={viewMatch} me={me} onClose={() => setViewMatch(null)} onView={(p) => { setViewMatch(null); setViewProfile(p); }} />}
 
 
-      <ChatDock me={me} party={party} open={chatOpen} setOpen={setChatOpen} onView={setViewProfile} />
+      <ChatDock open={chatOpen} setOpen={setChatOpen} />
 
 
       {/* toasts */}

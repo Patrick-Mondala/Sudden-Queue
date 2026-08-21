@@ -17,9 +17,15 @@
     "db:down": "docker compose down",
     "seed": "npm run seed --workspace @suddenqueue/server --",
     "test": "npm run test --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "check": "npm run lint && npm run typecheck && npm test"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.8.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.11.0",
     "typescript": "^5.7.2",
     "vitest": "^3.2.4"
   },

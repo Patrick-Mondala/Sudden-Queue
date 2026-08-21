@@ -58,7 +58,7 @@ async function request(path, { method = "GET", body, auth = true } = {}) {
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-  } catch (cause) {
+  } catch {
     // A rejected fetch is opaque by design: the browser refuses to tell JS
     // whether the server was unreachable or the response failed a CORS check,
     // because leaking that would itself be a cross-origin information leak.
