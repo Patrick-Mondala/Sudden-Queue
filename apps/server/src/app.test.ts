@@ -576,6 +576,32 @@ describe("reporting through the API", () => {
     expect(rows[0]).not.toHaveProperty("ratingDelta");
   });
 
+  it("still serves a settled match, so history rows can open their rosters", async () => {
+    const m = await liveMatch();
+    for (const cap of [m.captain1, m.captain2]) {
+      await app.server.inject({
+        method: "POST",
+        url: `/match/${m.matchId}/report`,
+        headers: authed(cap.token),
+        payload: { winner: "TEAM1" },
+      });
+    }
+
+    // The history list carries no rosters, so opening a past match depends on
+    // this route not closing once the match is over.
+    const res = await app.server.inject({
+      method: "GET",
+      url: `/match/${m.matchId}`,
+      headers: authed(m.captain1.token),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const view = res.json();
+    expect(view.state).toBe("COMPLETED");
+    expect(view.team1).toHaveLength(5);
+    expect(view.team2).toHaveLength(5);
+  });
+
   it("disagreement opens a dispute", async () => {
     const m = await liveMatch();
     await app.server.inject({

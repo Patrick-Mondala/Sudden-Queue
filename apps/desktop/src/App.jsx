@@ -628,7 +628,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
           <Eyebrow style={{ marginBottom: 10 }}>Recent matches</Eyebrow>
           <div style={{ overflow: "auto", flex: 1 }}>
             {history.map((m, i) => (
-              <div key={m.id} data-tour={i === 0 ? "history-row" : undefined} className="row-hover" onClick={() => m.team1 && onViewMatch(m)} style={{ display: "grid", gridTemplateColumns: "60px 60px 1fr 90px 60px", alignItems: "center", gap: 10, padding: "8px 8px", borderRadius: 4, fontSize: 13, cursor: m.team1 ? "pointer" : "default" }}>
+              <div key={m.id} data-tour={i === 0 ? "history-row" : undefined} className="row-hover" onClick={() => (m.team1 || m.openable) && onViewMatch(m)} style={{ display: "grid", gridTemplateColumns: "60px 60px 1fr 90px 60px", alignItems: "center", gap: 10, padding: "8px 8px", borderRadius: 4, fontSize: 13, cursor: m.team1 || m.openable ? "pointer" : "default" }}>
                 <Tag>{m.type}</Tag>
                 <span style={{ fontFamily: T.mono, fontSize: 11.5, color: T.muted }}>{m.region.toUpperCase()}</span>
                 <span style={{ color: T.muted }}>{ago(m.ts)}</span>
@@ -1023,7 +1023,7 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch }) {
           )}
           <div style={{ overflow: "auto", flex: 1 }}>
             {ownHistory.map((m) => (
-              <div key={m.id} className="row-hover" onClick={() => m.team1 && onViewMatch(m)} style={{ display: "grid", gridTemplateColumns: "60px 60px 1fr 100px 60px", alignItems: "center", gap: 10, padding: "8px", borderRadius: 4, fontSize: 13, cursor: m.team1 ? "pointer" : "default" }}>
+              <div key={m.id} className="row-hover" onClick={() => (m.team1 || m.openable) && onViewMatch(m)} style={{ display: "grid", gridTemplateColumns: "60px 60px 1fr 100px 60px", alignItems: "center", gap: 10, padding: "8px", borderRadius: 4, fontSize: 13, cursor: m.team1 || m.openable ? "pointer" : "default" }}>
                 <Tag>{m.type}</Tag><span style={{ fontFamily: T.mono, fontSize: 11.5, color: T.muted }}>{m.region.toUpperCase()}</span><span style={{ color: T.muted }}>{ago(m.ts)}</span>
                 <span style={{ fontFamily: T.mono, fontSize: 11.5, color: m.state === "in dispute" ? T.captain : m.state === "in progress" ? T.accent : T.muted }}>{m.state}</span>
                 <span style={{ fontFamily: T.mono, fontWeight: 600, textAlign: "right", color: m.result === "win" ? T.ok : m.result === "loss" ? T.danger : T.muted }}>{m.result === "win" ? "W" : m.result === "loss" ? "L" : "—"}</span>
@@ -1278,9 +1278,9 @@ function MatchHistoryModal({ m, me, onClose, onView }) {
             </div>
             <button onClick={onClose} style={{ background: "transparent", border: "none", color: T.muted, padding: 4 }}><X size={18} /></button>
           </div>
-          <Roster team={m.team1} captainId={m.captain1} me={me} side={1} label={onTeam1 ? "Your team" : "Team 1"} phase="completed" onView={onView} />
+          <Roster team={m.team1} captainId={m.captain1} me={me} side={1} label={onTeam1 ? "Your team" : "Team 1"} phase="completed" onView={onView} tier={m.team1Tier} />
           <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "22px 0" }}><div style={{ flex: 1, height: 1, background: T.line }} /><span style={{ fontFamily: T.display, fontWeight: 800, fontSize: 18, color: T.dim, letterSpacing: "0.1em" }}>VS</span><div style={{ flex: 1, height: 1, background: T.line }} /></div>
-          <Roster team={m.team2} captainId={m.captain2} me={me} side={2} label={onTeam1 ? "Opponents" : "Your team"} phase="completed" onView={onView} />
+          <Roster team={m.team2} captainId={m.captain2} me={me} side={2} label={onTeam1 ? "Opponents" : "Your team"} phase="completed" onView={onView} tier={m.team2Tier} />
         </Panel>
       </div>
     </div>
@@ -1845,6 +1845,35 @@ export default function App() {
    * Rank, record and the placement countdown all move at that moment, and the
    * lobby would otherwise keep showing the pre-match ones until a restart.
    */
+  /**
+   * Opens a match from a history row.
+   *
+   * The list endpoint returns results, not rosters -- ten players per row for
+   * twenty-five rows is a lot of payload for something most rows never show --
+   * so a live row fetches its own when clicked. Only the rosters are taken from
+   * the fetch: the row already phrases the result from our own side, and the
+   * match record states it as a winning team.
+   */
+  const openMatch = useCallback(async (m) => {
+    if (m.team1) { setViewMatch(m); return; }
+
+    try {
+      const full = adaptMatch(await server.getMatch(m.id));
+      if (!full) { notify("Couldn't load that match"); return; }
+      setViewMatch({
+        ...m,
+        team1: full.team1,
+        team2: full.team2,
+        captain1: full.captain1,
+        captain2: full.captain2,
+        team1Tier: full.team1Tier,
+        team2Tier: full.team2Tier,
+      });
+    } catch (err) {
+      notify(err?.message ?? "Couldn't load that match");
+    }
+  }, [notify]);
+
   const refreshProfile = useCallback(async () => {
     try {
       const profile = await server.me();
@@ -1890,6 +1919,9 @@ export default function App() {
           result: r.result === null ? "—" : (r.result === "TEAM1") === (r.team === 1) ? "win" : "loss",
           state: r.state === "DISPUTED" ? "in dispute" : "completed",
           delta: 0,
+          // Rosters are fetched when the row is opened rather than shipped with
+          // every row; this flag is what makes the row clickable without them.
+          openable: true,
         })),
       );
     } catch {
@@ -1924,8 +1956,8 @@ export default function App() {
     setHistory([{ id: match.id, ts: Date.now(), region: match.region, type: match.type, result, state: disputed ? "in dispute" : "completed", delta, teamId: match.type === "SCRIM" ? myTeam?.id : undefined, teamId2: match.type === "SCRIM" ? teams.find((t) => t.captain === match.captain2)?.id : undefined, captain1: match.captain1, captain2: match.captain2, team1: match.team1, team2: match.team2 }, ...history]);
     setMatch(null);
   }} />;
-  else if (viewProfile) content = <ProfileScreen p={viewProfile} me={me} history={history} onBack={() => setViewProfile(null)} onViewMatch={setViewMatch} />;
-  else if (nav === "play") content = <PlayScreen me={me} party={party} setParty={setParty} queue={queue} setQueue={setQueue} cooldownUntil={cooldownUntil} history={history} notify={notify} onViewMatch={setViewMatch} onView={setViewProfile} tutorial={tourStep >= 0} />;
+  else if (viewProfile) content = <ProfileScreen p={viewProfile} me={me} history={history} onBack={() => setViewProfile(null)} onViewMatch={openMatch} />;
+  else if (nav === "play") content = <PlayScreen me={me} party={party} setParty={setParty} queue={queue} setQueue={setQueue} cooldownUntil={cooldownUntil} history={history} notify={notify} onViewMatch={openMatch} onView={setViewProfile} tutorial={tourStep >= 0} />;
   // Teams and scrims have no server endpoints yet. A live account gets an
   // honest placeholder rather than sample rosters it could try to interact with.
   else if (nav === "scrims")
@@ -1946,10 +1978,10 @@ export default function App() {
         body="Teams aren't wired up yet. Once they are, you'll be able to register one, appoint officers, review applications, and list for scrims."
       />
     ) : (
-      <TeamsScreen me={me} teams={teams} setTeams={setTeams} myTeam={myTeam} notify={notify} history={history} onViewMatch={setViewMatch} onViewTeam={setViewTeam} onView={setViewProfile} />
+      <TeamsScreen me={me} teams={teams} setTeams={setTeams} myTeam={myTeam} notify={notify} history={history} onViewMatch={openMatch} onViewTeam={setViewTeam} onView={setViewProfile} />
     );
   else if (nav === "ladder") content = <LadderScreen me={me} onView={setViewProfile} />;
-  else content = <ProfileScreen p={me} me={me} history={history} onBack={() => {}} onViewMatch={setViewMatch} />;
+  else content = <ProfileScreen p={me} me={me} history={history} onBack={() => {}} onViewMatch={openMatch} />;
 
   return (
     <div className="sq" style={{ height: "100vh", width: "100vw", boxSizing: "border-box", background: T.bg, color: T.text, fontFamily: T.body, fontSize: 13, display: "flex", flexDirection: "column", position: "relative", overflow: "hidden" }}>
