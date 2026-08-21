@@ -2,28 +2,32 @@
  * Dev-only: fill the queue with test players so a match can actually form.
  *
  * A match needs ten players, so a single real account can never pop one. This
- * seeds the rest, and by default plays their side of the flow — accepting the
- * match when it appears — so the whole loop is reachable solo.
+ * seeds the rest and then plays their side of the whole flow -- accepting, and
+ * reporting once you report -- so the loop is reachable solo, all the way
+ * through to a rating change.
  *
- * Every account it creates is prefixed `seed:` so `--cleanup` can remove them
+ * The bots act over HTTP against the running server rather than writing to the
+ * database directly. Going through the real routes is the point: that is what
+ * fires the websocket events your client is waiting on. A bot that accepted by
+ * UPDATE would leave your app sitting on a prompt that never resolves.
+ *
+ * Every account it creates is prefixed `seed:` so `--cleanup` removes them
  * without touching real players.
  *
- *   npm run seed -- --count 9 --region na --rating 1200
+ *   npm run seed                          # 9 bots, played through
+ *   npm run seed -- --count 10 --region eu --rating 1500
  *   npm run seed -- --cleanup
  */
 
-import {
-  ACCEPT_WINDOW_SECONDS,
-  DEFAULT_RATING,
-  MATCH_SIZE,
-  REGIONS,
-} from "@suddenqueue/core";
+import { DEFAULT_RATING, MATCH_SIZE, REGIONS } from "@suddenqueue/core";
 import { and, eq, inArray, like, sql } from "drizzle-orm";
 
+import { SessionService } from "../src/auth/sessions.js";
 import { loadConfig } from "../src/config.js";
 import { createDatabase } from "../src/db/client.js";
 import {
   matchParticipants,
+  matchReports,
   matches,
   parties,
   partyMembers,
@@ -49,13 +53,50 @@ if (config.NODE_ENV === "production") {
 }
 
 const { db, close } = createDatabase(config.DATABASE_URL, { max: 4 });
+const sessionsService = new SessionService(db);
 
 const count = Number(arg("count", String(MATCH_SIZE - 1)));
 const region = arg("region", "na")!;
 const baseRating = Number(arg("rating", String(DEFAULT_RATING)));
 const spread = Number(arg("spread", "60"));
-const autoAccept = arg("accept", "true") !== "false";
+const play = arg("play", "true") !== "false";
 const cleanup = arg("cleanup") === "true";
+const baseUrl = arg("url", `http://127.0.0.1:${config.PORT}`)!;
+
+/** Minutes to shadow the match for. Party-up alone is two of them. */
+const WATCH_MINUTES = Number(arg("watch", "8"));
+
+interface Bot {
+  userId: string;
+  name: string;
+  token: string;
+}
+
+async function send(
+  path: string,
+  token: string,
+  payload?: unknown,
+): Promise<{ ok: boolean; body: unknown }> {
+  // Declaring a JSON content-type with no body is a 400: Fastify believes the
+  // header over the empty payload. Body-less actions send no content-type.
+  const res = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      ...(payload === undefined ? {} : { "content-type": "application/json" }),
+    },
+    ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
+  });
+  return { ok: res.ok, body: await res.json().catch(() => null) };
+}
+
+async function serverIsUp(): Promise<boolean> {
+  try {
+    return (await fetch(`${baseUrl}/health`)).ok;
+  } catch {
+    return false;
+  }
+}
 
 async function removeSeeded(): Promise<number> {
   const rows = await db
@@ -63,8 +104,7 @@ async function removeSeeded(): Promise<number> {
     .where(like(users.discordId, `${SEED_PREFIX}%`))
     .returning({ id: users.id });
 
-  // Parties are not owned by users via cascade in every direction, so sweep
-  // any that were left without members.
+  // Parties are not cascaded from every direction, so sweep any left empty.
   await db.execute(sql`
     DELETE FROM parties p
     WHERE NOT EXISTS (SELECT 1 FROM party_members m WHERE m.party_id = p.id)
@@ -73,25 +113,26 @@ async function removeSeeded(): Promise<number> {
   return rows.length;
 }
 
-async function seed(): Promise<string[]> {
+async function seed(): Promise<Bot[]> {
   if (!REGIONS.includes(region as (typeof REGIONS)[number])) {
     console.error(`Unknown region "${region}". Expected one of: ${REGIONS.join(", ")}`);
     process.exit(1);
   }
 
-  const created: string[] = [];
+  const bots: Bot[] = [];
 
   for (let i = 0; i < count; i += 1) {
-    // Spread ratings a little so the matchmaker has something to balance
-    // rather than every candidate scoring identically.
+    // Spread ratings a little so the matchmaker has something to balance rather
+    // than every candidate scoring identically.
     const rating = baseRating + Math.round((Math.random() * 2 - 1) * spread);
     const stamp = `${Date.now().toString(36)}${i}`;
+    const name = `Bot${String(i + 1).padStart(2, "0")}`;
 
     const [user] = await db
       .insert(users)
       .values({
         discordId: `${SEED_PREFIX}${stamp}`,
-        discordName: `Bot${String(i + 1).padStart(2, "0")}`,
+        discordName: name,
         inGameName: `BOT_${String(i + 1).padStart(2, "0")}`,
       })
       .returning({ id: users.id });
@@ -100,7 +141,8 @@ async function seed(): Promise<string[]> {
       userId: user!.id,
       rating,
       peakRating: rating,
-      // Past placements, so they behave like settled ladder players.
+      // Past placements, so they behave like settled ladder players and show a
+      // rank on the roster instead of a dash.
       gamesPlayed: 40,
       wins: 20,
       losses: 20,
@@ -119,69 +161,122 @@ async function seed(): Promise<string[]> {
       size: 1,
     });
 
-    created.push(user!.id);
+    const { token } = await sessionsService.create(user!.id);
+    bots.push({ userId: user!.id, name, token });
   }
 
-  return created;
+  return bots;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** The match these bots were pulled into, if the matchmaker has run. */
+async function findMatch(botIds: string[]): Promise<string | null> {
+  const [row] = await db
+    .select({ matchId: matchParticipants.matchId })
+    .from(matchParticipants)
+    .innerJoin(matches, eq(matches.id, matchParticipants.matchId))
+    .where(
+      and(
+        inArray(matchParticipants.userId, botIds),
+        inArray(matches.state, ["PENDING_ACCEPT", "PARTY_UP", "LIVE", "REPORTED"]),
+      ),
+    )
+    .limit(1);
+
+  return row?.matchId ?? null;
 }
 
 /**
- * Accepts on behalf of seeded players once a match appears.
+ * Plays the bots' side of one match: accept, then report.
  *
- * Without this the match dies on the accept timer and the real player never
- * gets past the prompt.
+ * Reporting mirrors whatever the human captain claimed, because a bot that
+ * disagreed would push the match into dispute and no rating would move -- the
+ * opposite of what you seeded for. If both captains happen to be bots, one
+ * picks, so the loop still finishes.
  */
-async function acceptForSeeded(userIds: string[]): Promise<void> {
-  const deadline = Date.now() + (ACCEPT_WINDOW_SECONDS + 20) * 1000;
-  let announced = false;
+async function playMatch(matchId: string, bots: Bot[]): Promise<void> {
+  const byId = new Map(bots.map((b) => [b.userId, b]));
+  const deadline = Date.now() + WATCH_MINUTES * 60_000;
+  let accepted = false;
+  let reported = false;
+  let announcedParty = false;
 
   while (Date.now() < deadline) {
-    const pending = await db
-      .select({ matchId: matchParticipants.matchId, userId: matchParticipants.userId })
-      .from(matchParticipants)
-      .innerJoin(matches, eq(matches.id, matchParticipants.matchId))
-      .where(
-        and(
-          inArray(matchParticipants.userId, userIds),
-          eq(matches.state, "PENDING_ACCEPT"),
-        ),
-      );
+    const [match] = await db.select().from(matches).where(eq(matches.id, matchId));
+    if (!match) return;
 
-    if (pending.length > 0) {
-      if (!announced) {
-        console.log(`  match found (${pending[0]!.matchId}) — accepting for bots`);
-        announced = true;
-      }
-
-      await db
-        .update(matchParticipants)
-        .set({ acceptedAt: new Date() })
-        .where(
-          and(
-            inArray(
-              matchParticipants.userId,
-              pending.map((p) => p.userId),
-            ),
-            eq(matchParticipants.matchId, pending[0]!.matchId),
-          ),
-        );
-
-      const [counts] = await db
-        .select({
-          total: sql<number>`COUNT(*)::int`,
-          accepted: sql<number>`COUNT(${matchParticipants.acceptedAt})::int`,
-        })
-        .from(matchParticipants)
-        .where(eq(matchParticipants.matchId, pending[0]!.matchId));
-
-      console.log(`  accepted: ${counts?.accepted}/${counts?.total} — waiting on you`);
+    if (match.state === "CANCELLED") {
+      console.log("  match cancelled — somebody did not accept in time");
       return;
     }
 
-    await new Promise((r) => setTimeout(r, 1000));
+    if (match.state === "COMPLETED" || match.state === "DISPUTED") {
+      const deltas = await db
+        .select({ userId: matchParticipants.userId, delta: matchParticipants.ratingDelta })
+        .from(matchParticipants)
+        .where(eq(matchParticipants.matchId, matchId));
+
+      const yours = deltas.find((d) => !byId.has(d.userId) && d.delta !== null);
+      const suffix = yours ? ` — your rating moved ${yours.delta! > 0 ? "+" : ""}${yours.delta}` : "";
+      console.log(`  match ${match.state.toLowerCase()}${suffix}`);
+      return;
+    }
+
+    const parts = await db
+      .select()
+      .from(matchParticipants)
+      .where(eq(matchParticipants.matchId, matchId));
+
+    if (match.state === "PENDING_ACCEPT" && !accepted) {
+      const pending = parts.filter((p) => byId.has(p.userId) && p.acceptedAt === null);
+      for (const p of pending) {
+        const bot = byId.get(p.userId)!;
+        const res = await send(`/match/${matchId}/accept`, bot.token);
+        if (!res.ok) console.log(`  ${bot.name} could not accept:`, res.body);
+      }
+      if (pending.length > 0) {
+        console.log(`  ${pending.length} bot(s) accepted — waiting on you`);
+        accepted = true;
+      }
+    }
+
+    if (match.state === "PARTY_UP" && !announcedParty) {
+      console.log("  everyone accepted — party up (the server goes live in ~2 min)");
+      announcedParty = true;
+    }
+
+    if ((match.state === "LIVE" || match.state === "REPORTED") && !reported) {
+      const botCaptains = parts.filter((p) => p.isCaptain && byId.has(p.userId));
+      const humanCaptain = parts.find((p) => p.isCaptain && !byId.has(p.userId));
+
+      const existing = await db
+        .select()
+        .from(matchReports)
+        .where(eq(matchReports.matchId, matchId));
+
+      // Let the human go first so the bots can agree with them.
+      if (humanCaptain && existing.length === 0) {
+        await sleep(2000);
+        continue;
+      }
+
+      const claimed = existing[0]?.claimedWinner ?? (Math.random() < 0.5 ? "TEAM1" : "TEAM2");
+
+      for (const cap of botCaptains) {
+        if (existing.some((r) => r.reporterId === cap.userId)) continue;
+        const bot = byId.get(cap.userId)!;
+        const res = await send(`/match/${matchId}/report`, bot.token, { winner: claimed });
+        if (res.ok) console.log(`  ${bot.name} (captain) reported ${claimed}`);
+        else console.log(`  ${bot.name} could not report:`, res.body);
+      }
+      reported = true;
+    }
+
+    await sleep(2000);
   }
 
-  console.log("  no match formed. Is the server running, and are you queued in the same region?");
+  console.log("  stopped watching (--watch minutes elapsed)");
 }
 
 async function main(): Promise<void> {
@@ -191,17 +286,34 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (play && !(await serverIsUp())) {
+    console.error(`No server at ${baseUrl}. Start it with "npm run server" first.`);
+    process.exit(1);
+  }
+
   console.log(`Seeding ${count} player(s) into the ${region.toUpperCase()} queue at ~${baseRating}...`);
-  const ids = await seed();
-  console.log(`  created ${ids.length} queued bot(s)`);
+  const bots = await seed();
+  console.log(`  created ${bots.length} queued bot(s)`);
   console.log("");
   console.log(`Queue up in ${region.toUpperCase()} now — the matchmaker runs every 2s.`);
 
-  if (autoAccept) {
-    console.log("Watching for the match...");
-    await acceptForSeeded(ids);
-    console.log("");
-    console.log("Accept in the app, then the match moves to party-up.");
+  if (play) {
+    console.log("Watching. The bots accept, then report to match whatever you report.");
+
+    const botIds = bots.map((b) => b.userId);
+    const until = Date.now() + WATCH_MINUTES * 60_000;
+
+    let matchId: string | null = null;
+    while (!matchId && Date.now() < until) {
+      matchId = await findMatch(botIds);
+      if (!matchId) await sleep(1000);
+    }
+
+    if (!matchId) console.log("  no match formed. Are you queued in the same region?");
+    else {
+      console.log(`  match ${matchId}`);
+      await playMatch(matchId, bots);
+    }
   }
 
   console.log("");

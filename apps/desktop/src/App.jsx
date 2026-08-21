@@ -1333,25 +1333,36 @@ function MatchChat({ match, me, onView }) {
   );
 }
 
-function MatchScreen({ match, me, onFinished, notify, onView, tutorial, onPhaseChange }) {
+function MatchScreen({ match, me, onFinished, notify, onView, tutorial, onPhaseChange, live }) {
   const PARTY_S = 120;
   const [phase, setPhase] = useState("party"); // party → queue → live → reported → completed | dispute
   const [left, setLeft] = useState(PARTY_S);
+  const [delta, setDelta] = useState(null);
   const [myReport, setMyReport] = useState(null);
   const [theirReport, setTheirReport] = useState(null);
   const [outcome, setOutcome] = useState(null);
   const myTeamIsOne = match.team1.some((p) => p.id === me.id);
   const myCapId = myTeamIsOne ? match.captain1 : match.captain2; // YOUR team's captain — never the opponent's
   const iAmCaptain = myCapId === me.id;
-  const cap = byId(myCapId);
+  // The captain is on the roster in front of us. byId only knows the sample
+  // ladder, so looking them up there returns nothing for a real match.
+  const cap = [...match.team1, ...match.team2].find((p) => p.id === myCapId);
+
+  // The server stamped the party-up deadline; counting down to it keeps this
+  // clock and the server's sweeper talking about the same moment.
+  const partyEndsAt = useRef(
+    live && match.partyUpDeadline ? Date.parse(match.partyUpDeadline) : Date.now() + PARTY_S * 1000,
+  );
 
   useEffect(() => {
     if (phase !== "party") return;
-    const iv = setInterval(() => setLeft((l) => l - 1), 1000);
+    const tick = () =>
+      setLeft(live ? Math.ceil((partyEndsAt.current - Date.now()) / 1000) : (l) => l - 1);
+    const iv = setInterval(tick, live ? 250 : 1000);
     return () => clearInterval(iv);
-  }, [phase]);
+  }, [phase, live]);
   // live mode runs on timers; in the tutorial every transition is driven by the tour's Next button (cues below)
-  useEffect(() => { if (tutorial) return; if (phase === "party" && left <= 0) { setPhase("queue"); notify("Queue Casual now — both captains are queuing"); setTimeout(() => setPhase("live"), 6000); } }, [left, phase, tutorial]);
+  useEffect(() => { if (tutorial || live) return; if (phase === "party" && left <= 0) { setPhase("queue"); notify("Queue Casual now — both captains are queuing"); setTimeout(() => setPhase("live"), 6000); } }, [left, phase, tutorial]);
   useEffect(() => { onPhaseChange?.(phase); }, [phase]);
   useEffect(() => {
     if (!tutorial) return;
@@ -1368,7 +1379,82 @@ function MatchScreen({ match, me, onFinished, notify, onView, tutorial, onPhaseC
     });
   }, [tutorial, phase, myReport]);
 
+  /**
+   * Re-reads the match on entry.
+   *
+   * The object we arrive with was captured when the match was found, before
+   * anyone accepted -- so its party-up deadline is still null and its state is
+   * stale. Asking once here also recovers the right phase for anyone who
+   * reloaded mid-match.
+   */
+  useEffect(() => {
+    if (!live) return;
+    let cancelled = false;
+
+    server
+      .getMatch(match.id)
+      .then((fresh) => {
+        if (cancelled || !fresh) return;
+        if (fresh.partyUpDeadline) partyEndsAt.current = Date.parse(fresh.partyUpDeadline);
+        if (fresh.state === "LIVE") setPhase("live");
+        if (fresh.state === "DISPUTED") setPhase("dispute");
+        if (fresh.state === "COMPLETED") {
+          const iWon =
+            (fresh.result === "TEAM1" && myTeamIsOne) || (fresh.result === "TEAM2" && !myTeamIsOne);
+          setOutcome(iWon ? "win" : "loss");
+          setPhase("completed");
+        }
+      })
+      .catch(() => {
+        // Not fatal: the push events still drive the screen, and the fallback
+        // deadline is within a second or two of the real one.
+      });
+
+    return () => { cancelled = true; };
+  }, [live, match.id]);
+
+  /**
+   * On a live match the server owns every transition: the sweeper decides when
+   * party-up becomes LIVE, and the second captain's report is a real person
+   * arriving whenever they arrive. Nothing here may guess at either.
+   */
+  useEffect(() => {
+    if (!live) return;
+    return liveBus.on((e) => {
+      if (e.matchId !== match.id) return;
+      if (e.type === "match.state") {
+        if (e.state === "LIVE") setPhase("live");
+        if (e.state === "DISPUTED") setPhase("dispute");
+        // REPORTED only means the first captain is in; the reporter is already
+        // showing "waiting", and the other side has nothing to wait for yet.
+      }
+      if (e.type === "match.resolved") {
+        const iWon =
+          (e.result === "TEAM1" && myTeamIsOne) || (e.result === "TEAM2" && !myTeamIsOne);
+        setDelta(e.ratingDelta ?? null);
+        setOutcome(iWon ? "win" : "loss");
+        setTheirReport(iWon ? "loss" : "win");
+        setPhase("completed");
+      }
+    });
+  }, [live, match.id, myTeamIsOne]);
+
   const report = async (r) => {
+    if (live) {
+      // The server speaks in sides, not in who is asking.
+      const winner = (r === "win") === myTeamIsOne ? "TEAM1" : "TEAM2";
+      setMyReport(r);
+      setPhase("reported");
+      try {
+        await server.reportResult(match.id, winner);
+      } catch (err) {
+        setMyReport(null);
+        setPhase("live");
+        notify(err?.message ?? "Could not send that report");
+      }
+      return;
+    }
+
     setMyReport(r); setPhase("reported"); await api.reportResult(match.id, r);
     if (tutorial) return; // the tutorial resolves the other captain's report from its own Next step
     setTimeout(() => {
@@ -1381,11 +1467,11 @@ function MatchScreen({ match, me, onFinished, notify, onView, tutorial, onPhaseC
   };
 
   const banner = {
-    party: { color: T.captain, title: "Party up", sub: iAmCaptain ? "You're the captain — your teammates add you in-game and join your party. Queue starts in" : `Add ${cap.inGameName} — your captain — in-game and join their party. Queue starts in` },
+    party: { color: T.captain, title: "Party up", sub: iAmCaptain ? "You're the captain — your teammates add you in-game and join your party. Queue starts in" : `Add ${cap?.inGameName ?? "your captain"} — your captain — in-game and join their party. Queue starts in` },
     queue: { color: T.accent, title: "Queue casual now", sub: "Both captains hit Casual queue on this signal. Stay in party." },
     live: { color: T.accent, title: "Match in progress", sub: iAmCaptain ? "When it ends, report the result below." : "Your captain reports the result when the match ends." },
     reported: { color: T.muted, title: "Waiting for the other captain", sub: `You reported a ${myReport}. Awaiting the other side's report.` },
-    completed: { color: T.ok, title: outcome === "win" ? "Victory" : "Defeat", sub: match.type === "SCRIM" ? "Both captains agree. Scrims are unrated — no rating change." : `Both captains agree. Rating updated ${outcome === "win" ? "+17" : "−13"}.` },
+    completed: { color: T.ok, title: outcome === "win" ? "Victory" : "Defeat", sub: match.type === "SCRIM" ? "Both captains agree. Scrims are unrated — no rating change." : `Both captains agree. Rating updated ${delta === null ? (outcome === "win" ? "+17" : "−13") : `${delta > 0 ? "+" : ""}${delta}`}.` },
     dispute: { color: T.captain, title: "In dispute", sub: "Captains reported different results. A mod will resolve this with both teams — this stays open until then." },
   }[phase];
 
@@ -1733,7 +1819,7 @@ export default function App() {
   const go = (id) => { setNav(id); setViewProfile(null); };
 
   let content;
-  if (match) content = <MatchScreen key={match.id} match={match} me={me} notify={notify} onView={setViewProfile} tutorial={tourStep >= 0} onPhaseChange={setMatchPhase} onFinished={({ outcome, disputed }) => {
+  if (match) content = <MatchScreen key={match.id} match={match} me={me} notify={notify} onView={setViewProfile} tutorial={tourStep >= 0} live={!!me.live && tourStep < 0} onPhaseChange={setMatchPhase} onFinished={({ outcome, disputed }) => {
     const result = disputed ? "—" : outcome;
     const delta = disputed || match.type === "SCRIM" ? 0 : (outcome === "win" ? 17 : -13);
     setHistory([{ id: match.id, ts: Date.now(), region: match.region, type: match.type, result, state: disputed ? "in dispute" : "completed", delta, teamId: match.type === "SCRIM" ? myTeam?.id : undefined, teamId2: match.type === "SCRIM" ? teams.find((t) => t.captain === match.captain2)?.id : undefined, captain1: match.captain1, captain2: match.captain2, team1: match.team1, team2: match.team2 }, ...history]);
