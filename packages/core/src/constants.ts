@@ -8,6 +8,18 @@
 /** Match composition. The earlier system was 3v3; Sudden Queue targets 5v5. */
 export const TEAM_SIZE = 5;
 export const MATCH_SIZE = TEAM_SIZE * 2;
+
+/**
+ * Roster limits for a registered team.
+ *
+ * Bigger than a match on purpose: a team fields five but carries substitutes,
+ * and a roster capped at exactly five would mean dropping someone to trial
+ * anyone new.
+ */
+export const MAX_TEAM_SIZE = 10;
+export const TEAM_TAG_MAX_LENGTH = 4;
+export const TEAM_NAME_MAX_LENGTH = 24;
+export const TEAM_APPLICATION_NOTE_MAX_LENGTH = 200;
 export const MAX_PARTY_SIZE = 5;
 
 export const REGIONS = ["na", "sa", "eu", "asia"] as const;

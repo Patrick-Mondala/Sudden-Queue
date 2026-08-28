@@ -45,6 +45,11 @@ export type ServerEvent =
       tierAfter: string | null;
       placementsRemaining: number;
     }
+  | { type: "team.updated"; team: unknown }
+  | { type: "team.application.received"; teamId: string }
+  | { type: "team.application.decided"; teamId: string; accepted: boolean }
+  | { type: "team.removed"; teamId: string }
+  | { type: "team.disbanded"; teamId: string }
   | { type: "chat.message"; channel: string; message: unknown }
   | { type: "notification"; level: "info" | "warn" | "error"; text: string };
 

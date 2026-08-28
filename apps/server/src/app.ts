@@ -3,6 +3,7 @@ import {
   INVITE_EXPIRATION_SECONDS,
   MAX_PARTY_SIZE,
   PARTY_DISCONNECT_GRACE_SECONDS,
+  TEAM_APPLICATION_NOTE_MAX_LENGTH,
   cooldownRemainingSeconds,
   REGIONS,
   isFail,
@@ -28,6 +29,7 @@ import { MatchLifecycle } from "./match/lifecycle.js";
 import { MatchReporting } from "./match/reporting.js";
 import { Matchmaker, MatchSweeper } from "./matchmaker/loop.js";
 import { PartyService } from "./party/service.js";
+import { TeamService } from "./team/service.js";
 import { QueueRepository } from "./queue/repository.js";
 import { Notifier } from "./realtime/notifier.js";
 
@@ -58,6 +60,7 @@ export interface App {
     queue: QueueRepository;
     lifecycle: MatchLifecycle;
     reporting: MatchReporting;
+    team: TeamService;
   };
 }
 
@@ -155,6 +158,7 @@ export async function buildApp({
   });
   const auth = new AuthService(db, discord, sessions);
   const party = new PartyService(db);
+  const team = new TeamService(db);
   const queue = new QueueRepository(db);
   const lifecycle = new MatchLifecycle(db);
   const reporting = new MatchReporting(db);
@@ -777,6 +781,254 @@ export async function buildApp({
     inMatch: await lifecycle.countPlayersInMatches(),
   }));
 
+  // -------------------------------------------------------------------- teams
+
+  /**
+   * Two prefixes on purpose: `/teams` is the directory anyone browses, `/team`
+   * is the one you are on. Almost every action applies to your own team and
+   * carries no id, which keeps "may I touch this team" from being a question
+   * each route has to ask for itself.
+   */
+  const teamErrorStatus = (code: string): number => {
+    if (code === "TEAM_NOT_FOUND" || code === "APPLICATION_NOT_FOUND") return 404;
+    if (code === "NOT_CAPTAIN" || code === "NOT_A_MANAGER") return 403;
+    if (code.startsWith("INVALID_")) return 400;
+    return 409;
+  };
+
+  async function broadcastTeam(teamId: string): Promise<void> {
+    const view = await team.view(teamId);
+    if (!view) return;
+    notifier.toUsers(
+      view.members.map((m) => m.userId),
+      { type: "team.updated", team: view },
+    );
+  }
+
+  server.get("/teams", { preHandler: authenticate }, async (req) => {
+    const { region } = req.query as { region?: string };
+    return { teams: await team.list(region) };
+  });
+
+  server.get("/teams/:id", { preHandler: authenticate }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const view = await team.view(id);
+    if (!view) return reply.code(404).send({ error: "TEAM_NOT_FOUND", message: "No such team" });
+    return view;
+  });
+
+  /** Your team, plus the parts of it only you can see. */
+  server.get("/me/team", { preHandler: authenticate }, async (req) => {
+    const user = requireUser(req);
+    const teamId = await team.teamIdFor(user.userId);
+
+    if (!teamId) {
+      return {
+        team: null,
+        role: null,
+        applications: [],
+        myApplication: await team.myApplication(user.userId),
+      };
+    }
+
+    const view = await team.view(teamId);
+    const role = view?.members.find((m) => m.userId === user.userId)?.role ?? null;
+    const manages = role === "captain" || role === "officer";
+
+    return {
+      team: view,
+      role,
+      // Applications are the managers' business, not the whole roster's.
+      applications: manages ? await team.pendingApplications(teamId) : [],
+      myApplication: null,
+    };
+  });
+
+  server.post("/teams", { preHandler: authenticate }, async (req, reply) => {
+    const body = z
+      .object({ tag: z.string(), name: z.string(), region: z.string() })
+      .safeParse(req.body);
+    if (!body.success) {
+      return reply
+        .code(400)
+        .send({ error: "BAD_REQUEST", message: "tag, name and region are required" });
+    }
+
+    const result = await team.create(requireUser(req).userId, body.data);
+    if (isFail(result)) {
+      return reply
+        .code(teamErrorStatus(result.code))
+        .send({ error: result.code, message: result.message });
+    }
+
+    await broadcastTeam(result.data.teamId);
+    return result.data;
+  });
+
+  server.post("/teams/:id/apply", { preHandler: authenticate }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = z
+      .object({ note: z.string().max(TEAM_APPLICATION_NOTE_MAX_LENGTH).nullish() })
+      .safeParse(req.body ?? {});
+    if (!body.success) {
+      return reply.code(400).send({ error: "BAD_REQUEST", message: "That note is too long" });
+    }
+
+    const result = await team.apply(requireUser(req).userId, id, body.data.note ?? null);
+    if (isFail(result)) {
+      return reply
+        .code(teamErrorStatus(result.code))
+        .send({ error: result.code, message: result.message });
+    }
+
+    // Managers hear about it, so a waiting application does not need a refresh
+    // to show up.
+    const view = await team.view(id);
+    const managers = (view?.members ?? [])
+      .filter((m) => m.role === "captain" || m.role === "officer")
+      .map((m) => m.userId);
+    notifier.toUsers(managers, { type: "team.application.received", teamId: id });
+
+    return result.data;
+  });
+
+  server.post("/me/application/withdraw", { preHandler: authenticate }, async (req, reply) => {
+    const result = await team.withdrawApplication(requireUser(req).userId);
+    if (isFail(result)) {
+      return reply.code(404).send({ error: result.code, message: result.message });
+    }
+    return { ok: true };
+  });
+
+  server.post("/team/applications/:id/decide", { preHandler: authenticate }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = z.object({ accept: z.boolean() }).safeParse(req.body);
+    if (!body.success) {
+      return reply
+        .code(400)
+        .send({ error: "BAD_REQUEST", message: "accept must be true or false" });
+    }
+
+    const result = await team.decideApplication(requireUser(req).userId, id, body.data.accept);
+    if (isFail(result)) {
+      return reply
+        .code(teamErrorStatus(result.code))
+        .send({ error: result.code, message: result.message });
+    }
+
+    await broadcastTeam(result.data.teamId);
+    // The applicant hears either way; a denial would otherwise be silence.
+    notifier.toUser(result.data.userId, {
+      type: "team.application.decided",
+      teamId: result.data.teamId,
+      accepted: result.data.joined,
+    });
+
+    return result.data;
+  });
+
+  server.patch("/team/applications-open", { preHandler: authenticate }, async (req, reply) => {
+    const body = z.object({ open: z.boolean() }).safeParse(req.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: "BAD_REQUEST", message: "open must be true or false" });
+    }
+
+    const user = requireUser(req);
+    const teamId = await team.teamIdFor(user.userId);
+    if (!teamId) {
+      return reply.code(409).send({ error: "NOT_IN_TEAM", message: "You are not in a team" });
+    }
+
+    const result = await team.setApplicationsOpen(user.userId, teamId, body.data.open);
+    if (isFail(result)) {
+      return reply
+        .code(teamErrorStatus(result.code))
+        .send({ error: result.code, message: result.message });
+    }
+
+    await broadcastTeam(teamId);
+    return { ok: true };
+  });
+
+  server.post("/team/members/:userId/role", { preHandler: authenticate }, async (req, reply) => {
+    const { userId } = req.params as { userId: string };
+    const body = z.object({ role: z.enum(["officer", "member"]) }).safeParse(req.body);
+    if (!body.success) {
+      return reply
+        .code(400)
+        .send({ error: "BAD_REQUEST", message: "role must be officer or member" });
+    }
+
+    const result = await team.setRole(requireUser(req).userId, userId, body.data.role);
+    if (isFail(result)) {
+      return reply
+        .code(teamErrorStatus(result.code))
+        .send({ error: result.code, message: result.message });
+    }
+
+    await broadcastTeam(result.data.teamId);
+    return { ok: true };
+  });
+
+  server.post("/team/captain", { preHandler: authenticate }, async (req, reply) => {
+    const body = z.object({ userId: z.string().uuid() }).safeParse(req.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: "BAD_REQUEST", message: "userId is required" });
+    }
+
+    const result = await team.transferCaptaincy(requireUser(req).userId, body.data.userId);
+    if (isFail(result)) {
+      return reply
+        .code(teamErrorStatus(result.code))
+        .send({ error: result.code, message: result.message });
+    }
+
+    await broadcastTeam(result.data.teamId);
+    return { ok: true };
+  });
+
+  server.delete("/team/members/:userId", { preHandler: authenticate }, async (req, reply) => {
+    const { userId } = req.params as { userId: string };
+    const result = await team.removeMember(requireUser(req).userId, userId);
+    if (isFail(result)) {
+      return reply
+        .code(teamErrorStatus(result.code))
+        .send({ error: result.code, message: result.message });
+    }
+
+    await broadcastTeam(result.data.teamId);
+    notifier.toUser(userId, { type: "team.removed", teamId: result.data.teamId });
+    return { ok: true };
+  });
+
+  server.post("/team/leave", { preHandler: authenticate }, async (req, reply) => {
+    const result = await team.leave(requireUser(req).userId);
+    if (isFail(result)) {
+      return reply
+        .code(teamErrorStatus(result.code))
+        .send({ error: result.code, message: result.message });
+    }
+
+    if (!result.data.disbanded) await broadcastTeam(result.data.teamId);
+    return result.data;
+  });
+
+  server.delete("/team", { preHandler: authenticate }, async (req, reply) => {
+    const result = await team.disband(requireUser(req).userId);
+    if (isFail(result)) {
+      return reply
+        .code(teamErrorStatus(result.code))
+        .send({ error: result.code, message: result.message });
+    }
+
+    // The team is gone, so there is no view left to broadcast.
+    notifier.toUsers(result.data.memberIds, {
+      type: "team.disbanded",
+      teamId: result.data.teamId,
+    });
+    return { ok: true };
+  });
+
   // -------------------------------------------------------------------- match
 
   server.post("/match/:id/accept", { preHandler: authenticate }, async (req, reply) => {
@@ -1059,6 +1311,6 @@ export async function buildApp({
     notifier,
     matchmaker,
     sweeper,
-    services: { auth, sessions, party, queue, lifecycle, reporting },
+    services: { auth, sessions, party, queue, lifecycle, reporting, team },
   };
 }

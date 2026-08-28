@@ -1298,3 +1298,240 @@ describe("missing a match you were matched into", () => {
     expect(me.json().missedAccepts).toBe(1);
   });
 });
+
+describe("teams over the API", () => {
+  async function register(token: string, tag = "ACE", region = "na") {
+    return app.server.inject({
+      method: "POST",
+      url: "/teams",
+      headers: authed(token),
+      payload: { tag, name: `${tag} Team`, region },
+    });
+  }
+
+  async function applyAndAccept(applicant: { token: string }, teamId: string, manager: { token: string }) {
+    const applied = await app.server.inject({
+      method: "POST",
+      url: `/teams/${teamId}/apply`,
+      headers: authed(applicant.token),
+      payload: { note: null },
+    });
+    const decided = await app.server.inject({
+      method: "POST",
+      url: `/team/applications/${applied.json().applicationId}/decide`,
+      headers: authed(manager.token),
+      payload: { accept: true },
+    });
+    return { applied, decided };
+  }
+
+  it("runs registering, applying and accepting through the routes", async () => {
+    const captain = await login();
+    const rookie = await login();
+
+    const created = await register(captain.token);
+    expect(created.statusCode).toBe(200);
+    const { teamId } = created.json();
+
+    const { decided } = await applyAndAccept(rookie, teamId, captain);
+    expect(decided.statusCode).toBe(200);
+
+    const mine = await app.server.inject({
+      method: "GET",
+      url: "/me/team",
+      headers: authed(rookie.token),
+    });
+    expect(mine.json().team.id).toBe(teamId);
+    expect(mine.json().role).toBe("member");
+  });
+
+  it("shows applications to managers and hides them from the rest", async () => {
+    const captain = await login();
+    const member = await login();
+    const applicant = await login();
+
+    const { teamId } = (await register(captain.token)).json();
+    await applyAndAccept(member, teamId, captain);
+
+    await app.server.inject({
+      method: "POST",
+      url: `/teams/${teamId}/apply`,
+      headers: authed(applicant.token),
+      payload: {},
+    });
+
+    const asCaptain = await app.server.inject({
+      method: "GET",
+      url: "/me/team",
+      headers: authed(captain.token),
+    });
+    expect(asCaptain.json().applications).toHaveLength(1);
+
+    // A plain member has no business reviewing the queue of applicants.
+    const asMember = await app.server.inject({
+      method: "GET",
+      url: "/me/team",
+      headers: authed(member.token),
+    });
+    expect(asMember.json().applications).toHaveLength(0);
+  });
+
+  it("refuses roster management to someone outside the team", async () => {
+    const captain = await login();
+    const member = await login();
+    const stranger = await login();
+
+    const { teamId } = (await register(captain.token)).json();
+    await applyAndAccept(member, teamId, captain);
+
+    const kick = await app.server.inject({
+      method: "DELETE",
+      url: `/team/members/${member.userId}`,
+      headers: authed(stranger.token),
+    });
+    expect(kick.statusCode).toBeGreaterThanOrEqual(400);
+
+    const stillThere = await app.server.inject({
+      method: "GET",
+      url: `/teams/${teamId}`,
+      headers: authed(stranger.token),
+    });
+    expect(stillThere.json().members).toHaveLength(2);
+  });
+
+  it("answers 403 when an officer tries to appoint officers", async () => {
+    const captain = await login();
+    const officer = await login();
+    const member = await login();
+
+    const { teamId } = (await register(captain.token)).json();
+    await applyAndAccept(officer, teamId, captain);
+    await applyAndAccept(member, teamId, captain);
+
+    await app.server.inject({
+      method: "POST",
+      url: `/team/members/${officer.userId}/role`,
+      headers: authed(captain.token),
+      payload: { role: "officer" },
+    });
+
+    const res = await app.server.inject({
+      method: "POST",
+      url: `/team/members/${member.userId}/role`,
+      headers: authed(officer.token),
+      payload: { role: "officer" },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("tells the roster when it changes", async () => {
+    const captain = await login();
+    const rookie = await login();
+    const { teamId } = (await register(captain.token)).json();
+
+    const seen: unknown[] = [];
+    const conn = {
+      send: (payload: string) => seen.push(JSON.parse(payload)),
+      close: () => {},
+    };
+    app.notifier.add(captain.userId, conn);
+
+    await applyAndAccept(rookie, teamId, captain);
+
+    // Otherwise a captain has to refresh to see who they just accepted.
+    const updates = seen.filter((e) => (e as { type: string }).type === "team.updated");
+    expect(updates.length).toBeGreaterThan(0);
+    const last = updates.at(-1) as { team: { members: unknown[] } };
+    expect(last.team.members).toHaveLength(2);
+
+    app.notifier.remove(captain.userId, conn);
+  });
+
+  it("lets the applicant hear a decision either way", async () => {
+    const captain = await login();
+    const applicant = await login();
+    const { teamId } = (await register(captain.token)).json();
+
+    const seen: { type: string; accepted?: boolean }[] = [];
+    const conn = {
+      send: (payload: string) => seen.push(JSON.parse(payload)),
+      close: () => {},
+    };
+    app.notifier.add(applicant.userId, conn);
+
+    const applied = await app.server.inject({
+      method: "POST",
+      url: `/teams/${teamId}/apply`,
+      headers: authed(applicant.token),
+      payload: {},
+    });
+    await app.server.inject({
+      method: "POST",
+      url: `/team/applications/${applied.json().applicationId}/decide`,
+      headers: authed(captain.token),
+      payload: { accept: false },
+    });
+
+    // A denial is otherwise silence, which reads as being ignored.
+    const decided = seen.find((e) => e.type === "team.application.decided");
+    expect(decided).toBeTruthy();
+    expect(decided!.accepted).toBe(false);
+
+    app.notifier.remove(applicant.userId, conn);
+  });
+
+  it("frees everyone when the team is disbanded", async () => {
+    const captain = await login();
+    const member = await login();
+    const { teamId } = (await register(captain.token)).json();
+    await applyAndAccept(member, teamId, captain);
+
+    const res = await app.server.inject({
+      method: "DELETE",
+      url: "/team",
+      headers: authed(captain.token),
+    });
+    expect(res.statusCode).toBe(200);
+
+    for (const u of [captain, member]) {
+      const mine = await app.server.inject({
+        method: "GET",
+        url: "/me/team",
+        headers: authed(u.token),
+      });
+      expect(mine.json().team).toBeNull();
+    }
+  });
+
+  it("lists teams and filters by region", async () => {
+    const a = await login();
+    const b = await login();
+    await register(a.token, "NAA", "na");
+    await register(b.token, "EUE", "eu");
+
+    const all = await app.server.inject({ method: "GET", url: "/teams", headers: authed(a.token) });
+    expect(all.json().teams).toHaveLength(2);
+
+    const eu = await app.server.inject({
+      method: "GET",
+      url: "/teams?region=eu",
+      headers: authed(a.token),
+    });
+    expect(eu.json().teams).toHaveLength(1);
+    expect(eu.json().teams[0].tag).toBe("EUE");
+  });
+
+  it("never puts a rating in the directory", async () => {
+    const captain = await login();
+    await register(captain.token, "RNK");
+
+    const res = await app.server.inject({
+      method: "GET",
+      url: "/teams",
+      headers: authed(captain.token),
+    });
+
+    // Same rule as everywhere else: rank is published, the number is not.
+    expect(JSON.stringify(res.json())).not.toMatch(/\b(6[2-9]\d|[7-9]\d\d|1[0-7]\d\d)\b/);
+  });
+});
