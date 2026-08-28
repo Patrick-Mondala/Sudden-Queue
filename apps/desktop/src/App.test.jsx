@@ -29,6 +29,26 @@ const liveBus = {
 
 const emit = (event) => act(() => { for (const fn of [...listeners]) fn(event); });
 
+/**
+ * What a person would actually read on screen.
+ *
+ * body.textContent includes the injected <style> block, whose keyframes and
+ * shadows are full of numbers -- enough to fail a "no ratings anywhere" scan
+ * on CSS rather than on anything rendered.
+ */
+function visibleText() {
+  const clone = document.body.cloneNode(true);
+  for (const style of clone.querySelectorAll("style")) style.remove();
+
+  // Joined with spaces rather than read as one string: textContent runs
+  // neighbouring elements together, so a record of 10 beside a win rate of 75%
+  // reads as 1075 and trips a scan looking for ratings.
+  const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
+  const parts = [];
+  while (walker.nextNode()) parts.push(walker.currentNode.textContent ?? "");
+  return parts.join(" ");
+}
+
 const server = {
   me: vi.fn(),
   history: vi.fn(),
@@ -54,6 +74,8 @@ const server = {
   requestScrim: vi.fn(),
   withdrawScrimRequest: vi.fn(),
   decideScrimRequest: vi.fn(),
+  ladder: vi.fn(),
+  playerProfile: vi.fn(),
   invite: vi.fn(),
   getInvites: vi.fn(),
   acceptInvite: vi.fn(),
@@ -148,6 +170,8 @@ beforeEach(() => {
   server.myTeam.mockResolvedValue({ team: null, role: null, applications: [], myApplication: null });
   server.listTeams.mockResolvedValue({ teams: [] });
   server.scrims.mockResolvedValue({ listings: [], myListing: null, incoming: [] });
+  server.ladder.mockResolvedValue({ rows: [], total: 0, myPosition: null, limit: 50, offset: 0 });
+  server.playerProfile.mockResolvedValue(null);
 });
 
 afterEach(cleanup);
@@ -214,7 +238,7 @@ describe("what the screen is allowed to show", () => {
 
     // Rank is the published unit. Any four-digit number in rating range on
     // screen means one leaked back in.
-    expect(document.body.textContent).not.toMatch(/\b(6[2-9]\d|[7-9]\d\d|1[0-7]\d\d)\b/);
+    expect(visibleText()).not.toMatch(/\b(6[2-9]\d|[7-9]\d\d|1[0-7]\d\d)\b/);
     expect(screen.getAllByText("B").length).toBeGreaterThan(0);
   });
 
@@ -794,5 +818,124 @@ describe("scrims", () => {
 
     expect(await screen.findByText(/Match found/i)).toBeTruthy();
     expect(screen.getByText(/SCRIM · NA · 5v5/)).toBeTruthy();
+  });
+});
+
+describe("the ladder", () => {
+  const rung = (position, over = {}) => ({
+    position,
+    userId: `user-${position}`,
+    discordName: `Rung${position}`,
+    inGameName: `RUNG_${position}`,
+    tier: "A",
+    wins: 30,
+    losses: 10,
+    gamesPlayed: 40,
+    teamTag: null,
+    ...over,
+  });
+
+  const page = (over = {}) => ({
+    rows: [rung(1, { teamTag: "ACE" }), rung(2), rung(3)],
+    total: 3,
+    myPosition: 2,
+    limit: 50,
+    offset: 0,
+    ...over,
+  });
+
+  const PUBLIC = {
+    userId: "user-3",
+    discordName: "Rung3",
+    inGameName: "RUNG_3",
+    tier: "A",
+    peakTier: "A+",
+    placementsRemaining: 0,
+    gamesPlayed: 40,
+    wins: 30,
+    losses: 10,
+    currentWinStreak: 2,
+    longestWinStreak: 7,
+    disputesInvolved: 1,
+    missedAccepts: 0,
+    position: 3,
+    team: { id: "team-1", tag: "ACE", name: "Aces High", role: "officer" },
+  };
+
+  beforeEach(() => {
+    server.ladder.mockResolvedValue(page());
+    server.playerProfile.mockResolvedValue(PUBLIC);
+  });
+
+  async function openLadder() {
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Ladder/i }));
+  }
+
+  it("lists placed players with their standing", async () => {
+    await openLadder();
+
+    expect(await screen.findByText("Rung1")).toBeTruthy();
+    expect(screen.getByText("#1")).toBeTruthy();
+    expect(screen.getByText(/3 placed players/i)).toBeTruthy();
+  });
+
+  it("says where you stand, even from a page you are not on", async () => {
+    server.ladder.mockResolvedValue(page({ myPosition: 412, rows: [rung(1)], total: 500 }));
+    await openLadder();
+
+    // Otherwise being 412th means paging down to find yourself.
+    expect(await screen.findByText(/you are #412/i)).toBeTruthy();
+  });
+
+  it("publishes ranks and records, never a rating", async () => {
+    await openLadder();
+    await screen.findByText("Rung1");
+
+    expect(screen.getAllByText("A").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("30–10").length).toBeGreaterThan(0);
+    expect(visibleText()).not.toMatch(/\b(6[2-9]\d|[7-9]\d\d|1[0-7]\d\d)\b/);
+  });
+
+  it("pages only when there is more than a page", async () => {
+    await openLadder();
+    await screen.findByText("Rung1");
+    expect(screen.queryByRole("button", { name: /Next/i })).toBeNull();
+
+    cleanup();
+    server.ladder.mockResolvedValue(page({ total: 120 }));
+    await openLadder();
+
+    await userEvent.click(await screen.findByRole("button", { name: /Next/i }));
+    await waitFor(() => expect(server.ladder).toHaveBeenCalledWith(50, 50));
+  });
+
+  it("opens a profile from a rung, fetching what the row did not carry", async () => {
+    await openLadder();
+    await userEvent.click(await screen.findByText("Rung3"));
+
+    // The row carries a name and a rank; the profile carries the rest.
+    await waitFor(() => expect(server.playerProfile).toHaveBeenCalledWith("user-3"));
+    expect(await screen.findByText("Aces High")).toBeTruthy();
+    expect(screen.getByText("A+")).toBeTruthy();
+    expect(screen.getByText(/#3 on the ladder/i)).toBeTruthy();
+  });
+
+  it("shows real reliability counters rather than a promise to publish them", async () => {
+    await openLadder();
+    await userEvent.click(await screen.findByText("Rung3"));
+
+    expect(await screen.findByText("Disputes")).toBeTruthy();
+    expect(screen.getByText("Missed accepts")).toBeTruthy();
+    expect(screen.getByText("Longest streak")).toBeTruthy();
+  });
+
+  it("falls back to what it was handed when the fetch fails", async () => {
+    server.playerProfile.mockRejectedValue(new Error("offline"));
+    await openLadder();
+    await userEvent.click(await screen.findByText("Rung3"));
+
+    // Thinner, not wrong: the row already knew this much.
+    expect(await screen.findByText(/Loading…/i)).toBeTruthy();
   });
 });

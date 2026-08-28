@@ -110,3 +110,42 @@ export async function makeParty(
 
   return { partyId: party!.id, userIds };
 }
+
+/**
+ * Asserts a payload carries no rating.
+ *
+ * Scanning the serialised JSON for a number in rating range looks simpler and
+ * is quietly flaky: a uuid can contain a four-digit run like -1234-, so whether
+ * the check passes depends on which ids Postgres happened to generate. This
+ * walks the parsed value instead, so only real keys and real numbers count.
+ */
+export function expectNoRatings(payload: unknown): void {
+  const problems: string[] = [];
+
+  const walk = (value: unknown, path: string): void => {
+    if (Array.isArray(value)) {
+      value.forEach((v, i) => walk(v, `${path}[${i}]`));
+      return;
+    }
+
+    if (value !== null && typeof value === "object") {
+      for (const [key, v] of Object.entries(value)) {
+        if (/rating/i.test(key)) problems.push(`${path}.${key}`);
+        walk(v, `${path}.${key}`);
+      }
+      return;
+    }
+
+    // The ladder floor is 620 and the top tier starts at 1720, so anything a
+    // player could actually be rated lands inside this.
+    if (typeof value === "number" && value >= 600 && value <= 1800) {
+      problems.push(`${path} = ${value}`);
+    }
+  };
+
+  walk(payload, "payload");
+
+  if (problems.length > 0) {
+    throw new Error(`rating leaked: ${problems.join(", ")}`);
+  }
+}

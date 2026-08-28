@@ -167,6 +167,9 @@ export const api = {
   leaveParty: () => request("/party/leave", { method: "POST" }),
   kick: (userId) => request("/party/kick", { method: "POST", body: { userId } }),
 
+  ladder: (limit, offset) => request(`/ladder?limit=${limit}&offset=${offset}`),
+  playerProfile: (userId) => request(`/players/${userId}`),
+
   scrims: (region) => request(region ? `/scrims?region=${region}` : "/scrims"),
   postListing: (region, note) => request("/scrims", { method: "POST", body: { region, note } }),
   removeListing: () => request("/scrims/mine", { method: "DELETE" }),

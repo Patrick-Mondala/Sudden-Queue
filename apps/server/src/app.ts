@@ -31,6 +31,7 @@ import { Matchmaker, MatchSweeper } from "./matchmaker/loop.js";
 import { PartyService } from "./party/service.js";
 import { TeamService } from "./team/service.js";
 import { ScrimService } from "./scrim/service.js";
+import { LadderService } from "./ladder/service.js";
 import { QueueRepository } from "./queue/repository.js";
 import { Notifier } from "./realtime/notifier.js";
 
@@ -63,6 +64,7 @@ export interface App {
     reporting: MatchReporting;
     team: TeamService;
     scrim: ScrimService;
+    ladder: LadderService;
   };
 }
 
@@ -162,6 +164,7 @@ export async function buildApp({
   const party = new PartyService(db);
   const team = new TeamService(db);
   const scrim = new ScrimService(db);
+  const ladder = new LadderService(db);
   const queue = new QueueRepository(db);
   const lifecycle = new MatchLifecycle(db);
   const reporting = new MatchReporting(db);
@@ -1191,6 +1194,38 @@ export async function buildApp({
     return { accepted: true, matchId: committed.data.matchId };
   });
 
+  // ------------------------------------------------------------------ ladder
+
+  /**
+   * The ladder, and where the reader sits on it.
+   *
+   * Your own position comes back whether or not it falls on the page being
+   * read, so someone at 300th does not have to page down to find themselves.
+   */
+  server.get("/ladder", { preHandler: authenticate }, async (req) => {
+    const q = req.query as { limit?: string; offset?: string };
+    const limit = Math.min(Math.max(Number(q.limit ?? 50), 1), 100);
+    const offset = Math.max(Number(q.offset ?? 0), 0);
+    const user = requireUser(req);
+
+    return {
+      rows: await ladder.top(limit, offset),
+      total: await ladder.count(),
+      myPosition: await ladder.positionFor(user.userId),
+      limit,
+      offset,
+    };
+  });
+
+  server.get("/players/:id", { preHandler: authenticate }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const profile = await ladder.profile(id);
+    if (!profile) {
+      return reply.code(404).send({ error: "NOT_FOUND", message: "No such player" });
+    }
+    return profile;
+  });
+
   // -------------------------------------------------------------------- match
 
   server.post("/match/:id/accept", { preHandler: authenticate }, async (req, reply) => {
@@ -1473,6 +1508,6 @@ export async function buildApp({
     notifier,
     matchmaker,
     sweeper,
-    services: { auth, sessions, party, queue, lifecycle, reporting, team, scrim },
+    services: { auth, sessions, party, queue, lifecycle, reporting, team, scrim, ladder },
   };
 }

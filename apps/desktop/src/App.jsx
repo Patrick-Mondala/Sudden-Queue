@@ -1008,28 +1008,149 @@ function ComingSoon({ eyebrow, title, body }) {
   );
 }
 
+/** How many rungs a page of the ladder shows. */
+const LADDER_PAGE = 50;
+
+/**
+ * The ladder: everyone who has finished placements, best first.
+ *
+ * Your own standing is shown whether or not it falls on the page you are
+ * looking at, so being 300th does not mean paging down to find yourself.
+ */
+function LadderScreen({ me, onView, notify }) {
+  const [state, setState] = useState(null);
+  const [offset, setOffset] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    server
+      .ladder(LADDER_PAGE, offset)
+      .then((res) => { if (!cancelled) setState(res); })
+      .catch((err) => {
+        if (cancelled) return;
+        notify(err?.message ?? "Could not load the ladder");
+        setState({ rows: [], total: 0, myPosition: null });
+      });
+
+    return () => { cancelled = true; };
+  }, [offset, notify]);
+
+  if (state === null) {
+    return <Panel style={{ height: "100%", display: "grid", placeItems: "center", color: T.dim, fontSize: 12.5 }}>Loading…</Panel>;
+  }
+
+  const pageEnd = offset + state.rows.length;
+
+  return (
+    <Panel pad={0} style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 12, padding: "14px 16px", borderBottom: `1px solid ${T.line}` }}>
+        <Eyebrow style={{ flex: 1 }}>Ladder</Eyebrow>
+        <span style={{ fontSize: 11.5, color: T.muted }}>
+          {state.total} placed player{state.total === 1 ? "" : "s"}
+          {state.myPosition ? ` · you are #${state.myPosition}` : ""}
+        </span>
+      </div>
+
+      <div style={{ flex: 1, overflow: "auto" }}>
+        {state.rows.length === 0 ? (
+          <div style={{ color: T.dim, fontSize: 12.5, padding: 24, textAlign: "center", lineHeight: 1.5 }}>
+            Nobody has finished placements yet. Play five matches to appear here.
+          </div>
+        ) : (
+          state.rows.map((r) => {
+            const isMe = r.userId === me.id;
+            return (
+              <div
+                key={r.userId}
+                className="row-hover"
+                onClick={() => onView?.({ id: r.userId })}
+                style={{ display: "grid", gridTemplateColumns: "48px 1fr 64px 90px 44px", alignItems: "center", gap: 10, padding: "8px 16px", cursor: "pointer", background: isMe ? T.accentDim : "transparent" }}
+              >
+                <span style={{ fontFamily: T.mono, fontSize: 12, color: r.position <= 3 ? T.captain : T.muted }}>#{r.position}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                  <Avatar p={{ discordName: r.discordName, avatarColor: AV_COLORS[Math.abs(hashString(r.userId)) % AV_COLORS.length] }} size={26} />
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>
+                      {r.discordName}{isMe && <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span>}
+                    </div>
+                    <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>
+                      {r.inGameName ?? r.discordName}{r.teamTag ? ` · ${r.teamTag}` : ""}
+                    </div>
+                  </div>
+                </div>
+                <Tier tier={r.tier} size={13} />
+                <span style={{ fontFamily: T.mono, fontSize: 11.5, color: T.muted, textAlign: "right" }}>{r.wins}–{r.losses}</span>
+                <span style={{ fontFamily: T.mono, fontSize: 11.5, color: T.dim, textAlign: "right" }}>{winRate(r.wins, r.losses)}</span>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      {state.total > LADDER_PAGE && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", borderTop: `1px solid ${T.line}` }}>
+          <Btn size="sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - LADDER_PAGE))}>Previous</Btn>
+          <span style={{ flex: 1, textAlign: "center", fontFamily: T.mono, fontSize: 11.5, color: T.muted }}>
+            {offset + 1}–{pageEnd} of {state.total}
+          </span>
+          <Btn size="sm" disabled={pageEnd >= state.total} onClick={() => setOffset(offset + LADDER_PAGE)}>Next</Btn>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 function ProfileScreen({ p, me, history, onBack, onViewMatch }) {
   const isMe = p.id === me.id;
-  const total = (p.wins ?? 0) + (p.losses ?? 0);
 
-  // There is no endpoint for another player's profile yet, so what we know is
-  // whatever the roster we clicked through carried. A match history is our own,
-  // not theirs.
+  /**
+   * Whatever we were handed, filled in from the server.
+   *
+   * A profile is reached from several places -- a roster, a chat name, a rung
+   * of the ladder -- and each carries a different amount. Rather than render
+   * the thinnest of them, the id is the only part that has to arrive and the
+   * rest is fetched.
+   */
+  const [full, setFull] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setFull(null);
+
+    server
+      .playerProfile(p.id)
+      .then((res) => { if (!cancelled) setFull(res); })
+      .catch(() => {
+        // Fall back to what we arrived with; it is thinner, not wrong.
+      });
+
+    return () => { cancelled = true; };
+  }, [p.id]);
+
+  const view = { ...p, ...(full ?? {}) };
+  const total = (view.wins ?? 0) + (view.losses ?? 0);
+  // Only your own history is loaded in this client; theirs is not published.
   const ownHistory = isMe ? history : [];
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16, height: "100%" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
         <Panel pad={20}>
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <Avatar p={p} size={64} />
+            <Avatar p={view} size={64} />
             <div style={{ flex: 1 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}><H size={26}>{p.discordName}</H>{isMe && <Tag color={T.accent}>You</Tag>}</div>
-              <div style={{ fontFamily: T.mono, fontSize: 12, color: T.muted, marginTop: 4 }}>{p.inGameName} · Discord linked</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}><H size={26}>{view.discordName ?? "Player"}</H>{isMe && <Tag color={T.accent}>You</Tag>}</div>
+              <div style={{ fontFamily: T.mono, fontSize: 12, color: T.muted, marginTop: 4 }}>{view.inGameName ?? view.discordName} · Discord linked</div>
             </div>
-            <div style={{ textAlign: "right" }}><Tier tier={p.tier} size={40} /></div>
+            <div style={{ textAlign: "right" }}>
+              <Tier tier={view.tier} size={40} />
+              {view.position && (
+                <Eyebrow style={{ marginTop: 2 }}>#{view.position} on the ladder</Eyebrow>
+              )}
+            </div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginTop: 20 }}>
-            {[["Rank", p.tier ?? (p.placementsRemaining > 0 ? `${p.placementsRemaining} to go` : "—")], ["Matches", p.gamesPlayed ?? total], ["Record", `${p.wins ?? 0}–${p.losses ?? 0}`], ["Win rate", winRate(p.wins ?? 0, p.losses ?? 0)]].map(([k, v]) => (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginTop: 20 }}>
+            {[["Rank", view.tier ?? (view.placementsRemaining > 0 ? `${view.placementsRemaining} to go` : "—")], ["Peak", view.peakTier ?? "—"], ["Matches", view.gamesPlayed ?? total], ["Record", `${view.wins ?? 0}–${view.losses ?? 0}`], ["Win rate", winRate(view.wins ?? 0, view.losses ?? 0)]].map(([k, v]) => (
               <div key={k} style={{ background: T.raised, borderRadius: 4, padding: "10px 12px" }}><Eyebrow style={{ fontSize: 9.5 }}>{k}</Eyebrow><div style={{ fontFamily: T.mono, fontSize: 18, fontWeight: 600, marginTop: 4 }}>{v}</div></div>
             ))}
           </div>
@@ -1055,11 +1176,30 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <Panel>
           <Eyebrow style={{ marginBottom: 8 }}>Reliability</Eyebrow>
-          <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>
-            Disputes and missed accepts aren't published yet.
-          </div>
+          {full ? (
+            [["Disputes", full.disputesInvolved, full.disputesInvolved ? T.captain : T.ok], ["Missed accepts", full.missedAccepts, full.missedAccepts ? T.captain : T.ok], ["Longest streak", full.longestWinStreak, T.muted]].map(([k, v, c]) => (
+              <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderTop: `1px solid ${T.line}`, fontSize: 13 }}>
+                <span style={{ color: T.muted }}>{k}</span>
+                <span style={{ fontFamily: T.mono, color: c, fontWeight: 600 }}>{v}</span>
+              </div>
+            ))
+          ) : (
+            <div style={{ fontSize: 12.5, color: T.dim }}>Loading…</div>
+          )}
         </Panel>
-        {!isMe && <Btn onClick={onBack} style={{ justifyContent: "center" }}>← Back to ladder</Btn>}
+        {full?.team && (
+          <Panel>
+            <Eyebrow style={{ marginBottom: 6 }}>Team</Eyebrow>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ width: 30, height: 30, borderRadius: 4, background: T.raised, display: "grid", placeItems: "center", fontFamily: T.mono, fontSize: 10, color: T.muted, border: `1px solid ${T.line2}` }}>{full.team.tag}</div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>{full.team.name}</div>
+                <div style={{ fontSize: 11, color: T.muted }}>{full.team.role}</div>
+              </div>
+            </div>
+          </Panel>
+        )}
+        {!isMe && <Btn onClick={onBack} style={{ justifyContent: "center" }}>← Back</Btn>}
         <Panel><Eyebrow style={{ marginBottom: 6 }}>Public profile</Eyebrow><div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>This same record is visible on the public profile page. Only matchmaker data is shown — no in-game stats.</div></Panel>
       </div>
     </div>
@@ -1947,14 +2087,7 @@ export default function App() {
   // standing in for them.
   else if (nav === "scrims") content = <ScrimsScreen notify={notify} />;
   else if (nav === "teams") content = <TeamsScreen me={me} notify={notify} onView={setViewProfile} />;
-  else if (nav === "ladder")
-    content = (
-      <ComingSoon
-        eyebrow="Ladder"
-        title="Active players"
-        body="The ladder isn't wired up yet. Once it is, every placed player appears here by rank, and you can open anyone's profile from it."
-      />
-    );
+  else if (nav === "ladder") content = <LadderScreen me={me} onView={setViewProfile} notify={notify} />;
   else content = <ProfileScreen p={me} me={me} history={history} onBack={() => {}} onViewMatch={openMatch} />;
 
   return (

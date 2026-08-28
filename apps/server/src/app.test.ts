@@ -7,7 +7,7 @@ import { matchParticipants, matches, playerRatings, users } from "./db/schema/in
 import { AuthService } from "./auth/service.js";
 import { DiscordAuth } from "./auth/discord.js";
 import type { Config } from "./config.js";
-import { makeUser, setupTestDatabase, truncateAll } from "./test/helpers.js";
+import { expectNoRatings, makeUser, setupTestDatabase, truncateAll } from "./test/helpers.js";
 
 let handle: Awaited<ReturnType<typeof setupTestDatabase>>;
 let app: App;
@@ -1532,7 +1532,7 @@ describe("teams over the API", () => {
     });
 
     // Same rule as everywhere else: rank is published, the number is not.
-    expect(JSON.stringify(res.json())).not.toMatch(/\b(6[2-9]\d|[7-9]\d\d|1[0-7]\d\d)\b/);
+    expectNoRatings(res.json());
   });
 });
 
@@ -1770,7 +1770,7 @@ describe("scrims over the API", () => {
       headers: authed(guest.captain.token),
     });
 
-    expect(JSON.stringify(board.json())).not.toMatch(/\b(6[2-9]\d|[7-9]\d\d|1[0-7]\d\d)\b/);
+    expectNoRatings(board.json());
     // Null rather than a rank, because these accounts have no games yet: a
     // roster nobody has placed on reads as unranked, not as average.
     expect(board.json().listings[0]).toHaveProperty("tier");
