@@ -1535,3 +1535,245 @@ describe("teams over the API", () => {
     expect(JSON.stringify(res.json())).not.toMatch(/\b(6[2-9]\d|[7-9]\d\d|1[0-7]\d\d)\b/);
   });
 });
+
+describe("scrims over the API", () => {
+  /** A registered team with a full five, built through the routes. */
+  async function squad(tag: string, size = 5) {
+    const captain = await login();
+    const created = await app.server.inject({
+      method: "POST",
+      url: "/teams",
+      headers: authed(captain.token),
+      payload: { tag, name: `${tag} Squad`, region: "na" },
+    });
+    const teamId = created.json().teamId as string;
+
+    const members = [captain];
+    for (let i = 1; i < size; i += 1) {
+      const u = await login();
+      const applied = await app.server.inject({
+        method: "POST",
+        url: `/teams/${teamId}/apply`,
+        headers: authed(u.token),
+        payload: {},
+      });
+      await app.server.inject({
+        method: "POST",
+        url: `/team/applications/${applied.json().applicationId}/decide`,
+        headers: authed(captain.token),
+        payload: { accept: true },
+      });
+      members.push(u);
+    }
+
+    return { teamId, captain, members };
+  }
+
+  async function list(captainToken: string, note: string | null = null) {
+    return app.server.inject({
+      method: "POST",
+      url: "/scrims",
+      headers: authed(captainToken),
+      payload: { region: "na", note },
+    });
+  }
+
+  it("runs list, request and accept through to a match", async () => {
+    const host = await squad("HST");
+    const guest = await squad("GST");
+
+    const listed = await list(host.captain.token, "Bo1 tonight");
+    expect(listed.statusCode).toBe(200);
+
+    const board = await app.server.inject({
+      method: "GET",
+      url: "/scrims",
+      headers: authed(guest.captain.token),
+    });
+    expect(board.json().listings).toHaveLength(1);
+    expect(board.json().listings[0].note).toBe("Bo1 tonight");
+
+    const requested = await app.server.inject({
+      method: "POST",
+      url: `/scrims/${listed.json().listingId}/request`,
+      headers: authed(guest.captain.token),
+    });
+    expect(requested.statusCode).toBe(200);
+
+    const incoming = await app.server.inject({
+      method: "GET",
+      url: "/scrims",
+      headers: authed(host.captain.token),
+    });
+    expect(incoming.json().incoming).toHaveLength(1);
+
+    const accepted = await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requested.json().requestId}/decide`,
+      headers: authed(host.captain.token),
+      payload: { accept: true },
+    });
+
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json().accepted).toBe(true);
+
+    // The same prompt a PUG raises, for all ten.
+    const match = await app.server.inject({
+      method: "GET",
+      url: `/match/${accepted.json().matchId}`,
+      headers: authed(host.captain.token),
+    });
+    expect(match.json().type).toBe("SCRIM");
+    expect(match.json().state).toBe("PENDING_ACCEPT");
+    expect(match.json().team1).toHaveLength(5);
+    expect(match.json().team2).toHaveLength(5);
+  });
+
+  it("tells all ten about the match, not just the captains", async () => {
+    const host = await squad("HST");
+    const guest = await squad("GST");
+
+    const seen: { type: string }[] = [];
+    const conn = { send: (p: string) => seen.push(JSON.parse(p)), close: () => {} };
+    // A plain member of the guest team, who agreed to nothing themselves.
+    app.notifier.add(guest.members[3]!.userId, conn);
+
+    const listed = await list(host.captain.token);
+    const requested = await app.server.inject({
+      method: "POST",
+      url: `/scrims/${listed.json().listingId}/request`,
+      headers: authed(guest.captain.token),
+    });
+    await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requested.json().requestId}/decide`,
+      headers: authed(host.captain.token),
+      payload: { accept: true },
+    });
+
+    expect(seen.some((e) => e.type === "match.found")).toBe(true);
+    app.notifier.remove(guest.members[3]!.userId, conn);
+  });
+
+  it("takes the listing down once it is matched", async () => {
+    const host = await squad("HST");
+    const guest = await squad("GST");
+    const other = await squad("OTH");
+
+    const listed = await list(host.captain.token);
+    const requested = await app.server.inject({
+      method: "POST",
+      url: `/scrims/${listed.json().listingId}/request`,
+      headers: authed(guest.captain.token),
+    });
+    await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requested.json().requestId}/decide`,
+      headers: authed(host.captain.token),
+      payload: { accept: true },
+    });
+
+    const board = await app.server.inject({
+      method: "GET",
+      url: "/scrims",
+      headers: authed(other.captain.token),
+    });
+    expect(board.json().listings).toHaveLength(0);
+  });
+
+  it("declining leaves the listing up for someone else", async () => {
+    const host = await squad("HST");
+    const guest = await squad("GST");
+
+    const listed = await list(host.captain.token);
+    const requested = await app.server.inject({
+      method: "POST",
+      url: `/scrims/${listed.json().listingId}/request`,
+      headers: authed(guest.captain.token),
+    });
+    const declined = await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requested.json().requestId}/decide`,
+      headers: authed(host.captain.token),
+      payload: { accept: false },
+    });
+
+    expect(declined.json().accepted).toBe(false);
+
+    const board = await app.server.inject({
+      method: "GET",
+      url: "/scrims",
+      headers: authed(guest.captain.token),
+    });
+    expect(board.json().listings).toHaveLength(1);
+    expect(board.json().listings[0].requested).toBe(false);
+  });
+
+  it("puts the request back when the match cannot be committed", async () => {
+    const host = await squad("HST");
+    const guest = await squad("GST");
+
+    const listed = await list(host.captain.token);
+    const requested = await app.server.inject({
+      method: "POST",
+      url: `/scrims/${listed.json().listingId}/request`,
+      headers: authed(guest.captain.token),
+    });
+
+    // A guest joins the PUG queue between asking and being answered.
+    await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(guest.members[2]!.token),
+      payload: { regions: ["na"] },
+    });
+
+    const accepted = await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requested.json().requestId}/decide`,
+      headers: authed(host.captain.token),
+      payload: { accept: true },
+    });
+
+    expect(accepted.statusCode).toBe(409);
+    expect(accepted.json().error).toBe("PLAYER_QUEUED");
+
+    // The arrangement survives, so the host can try again once they are free.
+    const board = await app.server.inject({
+      method: "GET",
+      url: "/scrims",
+      headers: authed(host.captain.token),
+    });
+    expect(board.json().incoming).toHaveLength(1);
+  });
+
+  it("keeps a member out of arranging scrims", async () => {
+    const host = await squad("HST");
+
+    const res = await app.server.inject({
+      method: "POST",
+      url: "/scrims",
+      headers: authed(host.members[2]!.token),
+      payload: { region: "na", note: null },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("never puts a rating on the board", async () => {
+    const host = await squad("HST");
+    const guest = await squad("GST");
+    await list(host.captain.token);
+
+    const board = await app.server.inject({
+      method: "GET",
+      url: "/scrims",
+      headers: authed(guest.captain.token),
+    });
+
+    expect(JSON.stringify(board.json())).not.toMatch(/\b(6[2-9]\d|[7-9]\d\d|1[0-7]\d\d)\b/);
+    // Null rather than a rank, because these accounts have no games yet: a
+    // roster nobody has placed on reads as unranked, not as average.
+    expect(board.json().listings[0]).toHaveProperty("tier");
+    expect(board.json().listings[0].tier).toBeNull();
+  });
+});

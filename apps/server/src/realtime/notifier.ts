@@ -50,6 +50,8 @@ export type ServerEvent =
   | { type: "team.application.decided"; teamId: string; accepted: boolean }
   | { type: "team.removed"; teamId: string }
   | { type: "team.disbanded"; teamId: string }
+  | { type: "scrim.request.received"; listingId: string }
+  | { type: "scrim.request.decided"; listingId: string; accepted: boolean }
   | { type: "chat.message"; channel: string; message: unknown }
   | { type: "notification"; level: "info" | "warn" | "error"; text: string };
 

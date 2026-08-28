@@ -30,6 +30,7 @@ import { MatchReporting } from "./match/reporting.js";
 import { Matchmaker, MatchSweeper } from "./matchmaker/loop.js";
 import { PartyService } from "./party/service.js";
 import { TeamService } from "./team/service.js";
+import { ScrimService } from "./scrim/service.js";
 import { QueueRepository } from "./queue/repository.js";
 import { Notifier } from "./realtime/notifier.js";
 
@@ -61,6 +62,7 @@ export interface App {
     lifecycle: MatchLifecycle;
     reporting: MatchReporting;
     team: TeamService;
+    scrim: ScrimService;
   };
 }
 
@@ -159,6 +161,7 @@ export async function buildApp({
   const auth = new AuthService(db, discord, sessions);
   const party = new PartyService(db);
   const team = new TeamService(db);
+  const scrim = new ScrimService(db);
   const queue = new QueueRepository(db);
   const lifecycle = new MatchLifecycle(db);
   const reporting = new MatchReporting(db);
@@ -1029,6 +1032,165 @@ export async function buildApp({
     return { ok: true };
   });
 
+  // ------------------------------------------------------------------ scrims
+
+  const scrimErrorStatus = (code: string): number => {
+    if (code === "LISTING_NOT_FOUND" || code === "REQUEST_NOT_FOUND") return 404;
+    if (code === "NOT_A_MANAGER" || code === "NOT_IN_TEAM") return 403;
+    if (code === "INVALID_REGION") return 400;
+    return 409;
+  };
+
+  /** Everything the scrims screen needs, from whichever side you are on. */
+  server.get("/scrims", { preHandler: authenticate }, async (req) => {
+    const user = requireUser(req);
+    const { region } = req.query as { region?: string };
+    const teamId = await team.teamIdFor(user.userId);
+
+    return {
+      listings: await scrim.openListings(teamId, region),
+      myListing: teamId ? await scrim.listingFor(teamId) : null,
+      incoming: teamId ? await scrim.incomingRequests(teamId) : [],
+    };
+  });
+
+  server.post("/scrims", { preHandler: authenticate }, async (req, reply) => {
+    const body = z
+      .object({ region: z.string(), note: z.string().max(200).nullish() })
+      .safeParse(req.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: "BAD_REQUEST", message: "region is required" });
+    }
+
+    const result = await scrim.postListing(requireUser(req).userId, {
+      region: body.data.region,
+      note: body.data.note ?? null,
+    });
+    if (isFail(result)) {
+      return reply
+        .code(scrimErrorStatus(result.code))
+        .send({ error: result.code, message: result.message });
+    }
+
+    return result.data;
+  });
+
+  server.delete("/scrims/mine", { preHandler: authenticate }, async (req, reply) => {
+    const result = await scrim.removeListing(requireUser(req).userId);
+    if (isFail(result)) {
+      return reply
+        .code(scrimErrorStatus(result.code))
+        .send({ error: result.code, message: result.message });
+    }
+    return { ok: true };
+  });
+
+  server.post("/scrims/:id/request", { preHandler: authenticate }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const result = await scrim.request(requireUser(req).userId, id);
+    if (isFail(result)) {
+      return reply
+        .code(scrimErrorStatus(result.code))
+        .send({ error: result.code, message: result.message });
+    }
+
+    // The host's managers hear it without refreshing.
+    const host = await team.view(result.data.hostTeamId);
+    notifier.toUsers(
+      (host?.members ?? [])
+        .filter((m) => m.role === "captain" || m.role === "officer")
+        .map((m) => m.userId),
+      { type: "scrim.request.received", listingId: id },
+    );
+
+    return result.data;
+  });
+
+  server.post("/scrims/requests/:id/withdraw", { preHandler: authenticate }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const result = await scrim.withdrawRequest(requireUser(req).userId, id);
+    if (isFail(result)) {
+      return reply
+        .code(scrimErrorStatus(result.code))
+        .send({ error: result.code, message: result.message });
+    }
+    return { ok: true };
+  });
+
+  /**
+   * Accepting is the point where a scrim stops being an arrangement and becomes
+   * a match, so it does the same thing the matchmaker does: names ten players
+   * and commits them. If that commit fails -- someone is already in a match, or
+   * sitting in the PUG queue -- the request goes back to pending rather than
+   * being quietly consumed.
+   */
+  server.post("/scrims/requests/:id/decide", { preHandler: authenticate }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = z.object({ accept: z.boolean() }).safeParse(req.body);
+    if (!body.success) {
+      return reply
+        .code(400)
+        .send({ error: "BAD_REQUEST", message: "accept must be true or false" });
+    }
+
+    const decided = await scrim.decideRequest(requireUser(req).userId, id, body.data.accept);
+    if (isFail(decided)) {
+      return reply
+        .code(scrimErrorStatus(decided.code))
+        .send({ error: decided.code, message: decided.message });
+    }
+
+    if (!decided.data.accepted) {
+      notifier.toUsers(await team.memberIds(decided.data.guestTeamId), {
+        type: "scrim.request.decided",
+        listingId: decided.data.listingId,
+        accepted: false,
+      });
+      return { accepted: false };
+    }
+
+    const host = await scrim.lineup(decided.data.hostTeamId);
+    const guest = await scrim.lineup(decided.data.guestTeamId);
+
+    if (!host || !guest) {
+      await scrim.reopen(decided.data.listingId, id);
+      return reply
+        .code(409)
+        .send({ error: "ROSTER_TOO_SMALL", message: "One of the rosters is short of five" });
+    }
+
+    const committed = await lifecycle.createScrim({
+      region: decided.data.region,
+      team1Id: decided.data.hostTeamId,
+      team2Id: decided.data.guestTeamId,
+      team1UserIds: host.userIds,
+      team2UserIds: guest.userIds,
+      captain1: host.captainId,
+      captain2: guest.captainId,
+      team1Rating: host.rating,
+      team2Rating: guest.rating,
+    });
+
+    if (isFail(committed)) {
+      await scrim.reopen(decided.data.listingId, id);
+      return reply
+        .code(409)
+        .send({ error: committed.code, message: committed.message });
+    }
+
+    await scrim.markMatched(decided.data.listingId);
+
+    const view = await lifecycle.view(committed.data.matchId);
+    notifier.toUsers(committed.data.userIds, {
+      type: "match.found",
+      matchId: committed.data.matchId,
+      acceptDeadline: committed.data.acceptDeadline.toISOString(),
+      match: view,
+    });
+
+    return { accepted: true, matchId: committed.data.matchId };
+  });
+
   // -------------------------------------------------------------------- match
 
   server.post("/match/:id/accept", { preHandler: authenticate }, async (req, reply) => {
@@ -1311,6 +1473,6 @@ export async function buildApp({
     notifier,
     matchmaker,
     sweeper,
-    services: { auth, sessions, party, queue, lifecycle, reporting, team },
+    services: { auth, sessions, party, queue, lifecycle, reporting, team, scrim },
   };
 }

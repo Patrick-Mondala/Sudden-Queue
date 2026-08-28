@@ -2,6 +2,7 @@ import {
   ACCEPT_WINDOW_SECONDS,
   DEFAULT_RATING,
   MATCH_SIZE,
+  TEAM_SIZE,
   type MatchDecision,
   PARTY_UP_SECONDS,
   REPORT_WINDOW_SECONDS,
@@ -57,6 +58,13 @@ export interface MatchView {
   captain2: string | null;
   team1: MatchViewPlayer[];
   team2: MatchViewPlayer[];
+}
+
+/** A committed scrim. No party ids: the ten players were named outright. */
+export interface CreatedScrim {
+  matchId: string;
+  userIds: string[];
+  acceptDeadline: Date;
 }
 
 export interface CreatedMatch {
@@ -457,6 +465,103 @@ export class MatchLifecycle {
       .from(matchParticipants)
       .where(eq(matchParticipants.matchId, matchId))
       .orderBy(matchParticipants.team);
+  }
+
+  /**
+   * Commits a scrim between two rosters.
+   *
+   * The PUG path above starts from queue tickets and has to defend against them
+   * vanishing mid-commit. A scrim has no tickets: two captains agreed, and the
+   * ten players are named outright. What it still has to defend against is the
+   * same people being somewhere else -- in another match, or sitting in the PUG
+   * queue -- because a scrim that quietly pulls someone out of a queue they are
+   * waiting in is worse than one that refuses to start.
+   */
+  async createScrim(input: {
+    region: string;
+    team1Id: string;
+    team2Id: string;
+    team1UserIds: string[];
+    team2UserIds: string[];
+    captain1: string;
+    captain2: string;
+    team1Rating: number;
+    team2Rating: number;
+  }): Promise<Result<CreatedScrim, "WRONG_SIZE" | "PLAYER_BUSY" | "PLAYER_QUEUED">> {
+    const allUsers = [...input.team1UserIds, ...input.team2UserIds];
+
+    if (
+      input.team1UserIds.length !== TEAM_SIZE ||
+      input.team2UserIds.length !== TEAM_SIZE ||
+      new Set(allUsers).size !== MATCH_SIZE
+    ) {
+      return fail("WRONG_SIZE", `A scrim needs ${TEAM_SIZE} players a side`);
+    }
+
+    return this.db.transaction(async (tx) => {
+      const busy = await tx
+        .select({ userId: matchParticipants.userId })
+        .from(matchParticipants)
+        .innerJoin(matches, eq(matches.id, matchParticipants.matchId))
+        .where(
+          and(
+            inArray(matchParticipants.userId, allUsers),
+            inArray(matches.state, ["PENDING_ACCEPT", "PARTY_UP", "LIVE", "REPORTED"]),
+          ),
+        )
+        .limit(1);
+
+      if (busy.length > 0) {
+        return fail("PLAYER_BUSY", "Someone on one of these rosters is already in a match");
+      }
+
+      const queued = await tx
+        .select({ userId: partyMembers.userId })
+        .from(partyMembers)
+        .innerJoin(queueTickets, eq(queueTickets.partyId, partyMembers.partyId))
+        .where(inArray(partyMembers.userId, allUsers))
+        .limit(1);
+
+      if (queued.length > 0) {
+        return fail("PLAYER_QUEUED", "Someone on one of these rosters is in the queue");
+      }
+
+      const now = new Date();
+      const acceptDeadline = new Date(now.getTime() + ACCEPT_WINDOW_SECONDS * 1000);
+
+      const [match] = await tx
+        .insert(matches)
+        .values({
+          type: "SCRIM",
+          region: input.region,
+          state: "PENDING_ACCEPT",
+          // Frozen for the record, not for rating: settle() gives a scrim a
+          // zero delta whatever these say.
+          team1Rating: input.team1Rating,
+          team2Rating: input.team2Rating,
+          team1Id: input.team1Id,
+          team2Id: input.team2Id,
+          acceptDeadline,
+        })
+        .returning({ id: matches.id });
+
+      await tx.insert(matchParticipants).values([
+        ...input.team1UserIds.map((userId) => ({
+          matchId: match!.id,
+          userId,
+          team: 1,
+          isCaptain: userId === input.captain1,
+        })),
+        ...input.team2UserIds.map((userId) => ({
+          matchId: match!.id,
+          userId,
+          team: 2,
+          isCaptain: userId === input.captain2,
+        })),
+      ]);
+
+      return ok({ matchId: match!.id, userIds: allUsers, acceptDeadline });
+    });
   }
 
   /**

@@ -110,6 +110,16 @@ export class TeamService {
     return row?.teamId ?? null;
   }
 
+  /** Everyone on a roster, for telling them something happened. */
+  async memberIds(teamId: string): Promise<string[]> {
+    const rows = await this.db
+      .select({ userId: teamMembers.userId })
+      .from(teamMembers)
+      .where(eq(teamMembers.teamId, teamId));
+
+    return rows.map((r) => r.userId);
+  }
+
   async view(teamId: string): Promise<TeamView | null> {
     const [team] = await this.db.select().from(teams).where(eq(teams.id, teamId)).limit(1);
     if (!team) return null;
