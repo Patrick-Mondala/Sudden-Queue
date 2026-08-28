@@ -32,6 +32,7 @@ import { PartyService } from "./party/service.js";
 import { TeamService } from "./team/service.js";
 import { ScrimService } from "./scrim/service.js";
 import { LadderService } from "./ladder/service.js";
+import { ChatService } from "./chat/service.js";
 import { QueueRepository } from "./queue/repository.js";
 import { Notifier } from "./realtime/notifier.js";
 
@@ -65,6 +66,7 @@ export interface App {
     team: TeamService;
     scrim: ScrimService;
     ladder: LadderService;
+    chat: ChatService;
   };
 }
 
@@ -165,6 +167,7 @@ export async function buildApp({
   const team = new TeamService(db);
   const scrim = new ScrimService(db);
   const ladder = new LadderService(db);
+  const chat = new ChatService();
   const queue = new QueueRepository(db);
   const lifecycle = new MatchLifecycle(db);
   const reporting = new MatchReporting(db);
@@ -207,6 +210,7 @@ export async function buildApp({
           cooldownSeconds: bySeconds.get(userId) ?? 0,
         });
       }
+      chat.clearMatch(matchId);
       notifier.toUsers(kept, {
         type: "match.cancelled",
         matchId,
@@ -1226,6 +1230,54 @@ export async function buildApp({
     return profile;
   });
 
+  // -------------------------------------------------------------------- chat
+
+  /**
+   * Who is allowed in a channel, and who hears what is said there.
+   *
+   * Membership is derived from the thing the channel belongs to rather than
+   * stored alongside it, so a channel cannot outlive its party or match, and
+   * there is no list to keep in step. Returns null when the reader has no
+   * business there at all, which is the same answer for "not a member" and
+   * "no such channel" -- both mean the same thing to someone asking.
+   */
+  async function chatAudience(channel: string, userId: string): Promise<string[] | null> {
+    const [kind, id, sub] = channel.split(":");
+
+    if (kind === "party" && id) {
+      const partyId = await party.partyIdFor(userId);
+      if (partyId !== id) return null;
+      return party.memberIds([id]);
+    }
+
+    if (kind === "match" && id) {
+      const parts = await lifecycle.participants(id);
+      const me = parts.find((p) => p.userId === userId);
+      if (!me) return null;
+
+      if (!sub) return parts.map((p) => p.userId);
+
+      // A team channel is the half of the match you are on, and only that half.
+      const team = sub === "t1" ? 1 : sub === "t2" ? 2 : null;
+      if (team === null || me.team !== team) return null;
+      return parts.filter((p) => p.team === team).map((p) => p.userId);
+    }
+
+    return null;
+  }
+
+  server.get("/chat/:channel", { preHandler: authenticate }, async (req, reply) => {
+    const { channel } = req.params as { channel: string };
+    const user = requireUser(req);
+
+    const audience = await chatAudience(channel, user.userId);
+    if (!audience) {
+      return reply.code(403).send({ error: "FORBIDDEN", message: "Not your channel" });
+    }
+
+    return { channel, messages: chat.history(channel) };
+  });
+
   // -------------------------------------------------------------------- match
 
   server.post("/match/:id/accept", { preHandler: authenticate }, async (req, reply) => {
@@ -1297,6 +1349,10 @@ export async function buildApp({
 
     const parts = await lifecycle.participants(id);
     const userIds = parts.map((p) => p.userId);
+
+    if (result.data.state === "COMPLETED" || result.data.state === "DISPUTED") {
+      chat.clearMatch(id);
+    }
 
     if (result.data.state === "REPORTED") {
       notifier.toUsers(userIds, { type: "match.state", matchId: id, state: "REPORTED" });
@@ -1413,7 +1469,10 @@ export async function buildApp({
 
   // Fires only when the last of a user's connections has gone: two windows
   // open means closing one is not a disconnect.
-  notifier.onUserOffline = (userId) => scheduleDisconnectCheck(userId);
+  notifier.onUserOffline = (userId) => {
+    chat.forget(userId);
+    scheduleDisconnectCheck(userId);
+  };
 
   async function dropFromPartyIfStillGone(userId: string): Promise<void> {
     disconnectTimers.delete(userId);
@@ -1486,6 +1545,37 @@ export async function buildApp({
           if (partyId) void queue.heartbeat(partyId, userId);
         });
       }
+
+      // Chat rides the socket rather than a POST per line: it is the one
+      // thing here sent often enough for the round trip to be worth avoiding.
+      if (msg.type === "chat.send") {
+        const { channel, text } = msg as { channel?: string; text?: string };
+        if (typeof channel !== "string" || typeof text !== "string") return;
+
+        void (async () => {
+          const audience = await chatAudience(channel, userId);
+          // Silence rather than an error: a channel you are not in and a
+          // channel that does not exist are the same thing from outside.
+          if (!audience) return;
+
+          const posted = chat.post(
+            channel,
+            { userId, discordName: session.data.discordName },
+            text,
+          );
+
+          if (isFail(posted)) {
+            notifier.toUser(userId, {
+              type: "notification",
+              level: "warn",
+              text: posted.message,
+            });
+            return;
+          }
+
+          notifier.toUsers(audience, { type: "chat.message", channel, message: posted.data });
+        })();
+      }
     });
 
     socket.on("close", () => notifier.remove(userId, conn));
@@ -1508,6 +1598,6 @@ export async function buildApp({
     notifier,
     matchmaker,
     sweeper,
-    services: { auth, sessions, party, queue, lifecycle, reporting, team, scrim, ladder },
+    services: { auth, sessions, party, queue, lifecycle, reporting, team, scrim, ladder, chat },
   };
 }

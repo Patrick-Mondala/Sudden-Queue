@@ -15,6 +15,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // that is only slow, not broken.
 configure({ asyncUtilTimeout: 5000 });
 
+// jsdom has no layout, so it has no scrollIntoView. The chat log calls it on
+// every new message; stubbing it is closing an environment gap, not papering
+// over anything the app does wrong.
+window.HTMLElement.prototype.scrollIntoView = () => {};
+
 const listeners = new Set();
 
 /** Stands in for the WebSocket, so a test can push what the server would. */
@@ -25,6 +30,7 @@ const liveBus = {
   },
   connect: vi.fn(),
   disconnect: vi.fn(),
+  send: vi.fn(),
 };
 
 const emit = (event) => act(() => { for (const fn of [...listeners]) fn(event); });
@@ -76,6 +82,7 @@ const server = {
   decideScrimRequest: vi.fn(),
   ladder: vi.fn(),
   playerProfile: vi.fn(),
+  chatHistory: vi.fn(),
   invite: vi.fn(),
   getInvites: vi.fn(),
   acceptInvite: vi.fn(),
@@ -172,6 +179,7 @@ beforeEach(() => {
   server.scrims.mockResolvedValue({ listings: [], myListing: null, incoming: [] });
   server.ladder.mockResolvedValue({ rows: [], total: 0, myPosition: null, limit: 50, offset: 0 });
   server.playerProfile.mockResolvedValue(null);
+  server.chatHistory.mockResolvedValue({ channel: "", messages: [] });
 });
 
 afterEach(cleanup);
@@ -937,5 +945,107 @@ describe("the ladder", () => {
 
     // Thinner, not wrong: the row already knew this much.
     expect(await screen.findByText(/Loading…/i)).toBeTruthy();
+  });
+});
+
+describe("chat", () => {
+  const line = (i, over = {}) => ({
+    id: `m${i}`,
+    channel: "party:p1",
+    userId: `user-${i}`,
+    discordName: `Talker${i}`,
+    text: `line ${i}`,
+    ts: Date.now(),
+    ...over,
+  });
+
+  it("loads the party backlog into the dock", async () => {
+    server.chatHistory.mockResolvedValue({ channel: "party:p1", messages: [line(2), line(3)] });
+    await signedIn();
+
+    await userEvent.click(screen.getByRole("button", { name: /Chat/i }));
+
+    await waitFor(() => expect(server.chatHistory).toHaveBeenCalledWith("party:p1"));
+    expect(await screen.findByText("line 2")).toBeTruthy();
+    expect(screen.getByText("line 3")).toBeTruthy();
+  });
+
+  it("sends over the socket rather than a request", async () => {
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Chat/i }));
+
+    await userEvent.type(await screen.findByLabelText(/Message your party/i), "hello{Enter}");
+
+    await waitFor(() =>
+      expect(liveBus.send).toHaveBeenCalledWith({
+        type: "chat.send",
+        channel: "party:p1",
+        text: "hello",
+      }),
+    );
+  });
+
+  it("shows a message only once the server sends it back", async () => {
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Chat/i }));
+
+    const box = await screen.findByLabelText(/Message your party/i);
+    await userEvent.type(box, "not yet{Enter}");
+
+    // Nothing is echoed locally, so what you see is what everyone else saw.
+    expect(screen.queryByText("not yet")).toBeNull();
+
+    emit({
+      type: "chat.message",
+      channel: "party:p1",
+      message: line(9, { text: "not yet", channel: "party:p1" }),
+    });
+    expect(await screen.findByText("not yet")).toBeTruthy();
+  });
+
+  it("ignores a message meant for another channel", async () => {
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Chat/i }));
+    await screen.findByLabelText(/Message your party/i);
+
+    emit({
+      type: "chat.message",
+      channel: "match:somewhere",
+      message: line(4, { text: "elsewhere", channel: "match:somewhere" }),
+    });
+
+    await waitFor(() => expect(screen.queryByText("elsewhere")).toBeNull());
+  });
+
+  it("counts what arrived while the dock was shut", async () => {
+    await signedIn();
+    // The dock starts shut after signing in, which is when a count is useful.
+    emit({ type: "chat.message", channel: "party:p1", message: line(5) });
+    emit({ type: "chat.message", channel: "party:p1", message: line(6) });
+
+    expect(await screen.findByText("2")).toBeTruthy();
+  });
+
+  it("says plainly that nothing is kept", async () => {
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Chat/i }));
+
+    expect(await screen.findByText(/chat is not saved/i)).toBeTruthy();
+  });
+
+  it("keeps team and match talk apart in a match", async () => {
+    await signedIn();
+    emit({ type: "match.found", matchId: MATCH.id, match: MATCH });
+    await screen.findByText(/Match found/i);
+    emit({ type: "match.state", matchId: MATCH.id, state: "PARTY_UP" });
+    await screen.findByText(/Party up/i);
+
+    // Player1 is on team 1, so the team tab is that half's channel.
+    await waitFor(() =>
+      expect(server.chatHistory).toHaveBeenCalledWith(`match:${MATCH.id}:t1`),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /^Match$/ }));
+    await waitFor(() => expect(server.chatHistory).toHaveBeenCalledWith(`match:${MATCH.id}`));
   });
 });

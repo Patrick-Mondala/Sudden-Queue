@@ -113,5 +113,17 @@ export const INVITE_RATE_LIMIT = 10;
 export const INVITE_RATE_WINDOW_SECONDS = 60;
 export const INVITE_REPEAT_COOLDOWN_SECONDS = 60;
 
+/**
+ * Chat is not saved.
+ *
+ * Each channel keeps a bounded buffer in memory for the life of the process,
+ * which is roughly the life of the thing being talked about -- a party, or a
+ * match. Nothing is written down, so there is no retention question and no
+ * moderation surface nobody asked for.
+ */
 export const CHAT_MAX_MESSAGE_LENGTH = 200;
 export const CHAT_MAX_STORED_MESSAGES = 100;
+
+/** A burst allowance, so one person cannot fill the window on their own. */
+export const CHAT_RATE_LIMIT = 5;
+export const CHAT_RATE_WINDOW_SECONDS = 5;

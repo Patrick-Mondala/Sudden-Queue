@@ -167,6 +167,8 @@ export const api = {
   leaveParty: () => request("/party/leave", { method: "POST" }),
   kick: (userId) => request("/party/kick", { method: "POST", body: { userId } }),
 
+  chatHistory: (channel) => request(`/chat/${channel}`),
+
   ladder: (limit, offset) => request(`/ladder?limit=${limit}&offset=${offset}`),
   playerProfile: (userId) => request(`/players/${userId}`),
 

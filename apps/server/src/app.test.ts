@@ -1777,3 +1777,111 @@ describe("scrims over the API", () => {
     expect(board.json().listings[0].tier).toBeNull();
   });
 });
+
+describe("chat channels", () => {
+  /** Ten queued solos, matched, so the match channels exist. */
+  async function matchTen() {
+    const players = [];
+    for (let i = 0; i < 10; i += 1) {
+      const u = await login();
+      await app.server.inject({
+        method: "POST",
+        url: "/queue/join",
+        headers: authed(u.token),
+        payload: { regions: ["na"] },
+      });
+      players.push(u);
+    }
+
+    await app.matchmaker.runPass();
+    const [match] = await handle.db
+      .select()
+      .from(matches)
+      .orderBy(desc(matches.createdAt))
+      .limit(1);
+
+    const view = (await app.services.lifecycle.view(match!.id))!;
+    const tokenFor = new Map(players.map((p) => [p.userId, p.token]));
+    // A roster player is keyed `id`, not `userId` -- the view publishes a
+    // player, not a participant row.
+    const onTeam1 = tokenFor.get(view.team1[0]?.id ?? "");
+    const onTeam2 = tokenFor.get(view.team2[0]?.id ?? "");
+    if (!onTeam1 || !onTeam2) throw new Error("staging failed: could not match a roster to a token");
+
+    return {
+      matchId: match!.id,
+      view,
+      onTeam1,
+      onTeam2,
+    };
+  }
+
+  const read = (channel: string, token: string) =>
+    app.server.inject({ method: "GET", url: `/chat/${channel}`, headers: authed(token) });
+
+  async function partyIdOf(token: string) {
+    const res = await app.server.inject({ method: "GET", url: "/party", headers: authed(token) });
+    return res.json().partyId as string;
+  }
+
+  it("lets a party read its own channel", async () => {
+    const a = await login();
+    const res = await read(`party:${await partyIdOf(a.token)}`, a.token);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().messages).toEqual([]);
+  });
+
+  it("keeps everyone else out of it", async () => {
+    const a = await login();
+    const stranger = await login();
+
+    const res = await read(`party:${await partyIdOf(a.token)}`, stranger.token);
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("lets both sides of a match read the match channel", async () => {
+    const { matchId, onTeam1, onTeam2 } = await matchTen();
+
+    expect((await read(`match:${matchId}`, onTeam1)).statusCode).toBe(200);
+    expect((await read(`match:${matchId}`, onTeam2)).statusCode).toBe(200);
+  });
+
+  it("keeps a team channel to that team", async () => {
+    const { matchId, onTeam1, onTeam2 } = await matchTen();
+
+    expect((await read(`match:${matchId}:t1`, onTeam1)).statusCode).toBe(200);
+    expect((await read(`match:${matchId}:t2`, onTeam2)).statusCode).toBe(200);
+
+    // The whole point of a team channel is that the other five cannot read it.
+    expect((await read(`match:${matchId}:t2`, onTeam1)).statusCode).toBe(403);
+    expect((await read(`match:${matchId}:t1`, onTeam2)).statusCode).toBe(403);
+  });
+
+  it("keeps someone outside the match out of all of it", async () => {
+    const { matchId } = await matchTen();
+    const outsider = await login();
+
+    for (const channel of [`match:${matchId}`, `match:${matchId}:t1`, `match:${matchId}:t2`]) {
+      expect((await read(channel, outsider.token)).statusCode).toBe(403);
+    }
+  });
+
+  it("refuses a channel that does not belong to anything", async () => {
+    const a = await login();
+
+    for (const channel of [
+      "nonsense",
+      "party:00000000-0000-0000-0000-000000000000",
+      "match:00000000-0000-0000-0000-000000000000",
+      "match:00000000-0000-0000-0000-000000000000:t3",
+    ]) {
+      expect((await read(channel, a.token)).statusCode).toBe(403);
+    }
+  });
+
+  it("needs a session at all", async () => {
+    const res = await app.server.inject({ method: "GET", url: "/chat/party:whatever" });
+    expect(res.statusCode).toBe(401);
+  });
+});

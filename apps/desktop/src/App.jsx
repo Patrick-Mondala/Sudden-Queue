@@ -1340,19 +1340,143 @@ function MatchHistoryModal({ m, me, onClose, onView }) {
 }
 
 /**
- * Match chat.
+ * Match chat: your five, or all ten.
  *
- * Placeholder for the same reason as ChatDock: nothing delivers a message yet.
- * The panel stays so the match screen keeps its shape, and so it is obvious
- * where team and match chat will live.
+ * Two channels rather than one with a filter, because the server decides who
+ * hears a message and cannot un-send one posted to the wrong tab.
  */
-function MatchChat() {
-  return (
-    <Panel style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 220 }}>
-      <Eyebrow style={{ marginBottom: 10 }}>Match chat</Eyebrow>
+/** Matches the server's buffer, so scrollback does not grow without bound. */
+const CHAT_KEPT = 100;
+
+/**
+ * One chat channel: its backlog, its live messages, and how to add to it.
+ *
+ * Sending goes over the socket rather than a POST per line. Nothing is echoed
+ * locally -- a message appears when the server sends it back, so what you see
+ * is what everyone else saw, and a refusal is simply nothing appearing plus
+ * the notice the server sends.
+ */
+function useChannel(channel) {
+  const [messages, setMessages] = useState([]);
+
+  useEffect(() => {
+    if (!channel) return undefined;
+    let cancelled = false;
+    setMessages([]);
+
+    server
+      .chatHistory(channel)
+      .then((res) => { if (!cancelled) setMessages(res.messages ?? []); })
+      .catch(() => {
+        // Not a channel we may read, or the server is down. An empty panel is
+        // the honest state for both.
+      });
+
+    const off = liveBus.on((e) => {
+      if (e.type !== "chat.message" || e.channel !== channel) return;
+      setMessages((all) => [...all, e.message].slice(-CHAT_KEPT));
+    });
+
+    return () => { cancelled = true; off(); };
+  }, [channel]);
+
+  const send = useCallback(
+    (text) => {
+      const trimmed = text.trim();
+      if (!channel || !trimmed) return;
+      liveBus.send({ type: "chat.send", channel, text: trimmed });
+    },
+    [channel],
+  );
+
+  return { messages, send };
+}
+
+/** The messages themselves, shared by both panels. */
+function ChatLog({ messages, me, empty, onView }) {
+  const endRef = useRef(null);
+  useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [messages]);
+
+  if (messages.length === 0) {
+    return (
       <div style={{ margin: "auto", color: T.dim, fontSize: 12.5, textAlign: "center", padding: 16, lineHeight: 1.5 }}>
-        Chat isn't wired up yet.<br />Use your captain's in-game party.
+        {empty}
       </div>
+    );
+  }
+
+  return (
+    <>
+      {messages.map((m) => {
+        const mine = m.userId === me.id;
+        const who = { discordName: m.discordName, avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length] };
+        return (
+          <div key={m.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", animation: "sqRise .2s ease" }}>
+            <div onClick={() => onView?.({ id: m.userId })} style={{ cursor: onView ? "pointer" : "default", flexShrink: 0 }}>
+              <Avatar p={who} size={22} />
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <span onClick={() => onView?.({ id: m.userId })} style={{ fontSize: 12, fontWeight: 700, color: mine ? T.accent : T.text, cursor: onView ? "pointer" : "default" }}>{m.discordName}</span>{" "}
+              <span style={{ fontSize: 10.5, color: T.dim, fontFamily: T.mono }}>{new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+              <div style={{ fontSize: 13, color: T.text, lineHeight: 1.4, wordBreak: "break-word" }}>{m.text}</div>
+            </div>
+          </div>
+        );
+      })}
+      <div ref={endRef} />
+    </>
+  );
+}
+
+/** A one-line composer. */
+function ChatComposer({ onSend, placeholder }) {
+  const [text, setText] = useState("");
+
+  const submit = () => {
+    if (!text.trim()) return;
+    onSend(text);
+    setText("");
+  };
+
+  return (
+    <div style={{ padding: 8, borderTop: `1px solid ${T.line}`, display: "flex", gap: 6 }}>
+      <input
+        value={text}
+        maxLength={200}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && submit()}
+        placeholder={placeholder}
+        aria-label={placeholder}
+        style={{ flex: 1, background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13 }}
+      />
+      <Btn size="sm" kind="primary" onClick={submit} disabled={!text.trim()}><Send size={13} /></Btn>
+    </div>
+  );
+}
+
+function MatchChat({ match, me, onView }) {
+  const [tab, setTab] = useState("team");
+  const myTeam = match.team1.some((p) => p.id === me.id) ? 1 : 2;
+  const channel = tab === "team" ? `match:${match.id}:t${myTeam}` : `match:${match.id}`;
+  const { messages, send } = useChannel(channel);
+
+  return (
+    <Panel pad={0} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 220 }}>
+      <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${T.line}` }}>
+        {[["team", "Team"], ["match", "Match"]].map(([id, label]) => (
+          <button key={id} onClick={() => setTab(id)} style={{ flex: 1, background: "transparent", border: "none", borderBottom: `2px solid ${tab === id ? T.accent : "transparent"}`, color: tab === id ? T.text : T.muted, padding: "10px 4px", fontSize: 12, fontWeight: 600 }}>{label}</button>
+        ))}
+      </div>
+      <div style={{ flex: 1, overflow: "auto", padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+        <ChatLog
+          messages={messages}
+          me={me}
+          onView={onView}
+          empty={tab === "team" ? "Nothing said yet. Only your five can read this." : "Nothing said yet. All ten can read this."}
+        />
+      </div>
+      <ChatComposer onSend={send} placeholder={tab === "team" ? "Message your team…" : "Message the match…"} />
+      <div style={{ padding: "4px 10px 8px", fontSize: 10.5, color: T.dim, fontFamily: T.mono }}>chat is not saved</div>
     </Panel>
   );
 }
@@ -1527,7 +1651,7 @@ function MatchScreen({ match, me, onFinished, notify, onView }) {
           </div>
         )}
       </Panel>
-      <MatchChat />
+      <MatchChat match={match} me={me} onView={onView} />
     </div>
   );
 }
@@ -1536,10 +1660,7 @@ function MatchScreen({ match, me, onFinished, notify, onView }) {
    CHAT DOCK  (ephemeral — nothing persists)
    ───────────────────────────────────────────────────────────── */
 /**
- * Party chat.
- *
- * Nothing carries a message between clients yet, so this is a placeholder that
- * says so rather than a composer that accepts text and drops it.
+ * Party chat, in a dock that stays out of the way.
  */
 /**
  * Who's online, and an Invite next to each.
@@ -1736,23 +1857,34 @@ function InviteModal({ party, onClose, notify }) {
   );
 }
 
-function ChatDock({ open, setOpen }) {
+function ChatDock({ me, partyId, open, setOpen, onView }) {
+  const { messages, send } = useChannel(partyId ? `party:${partyId}` : null);
+  const [seen, setSeen] = useState(0);
+
+  // The count only means anything while the dock is shut, which is the whole
+  // reason it is a dock rather than a panel.
+  useEffect(() => { if (open) setSeen(messages.length); }, [open, messages.length]);
+  const unread = open ? 0 : Math.max(0, messages.length - seen);
+
   if (!open)
     return (
       <button onClick={() => setOpen(true)} style={{ position: "absolute", right: 16, bottom: 16, background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 6, padding: "8px 12px", color: T.text, display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, fontWeight: 600 }}>
         <MessageSquare size={14} /> Chat
+        {unread > 0 && <span style={{ background: T.accent, color: "#07110F", borderRadius: 10, fontSize: 10.5, padding: "1px 6px", fontFamily: T.mono }}>{unread}</span>}
       </button>
     );
 
   return (
-    <div style={{ position: "absolute", right: 16, bottom: 16, width: 300, background: T.panel, border: `1px solid ${T.line2}`, borderRadius: 8, boxShadow: "0 16px 40px rgba(0,0,0,.5)", display: "flex", flexDirection: "column", zIndex: 55, animation: "sqRise .2s ease", overflow: "hidden" }}>
+    <div style={{ position: "absolute", right: 16, bottom: 16, width: 300, height: 380, background: T.panel, border: `1px solid ${T.line2}`, borderRadius: 8, boxShadow: "0 16px 40px rgba(0,0,0,.5)", display: "flex", flexDirection: "column", zIndex: 55, animation: "sqRise .2s ease", overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${T.line}`, padding: "10px 12px" }}>
         <div style={{ flex: 1, fontFamily: T.mono, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: T.text }}>Party chat</div>
         <button onClick={() => setOpen(false)} style={{ background: "transparent", border: "none", color: T.muted, padding: 4 }}><X size={14} /></button>
       </div>
-      <div style={{ padding: 20, color: T.dim, fontSize: 12.5, textAlign: "center", lineHeight: 1.5 }}>
-        Chat isn't wired up yet. Use your captain's in-game party.
+      <div style={{ flex: 1, overflow: "auto", padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+        <ChatLog messages={messages} me={me} onView={onView} empty="Nothing said yet. Only your party can read this." />
       </div>
+      <ChatComposer onSend={send} placeholder="Message your party…" />
+      <div style={{ padding: "4px 10px 8px", fontSize: 10.5, color: T.dim, fontFamily: T.mono }}>chat is not saved</div>
     </div>
   );
 }
@@ -1774,6 +1906,8 @@ export default function App() {
   const [viewMatch, setViewMatch] = useState(null);
   const [toasts, setToasts] = useState([]);
   const [invites, setInvites] = useState([]);
+  // Chat needs the id, not the roster: a channel is named after the party.
+  const [partyId, setPartyId] = useState(null);
   const [cooldownUntil, setCooldownUntil] = useState(0);
   const [inviteOpen, setInviteOpen] = useState(false);
   const notify = useCallback((text) => { const id = Date.now() + Math.random(); setToasts((t) => [...t, { id, text }]); setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3800); }, []);
@@ -1901,6 +2035,7 @@ export default function App() {
     setMe(mapped);
     setCooldownUntil(mapped.cooldownUntil);
 
+    setPartyId(profile.party?.partyId ?? null);
     setParty(
       (profile.party?.members ?? []).map((m) => ({
         id: m.userId,
@@ -1997,6 +2132,7 @@ export default function App() {
           );
           break;
         case "party.updated":
+          setPartyId(e.party?.partyId ?? null);
           setParty(
             (e.party?.members ?? []).map((m) => ({
               id: m.userId,
@@ -2138,7 +2274,7 @@ export default function App() {
       {viewMatch && <MatchHistoryModal m={viewMatch} me={me} onClose={() => setViewMatch(null)} onView={(p) => { setViewMatch(null); setViewProfile(p); }} />}
 
 
-      <ChatDock open={chatOpen} setOpen={setChatOpen} />
+      <ChatDock me={me} partyId={partyId} open={chatOpen} setOpen={setChatOpen} onView={setViewProfile} />
 
 
       {/* toasts */}
