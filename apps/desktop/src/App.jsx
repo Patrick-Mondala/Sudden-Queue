@@ -110,6 +110,7 @@ function profileToPlayer(profile) {
     inGameName: profile.inGameName ?? profile.discordName,
     avatarColor: AV_COLORS[Math.abs(hashString(profile.userId)) % AV_COLORS.length],
     tier: profile.tier,
+    isGameMaster: profile.isGameMaster ?? false,
     placementsRemaining: profile.placementsRemaining,
     // An absolute moment rather than a duration, so it keeps counting down
     // correctly across re-renders and reconnects.
@@ -172,7 +173,24 @@ const Avatar = ({ p, size = 32, ring }) => (
   </div>
 );
 /**
- * Renders a rank.
+ * A player's name, with the GM prefix when they carry one.
+ *
+ * Every surface that shows a name goes through this rather than reading
+ * discordName directly, so a Game Master is marked in the roster, the ladder,
+ * a chat line and an invite alike -- and adding a surface later cannot quietly
+ * miss it.
+ */
+const PlayerName = ({ name, isGameMaster, style, suffix }) => (
+  <span style={{ whiteSpace: "nowrap", ...style }}>
+    {isGameMaster && (
+      <span style={{ fontFamily: T.display, fontWeight: 800, fontSize: "0.85em", letterSpacing: "0.04em", color: T.captain, marginRight: 5 }}>GM</span>
+    )}
+    {name}
+    {suffix}
+  </span>
+);
+
+/** Renders a rank.
  *
  * Rank is the only strength a player is ever shown -- the rating behind it is
  * deliberately not published -- so an unranked player needs to read as
@@ -422,7 +440,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
                 <div key={i} onClick={() => p && onView?.(p)} style={{ border: `1px dashed ${p ? T.line2 : T.line}`, borderStyle: p ? "solid" : "dashed", borderRadius: 5, padding: 10, minHeight: 92, background: p ? T.raised : "transparent", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, position: "relative", cursor: p && onView ? "pointer" : "default" }}>
                   {p ? <>
                     <Avatar p={p} size={34} ring={i === 0 ? T.captain : null} />
-                    <div style={{ fontSize: 12, fontWeight: 600, maxWidth: "100%", textAlign: "center", whiteSpace: "nowrap" }}>{p.discordName}</div>
+                    <div style={{ fontSize: 12, fontWeight: 600, maxWidth: "100%", textAlign: "center", whiteSpace: "nowrap" }}><PlayerName name={p.discordName} isGameMaster={p.isGameMaster} /></div>
                     <Rank tier={p.tier} placementsRemaining={p.placementsRemaining} size={11} />
                     {i > 0 && queue.state !== "queued" && <button onClick={(e) => { e.stopPropagation(); kick(p.id); }} title="Remove" style={{ position: "absolute", top: 4, right: 4, background: "transparent", border: "none", color: T.dim, padding: 2 }}><X size={12} /></button>}
                     {i === 0 && <span style={{ position: "absolute", top: 4, left: 6 }}><Star size={11} color={T.captain} fill={T.captain} /></span>}
@@ -456,7 +474,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
             <Avatar p={me} size={44} />
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 700, fontSize: 15 }}>{me.discordName}</div>
+              <div style={{ fontWeight: 700, fontSize: 15 }}><PlayerName name={me.discordName} isGameMaster={me.isGameMaster} /></div>
               <div style={{ fontFamily: T.mono, fontSize: 11.5, color: T.muted }}>{me.inGameName}</div>
             </div>
             <div style={{ textAlign: "right" }}>
@@ -820,7 +838,7 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
                     <Avatar p={{ discordName: m.discordName, avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length] }} size={30} />
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>
-                        {m.discordName}{m.userId === me.id && <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span>}
+                        <PlayerName name={m.discordName} isGameMaster={m.isGameMaster} suffix={m.userId === me.id ? <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span> : null} />
                       </div>
                       <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{m.inGameName ?? m.discordName}</div>
                     </div>
@@ -871,7 +889,7 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
                   <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: a.note ? 8 : 0 }}>
                     <Avatar p={{ discordName: a.discordName, avatarColor: AV_COLORS[Math.abs(hashString(a.userId)) % AV_COLORS.length] }} size={28} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>{a.discordName}</div>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}><PlayerName name={a.discordName} isGameMaster={a.isGameMaster} /></div>
                       <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{a.inGameName ?? a.discordName}</div>
                     </div>
                     <Rank tier={a.tier} placementsRemaining={a.placementsRemaining} size={11} />
@@ -1017,6 +1035,185 @@ const LADDER_PAGE = 50;
  * Your own standing is shown whether or not it falls on the page you are
  * looking at, so being 300th does not mean paging down to find yourself.
  */
+/**
+ * The dispute queue. Game Masters only.
+ *
+ * A dispute means two captains claimed opposite results and no rating has
+ * moved, so nothing here is being undone -- it is being decided for the first
+ * time. That is why a ruling needs a note: the ten people it lands on deserve a
+ * reason, and the next Game Master to look deserves to know what was seen.
+ */
+function DisputesScreen({ me, notify, onView }) {
+  const [disputes, setDisputes] = useState(null);
+  const [openId, setOpenId] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [winner, setWinner] = useState(null);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setDisputes(await server.disputes());
+    } catch (err) {
+      notify(err?.message ?? "Could not load disputes");
+      setDisputes([]);
+    }
+  }, [notify]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Opening one pulls the rosters, which the list deliberately does not carry.
+  useEffect(() => {
+    if (!openId) { setDetail(null); return undefined; }
+    let cancelled = false;
+    setDetail(null);
+
+    server
+      .getMatch(openId)
+      .then((m) => { if (!cancelled) setDetail(adaptMatch(m)); })
+      .catch((err) => { if (!cancelled) notify(err?.message ?? "Could not load that match"); });
+
+    return () => { cancelled = true; };
+  }, [openId, notify]);
+
+  const open = disputes?.find((d) => d.matchId === openId) ?? null;
+
+  const rule = async () => {
+    if (!winner || note.trim().length === 0) return;
+    setBusy(true);
+    try {
+      await server.resolveDispute(openId, winner, note.trim());
+      notify(`Ruled for ${winner === "TEAM1" ? "Team 1" : "Team 2"}`);
+      setOpenId(null);
+      setWinner(null);
+      setNote("");
+      await load();
+    } catch (err) {
+      notify(err?.message ?? "Could not record that ruling");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (disputes === null) {
+    return <Panel style={{ height: "100%", display: "grid", placeItems: "center", color: T.dim, fontSize: 12.5 }}>Loading…</Panel>;
+  }
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 16, height: "100%", minHeight: 0 }}>
+      <Panel pad={0} style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <div style={{ padding: "14px 16px", borderBottom: `1px solid ${T.line}` }}>
+          <Eyebrow>Open disputes</Eyebrow>
+          <div style={{ fontSize: 11.5, color: T.muted, marginTop: 4 }}>
+            {disputes.length === 0 ? "Nothing waiting" : `${disputes.length} waiting`}
+          </div>
+        </div>
+
+        <div style={{ flex: 1, overflow: "auto", padding: 8 }}>
+          {disputes.length === 0 ? (
+            <div style={{ color: T.dim, fontSize: 12.5, padding: 20, textAlign: "center", lineHeight: 1.5 }}>
+              No disputes. They arrive when two captains report different results.
+            </div>
+          ) : (
+            disputes.map((d) => (
+              <div
+                key={d.disputeId}
+                className="row-hover"
+                onClick={() => { setOpenId(d.matchId); setWinner(null); setNote(""); }}
+                style={{ padding: "10px 8px", borderRadius: 4, cursor: "pointer", background: d.matchId === openId ? T.raised : "transparent" }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <Tag>{d.type}</Tag>
+                  <span style={{ fontFamily: T.mono, fontSize: 11, color: T.muted }}>{d.region.toUpperCase()}</span>
+                  <span style={{ flex: 1, textAlign: "right", fontSize: 11, color: T.dim }}>{ago(Date.parse(d.openedAt))}</span>
+                </div>
+                <div style={{ fontSize: 12, color: T.muted, marginTop: 6, lineHeight: 1.4 }}>{d.reason}</div>
+              </div>
+            ))
+          )}
+        </div>
+      </Panel>
+
+      {!open ? (
+        <Panel style={{ display: "grid", placeItems: "center", color: T.dim, fontSize: 12.5 }}>
+          Pick a dispute to see both claims.
+        </Panel>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
+          <Panel pad={20}>
+            <Eyebrow style={{ marginBottom: 6 }}>{open.type} · {open.region.toUpperCase()} · played {ago(Date.parse(open.playedAt))}</Eyebrow>
+            <H size={22}>Two captains disagree</H>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 16 }}>
+              {[1, 2].map((team) => {
+                const claim = open.reports.find((r) => r.reportingTeam === team);
+                return (
+                  <div key={team} style={{ background: T.raised, borderRadius: 5, padding: "10px 12px", border: `1px solid ${T.line2}` }}>
+                    <Eyebrow style={{ fontSize: 9.5 }}>Team {team}&apos;s captain</Eyebrow>
+                    <div style={{ fontSize: 13, fontWeight: 600, marginTop: 4 }}>{claim?.discordName ?? "never reported"}</div>
+                    <div style={{ fontSize: 12, color: claim ? T.text : T.dim, marginTop: 4 }}>
+                      {claim ? `claims Team ${claim.claimedWinner === "TEAM1" ? 1 : 2} won` : "no report"}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {/* Nothing has moved yet: rating only applies on agreement, so this
+                is the first ruling rather than an overturned one. */}
+            <div style={{ fontSize: 11.5, color: T.dim, marginTop: 12, lineHeight: 1.5 }}>
+              No rating has moved on this match. Your ruling is what applies it.
+            </div>
+          </Panel>
+
+          {detail && (
+            <Panel pad={20} style={{ flexShrink: 0, maxHeight: "40%", overflow: "auto" }}>
+              <Roster team={detail.team1} captainId={detail.captain1} me={me} side={1} label="Team 1" phase="completed" onView={onView} tier={detail.team1Tier} />
+              <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "18px 0" }}>
+                <div style={{ flex: 1, height: 1, background: T.line }} />
+                <span style={{ fontFamily: T.display, fontWeight: 800, fontSize: 16, color: T.dim, letterSpacing: "0.1em" }}>VS</span>
+                <div style={{ flex: 1, height: 1, background: T.line }} />
+              </div>
+              <Roster team={detail.team2} captainId={detail.captain2} me={me} side={2} label="Team 2" phase="completed" onView={onView} tier={detail.team2Tier} />
+            </Panel>
+          )}
+
+          <Panel pad={20}>
+            <Eyebrow style={{ marginBottom: 10 }}>Ruling</Eyebrow>
+            <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+              {[["TEAM1", "Team 1 won"], ["TEAM2", "Team 2 won"]].map(([value, label]) => (
+                <Btn
+                  key={value}
+                  kind={winner === value ? "primary" : "ghost"}
+                  style={{ flex: 1, justifyContent: "center" }}
+                  onClick={() => setWinner(value)}
+                >
+                  {label}
+                </Btn>
+              ))}
+            </div>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value.slice(0, 500))}
+              placeholder="What decided it — screenshots, who admitted what, anything the next GM should know"
+              aria-label="Ruling note"
+              rows={3}
+              style={{ width: "100%", background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13, fontFamily: T.body, resize: "none", boxSizing: "border-box" }}
+            />
+            <Btn
+              kind="primary"
+              style={{ width: "100%", justifyContent: "center", marginTop: 10 }}
+              disabled={busy || !winner || note.trim().length === 0}
+              title={!winner ? "Pick a winner" : note.trim().length === 0 ? "A ruling needs a reason" : undefined}
+              onClick={rule}
+            >
+              Settle this match
+            </Btn>
+          </Panel>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LadderScreen({ me, onView, notify }) {
   const [state, setState] = useState(null);
   const [offset, setOffset] = useState(0);
@@ -1072,7 +1269,7 @@ function LadderScreen({ me, onView, notify }) {
                   <Avatar p={{ discordName: r.discordName, avatarColor: AV_COLORS[Math.abs(hashString(r.userId)) % AV_COLORS.length] }} size={26} />
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>
-                      {r.discordName}{isMe && <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span>}
+                      <PlayerName name={r.discordName} isGameMaster={r.isGameMaster} suffix={isMe ? <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span> : null} />
                     </div>
                     <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>
                       {r.inGameName ?? r.discordName}{r.teamTag ? ` · ${r.teamTag}` : ""}
@@ -1139,7 +1336,7 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch }) {
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
             <Avatar p={view} size={64} />
             <div style={{ flex: 1 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}><H size={26}>{view.discordName ?? "Player"}</H>{isMe && <Tag color={T.accent}>You</Tag>}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}><H size={26}><PlayerName name={view.discordName ?? "Player"} isGameMaster={view.isGameMaster} /></H>{isMe && <Tag color={T.accent}>You</Tag>}</div>
               <div style={{ fontFamily: T.mono, fontSize: 12, color: T.muted, marginTop: 4 }}>{view.inGameName ?? view.discordName} · Discord linked</div>
             </div>
             <div style={{ textAlign: "right" }}>
@@ -1304,7 +1501,7 @@ function Roster({ team, captainId, me, side, label, phase, onView, tier }) {
               {cap && <div style={{ position: "absolute", top: -9, left: "50%", transform: "translateX(-50%)", background: T.captain, color: "#160E00", fontFamily: T.mono, fontSize: 9.5, letterSpacing: "0.1em", padding: "2px 7px", borderRadius: 3, fontWeight: 700 }}>CAPTAIN</div>}
               <Avatar p={p} size={40} ring={cap ? T.captain : isMe ? T.accent : null} />
               <div style={{ fontFamily: T.mono, fontSize: 11.5, fontWeight: 600, letterSpacing: "0.02em", textAlign: "center", maxWidth: "100%", whiteSpace: "nowrap" }}>{p.inGameName}</div>
-              <div style={{ fontSize: 11, color: T.muted, textAlign: "center", maxWidth: "100%", whiteSpace: "nowrap" }}>{p.discordName}{isMe ? " (you)" : ""}</div>
+              <div style={{ fontSize: 11, color: T.muted, textAlign: "center", maxWidth: "100%" }}><PlayerName name={p.discordName} isGameMaster={p.isGameMaster} suffix={isMe ? " (you)" : ""} /></div>
               <Rank tier={p.tier} placementsRemaining={p.placementsRemaining} size={11} />
               {cap && phase === "party" && isMySide && !isMe && <button onClick={(e) => { e.stopPropagation(); navigator.clipboard?.writeText(p.inGameName); }} title="Copy your captain's in-game name" style={{ marginTop: 2, background: "transparent", border: `1px solid ${T.captain}`, color: T.captain, borderRadius: 3, fontSize: 10.5, padding: "3px 8px", display: "inline-flex", gap: 4, alignItems: "center", fontFamily: T.mono }}><Copy size={10} /> copy name</button>}
             </div>
@@ -1416,7 +1613,7 @@ function ChatLog({ messages, me, empty, onView }) {
               <Avatar p={who} size={22} />
             </div>
             <div style={{ minWidth: 0 }}>
-              <span onClick={() => onView?.({ id: m.userId })} style={{ fontSize: 12, fontWeight: 700, color: mine ? T.accent : T.text, cursor: onView ? "pointer" : "default" }}>{m.discordName}</span>{" "}
+              <span onClick={() => onView?.({ id: m.userId })} style={{ fontSize: 12, fontWeight: 700, color: mine ? T.accent : T.text, cursor: onView ? "pointer" : "default" }}><PlayerName name={m.discordName} isGameMaster={m.isGameMaster} /></span>{" "}
               <span style={{ fontSize: 10.5, color: T.dim, fontFamily: T.mono }}>{new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
               <div style={{ fontSize: 13, color: T.text, lineHeight: 1.4, wordBreak: "break-word" }}>{m.text}</div>
             </div>
@@ -1703,7 +1900,7 @@ function InviteToasts({ invites, onAccept, onDecline }) {
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
               <Avatar p={{ discordName: inv.fromName, avatarColor: AV_COLORS[Math.abs(hashString(inv.fromUserId)) % AV_COLORS.length] }} size={24} />
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }}>{inv.fromName}</div>
+                <div style={{ fontSize: 12.5, fontWeight: 600 }}><PlayerName name={inv.fromName} isGameMaster={inv.fromIsGameMaster} /></div>
                 <div style={{ fontSize: 11, color: T.muted }}>invited you to their party</div>
               </div>
               <Tier tier={inv.fromTier} size={12} />
@@ -1829,7 +2026,7 @@ function InviteModal({ party, onClose, notify }) {
                   <div key={p.id} className="row-hover" style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 8px", borderRadius: 4, opacity: p.unavailable ? 0.55 : 1 }}>
                     <Avatar p={{ ...p, avatarColor: AV_COLORS[Math.abs(hashString(p.id)) % AV_COLORS.length] }} size={30} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>{p.discordName}</div>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}><PlayerName name={p.discordName} isGameMaster={p.isGameMaster} /></div>
                       <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{p.inGameName}</div>
                     </div>
                     <Rank tier={p.tier} placementsRemaining={p.placementsRemaining} size={11} />
@@ -2042,6 +2239,7 @@ export default function App() {
         discordName: m.discordName,
         inGameName: m.inGameName ?? m.discordName,
         avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length],
+        isGameMaster: m.isGameMaster ?? false,
         tier: m.tier ?? null,
         placementsRemaining: m.placementsRemaining ?? 0,
         wins: 0,
@@ -2208,6 +2406,9 @@ export default function App() {
     );
 
   const NAV = [["play", "PUG", Crosshair], ["scrims", "Scrims", Swords], ["teams", "Teams", Users], ["ladder", "Ladder", Trophy], ["profile", "Profile", User]];
+  // Shown only to Game Masters. The server refuses everyone else anyway; this
+  // keeps a tab off the rail that would only ever answer 403.
+  if (me.isGameMaster) NAV.push(["disputes", "Disputes", Shield]);
   const go = (id) => { setNav(id); setViewProfile(null); };
 
   let content;
@@ -2223,6 +2424,16 @@ export default function App() {
   // standing in for them.
   else if (nav === "scrims") content = <ScrimsScreen notify={notify} />;
   else if (nav === "teams") content = <TeamsScreen me={me} notify={notify} onView={setViewProfile} />;
+  else if (nav === "disputes")
+    content = me.isGameMaster ? (
+      <DisputesScreen me={me} notify={notify} onView={setViewProfile} />
+    ) : (
+      <ComingSoon
+        eyebrow="Disputes"
+        title="Game Masters only"
+        body="Disputed matches are settled by a Game Master."
+      />
+    );
   else if (nav === "ladder") content = <LadderScreen me={me} onView={setViewProfile} notify={notify} />;
   else content = <ProfileScreen p={me} me={me} history={history} onBack={() => {}} onViewMatch={openMatch} />;
 
@@ -2242,7 +2453,7 @@ export default function App() {
         <div style={{ flex: 1 }} />
         {queue.state === "queued" && !match && <button onClick={() => go("play")} style={{ background: T.accentDim, border: `1px solid ${T.accent}`, color: T.accent, borderRadius: 4, padding: "4px 10px", fontFamily: T.mono, fontSize: 11.5, display: "flex", gap: 6, alignItems: "center" }}><Dot pulse /> IN QUEUE</button>}
         {match && <span style={{ fontFamily: T.mono, fontSize: 11.5, color: T.captain, display: "flex", gap: 6, alignItems: "center" }}><Dot color={T.captain} pulse /> IN MATCH</span>}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 12 }}><Avatar p={me} size={24} /><span style={{ fontWeight: 600 }}>{me.discordName}</span><Tier tier={me.tier} size={12} /></div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 12 }}><Avatar p={me} size={24} /><PlayerName name={me.discordName} isGameMaster={me.isGameMaster} style={{ fontWeight: 600 }} /><Tier tier={me.tier} size={12} /></div>
         <button onClick={() => setMe(null)} title="Sign out" style={{ background: "transparent", border: "none", color: T.dim, padding: 4 }}><LogOut size={14} /></button>
       </div>
 

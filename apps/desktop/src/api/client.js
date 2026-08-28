@@ -167,6 +167,10 @@ export const api = {
   leaveParty: () => request("/party/leave", { method: "POST" }),
   kick: (userId) => request("/party/kick", { method: "POST", body: { userId } }),
 
+  disputes: () => request("/mod/disputes"),
+  resolveDispute: (matchId, winner, note) =>
+    request(`/mod/disputes/${matchId}/resolve`, { method: "POST", body: { winner, note } }),
+
   chatHistory: (channel) => request(`/chat/${channel}`),
 
   ladder: (limit, offset) => request(`/ladder?limit=${limit}&offset=${offset}`),
@@ -207,10 +211,6 @@ export const api = {
   decline: (matchId) => request(`/match/${matchId}/decline`, { method: "POST" }),
   reportResult: (matchId, winner) =>
     request(`/match/${matchId}/report`, { method: "POST", body: { winner } }),
-
-  openDisputes: () => request("/mod/disputes"),
-  resolveDispute: (matchId, winner, note) =>
-    request(`/mod/disputes/${matchId}/resolve`, { method: "POST", body: { winner, note } }),
 };
 
 /* ─────────────────────────────────────────────────────────────

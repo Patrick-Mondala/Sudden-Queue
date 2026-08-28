@@ -83,6 +83,8 @@ const server = {
   ladder: vi.fn(),
   playerProfile: vi.fn(),
   chatHistory: vi.fn(),
+  disputes: vi.fn(),
+  resolveDispute: vi.fn(),
   invite: vi.fn(),
   getInvites: vi.fn(),
   acceptInvite: vi.fn(),
@@ -180,6 +182,7 @@ beforeEach(() => {
   server.ladder.mockResolvedValue({ rows: [], total: 0, myPosition: null, limit: 50, offset: 0 });
   server.playerProfile.mockResolvedValue(null);
   server.chatHistory.mockResolvedValue({ channel: "", messages: [] });
+  server.disputes.mockResolvedValue([]);
 });
 
 afterEach(cleanup);
@@ -1047,5 +1050,136 @@ describe("chat", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^Match$/ }));
     await waitFor(() => expect(server.chatHistory).toHaveBeenCalledWith(`match:${MATCH.id}`));
+  });
+});
+
+describe("Game Masters", () => {
+  const GM_PROFILE = { ...PROFILE, isGameMaster: true };
+
+  const dispute = (over = {}) => ({
+    disputeId: "d1",
+    matchId: MATCH.id,
+    reason: "Captains reported different results",
+    openedAt: new Date().toISOString(),
+    type: "PUG",
+    region: "na",
+    playedAt: new Date().toISOString(),
+    reports: [
+      { reporterId: "user-1", discordName: "Player1", reportingTeam: 1, claimedWinner: "TEAM1" },
+      { reporterId: "user-6", discordName: "Player6", reportingTeam: 2, claimedWinner: "TEAM2" },
+    ],
+    ...over,
+  });
+
+  beforeEach(() => {
+    server.disputes.mockResolvedValue([dispute()]);
+    server.resolveDispute.mockResolvedValue({ ok: true });
+  });
+
+  it("hides the disputes tab from a player", async () => {
+    await signedIn();
+    expect(screen.queryByRole("button", { name: /Disputes/i })).toBeNull();
+  });
+
+  it("shows it to a Game Master", async () => {
+    server.me.mockResolvedValue(GM_PROFILE);
+    await signedIn();
+    expect(screen.getByRole("button", { name: /Disputes/i })).toBeTruthy();
+  });
+
+  it("marks a GM's own name in the title bar", async () => {
+    server.me.mockResolvedValue(GM_PROFILE);
+    await signedIn();
+
+    expect(screen.getAllByText("GM").length).toBeGreaterThan(0);
+  });
+
+  it("marks a GM on a match roster, not just their own screen", async () => {
+    await signedIn();
+    emit({
+      type: "match.found",
+      matchId: MATCH.id,
+      match: {
+        ...MATCH,
+        team1: [player(1, { isGameMaster: true }), ...MATCH.team1.slice(1)],
+      },
+    });
+    await screen.findByText(/Match found/i);
+    emit({ type: "match.state", matchId: MATCH.id, state: "PARTY_UP" });
+    await screen.findByText(/Party up/i);
+
+    expect(screen.getAllByText("GM").length).toBeGreaterThan(0);
+  });
+
+  it("leaves an ordinary roster unmarked", async () => {
+    await signedIn();
+    emit({ type: "match.found", matchId: MATCH.id, match: MATCH });
+    await screen.findByText(/Match found/i);
+    emit({ type: "match.state", matchId: MATCH.id, state: "PARTY_UP" });
+    await screen.findByText(/Party up/i);
+
+    expect(screen.queryByText("GM")).toBeNull();
+  });
+
+  it("shows both claims side by side", async () => {
+    server.me.mockResolvedValue(GM_PROFILE);
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Disputes/i }));
+
+    await userEvent.click(await screen.findByText(/Captains reported different results/i));
+
+    expect(await screen.findByText(/Two captains disagree/i)).toBeTruthy();
+    expect(screen.getByText(/claims Team 1 won/i)).toBeTruthy();
+    expect(screen.getByText(/claims Team 2 won/i)).toBeTruthy();
+  });
+
+  it("will not let a ruling go in without a winner and a reason", async () => {
+    server.me.mockResolvedValue(GM_PROFILE);
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Disputes/i }));
+    await userEvent.click(await screen.findByText(/Captains reported different results/i));
+
+    const settle = await screen.findByRole("button", { name: /Settle this match/i });
+    expect(settle.disabled).toBe(true);
+
+    await userEvent.click(screen.getByRole("button", { name: /Team 1 won/i }));
+    // A winner alone is not enough: the ten people it lands on deserve a reason.
+    expect(screen.getByRole("button", { name: /Settle this match/i }).disabled).toBe(true);
+
+    await userEvent.type(screen.getByLabelText(/Ruling note/i), "Screenshot matches Team 1.");
+    expect(screen.getByRole("button", { name: /Settle this match/i }).disabled).toBe(false);
+  });
+
+  it("records the ruling and clears it from the queue", async () => {
+    server.me.mockResolvedValue(GM_PROFILE);
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Disputes/i }));
+    await userEvent.click(await screen.findByText(/Captains reported different results/i));
+
+    await userEvent.click(await screen.findByRole("button", { name: /Team 2 won/i }));
+    await userEvent.type(screen.getByLabelText(/Ruling note/i), "Both scoreboards agree.");
+
+    server.disputes.mockResolvedValue([]);
+    await userEvent.click(screen.getByRole("button", { name: /Settle this match/i }));
+
+    await waitFor(() =>
+      expect(server.resolveDispute).toHaveBeenCalledWith(
+        MATCH.id,
+        "TEAM2",
+        "Both scoreboards agree.",
+      ),
+    );
+    expect(await screen.findByText(/No disputes/i)).toBeTruthy();
+  });
+
+  it("says plainly that nothing has moved yet", async () => {
+    server.me.mockResolvedValue(GM_PROFILE);
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Disputes/i }));
+    await userEvent.click(await screen.findByText(/Captains reported different results/i));
+
+    // Rating only applies on agreement, so this is a first ruling rather than
+    // an overturned one -- and a GM should not think they are undoing anything.
+    expect(await screen.findByText(/No rating has moved/i)).toBeTruthy();
   });
 });

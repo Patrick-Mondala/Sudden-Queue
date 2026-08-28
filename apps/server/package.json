@@ -12,7 +12,8 @@
     "db:studio": "drizzle-kit studio",
     "seed": "tsx scripts/seed-queue.ts",
     "test": "vitest run --passWithNoTests",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "grant": "tsx scripts/grant-role.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",

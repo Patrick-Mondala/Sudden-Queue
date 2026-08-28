@@ -16,6 +16,7 @@ import {
 } from "@suddenqueue/core";
 import { and, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 
+import { isGameMaster } from "../auth/roles.js";
 import type { Database, Executor } from "../db/client.js";
 import {
   matchParticipants,
@@ -32,6 +33,8 @@ export interface MatchViewPlayer {
   discordName: string;
   inGameName: string;
   avatarUrl: string | null;
+  /** Shown as a GM prefix wherever this name appears. */
+  isGameMaster: boolean;
   /** Rank only. The number behind it is deliberately not published. */
   tier: string | null;
   placementsRemaining: number;
@@ -586,6 +589,7 @@ export class MatchLifecycle {
         discordName: users.discordName,
         inGameName: users.inGameName,
         avatarUrl: users.avatarUrl,
+        role: users.role,
         rating: playerRatings.rating,
         peakRating: playerRatings.peakRating,
         gamesPlayed: playerRatings.gamesPlayed,
@@ -609,6 +613,7 @@ export class MatchLifecycle {
         // find each other in-game -- so fall back to something addressable.
         inGameName: r.inGameName ?? r.discordName,
         avatarUrl: r.avatarUrl,
+        isGameMaster: isGameMaster(r.role),
         // Same rule as /me: no rank until placements are done.
         tier: isPlaced(gamesPlayed) ? tierForRating(rating) : null,
         placementsRemaining: placementGamesRemaining(gamesPlayed),

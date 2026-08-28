@@ -10,14 +10,14 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
-export const userRole = pgEnum("user_role", ["player", "moderator", "admin"]);
+export const userRole = pgEnum("user_role", ["player", "game_master", "admin"]);
 
 /**
  * Accounts. Identity comes from Discord OAuth; `inGameName` is the in-game name
  * the player types themselves.
  *
  * There is no way to verify `inGameName` against Sudden Attack, so it is display
- * data with a trust cost, not an identity. Moderators can override it.
+ * data with a trust cost, not an identity. Game Masters can override it.
  */
 export const users = pgTable(
   "users",
@@ -29,7 +29,7 @@ export const users = pgTable(
     inGameName: text("in_game_name"),
     role: userRole("role").notNull().default("player"),
 
-    /** Set by a moderator; blocks queueing while in the future. */
+    /** Set by a Game Master; blocks queueing while in the future. */
     bannedUntil: timestamp("banned_until", { withTimezone: true }),
     banReason: text("ban_reason"),
 

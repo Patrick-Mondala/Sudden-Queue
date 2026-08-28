@@ -19,6 +19,7 @@ import {
   matches,
   playerRatings,
   ratingAdjustments,
+  users,
 } from "../db/schema/index.js";
 
 export type Winner = "TEAM1" | "TEAM2";
@@ -233,7 +234,7 @@ export class MatchReporting {
               won,
             });
 
-      // Recording both halves is what makes a moderator's reversal exact
+      // Recording both halves is what makes a Game Master's reversal exact
       // arithmetic rather than a recomputation against ratings that have moved.
       await tx
         .update(matchParticipants)
@@ -292,7 +293,7 @@ export class MatchReporting {
   }
 
   /**
-   * A moderator settles a dispute.
+   * A Game Master settles a dispute.
    *
    * If rating was never applied — the usual case, since disagreement blocks it
    * — this simply applies the ruled result. If it somehow was, the previously
@@ -301,7 +302,7 @@ export class MatchReporting {
    */
   async resolveDispute(
     matchId: string,
-    moderatorId: string,
+    gameMasterId: string,
     ruling: Winner,
     note: string,
   ): Promise<Result<ReportOutcome, "MATCH_NOT_FOUND" | "NOT_DISPUTED">> {
@@ -318,7 +319,7 @@ export class MatchReporting {
       }
 
       if (match.ratingApplied) {
-        await this.reverseApplied(tx, matchId, moderatorId, "Dispute resolution");
+        await this.reverseApplied(tx, matchId, gameMasterId, "Dispute resolution");
       }
 
       const changes = await this.settle(tx, matchId, ruling, match.type, {
@@ -330,7 +331,7 @@ export class MatchReporting {
         .update(disputes)
         .set({
           status: "resolved",
-          resolvedBy: moderatorId,
+          resolvedBy: gameMasterId,
           resolutionNote: note,
           resolvedAt: new Date(),
         })
@@ -344,7 +345,7 @@ export class MatchReporting {
   private async reverseApplied(
     tx: Executor,
     matchId: string,
-    moderatorId: string,
+    gameMasterId: string,
     reason: string,
   ): Promise<void> {
     const applied = await tx
@@ -363,7 +364,7 @@ export class MatchReporting {
         matchId,
         delta: -row.delta,
         reason,
-        appliedBy: moderatorId,
+        appliedBy: gameMasterId,
       });
 
       await tx
@@ -381,17 +382,66 @@ export class MatchReporting {
     return this.db.select().from(matchReports).where(eq(matchReports.matchId, matchId));
   }
 
+  /**
+   * Open disputes, with enough to rule on.
+   *
+   * A list of ids is not a queue anyone can work: what a Game Master needs is
+   * the two claims side by side and who made them. Rosters are not included --
+   * they come from the match route, which a Game Master may already read.
+   */
   async openDisputes() {
-    return this.db
+    const rows = await this.db
       .select({
         disputeId: disputes.id,
         matchId: disputes.matchId,
         reason: disputes.reason,
         openedAt: disputes.openedAt,
+        type: matches.type,
+        region: matches.region,
+        playedAt: matches.createdAt,
       })
       .from(disputes)
+      .innerJoin(matches, eq(matches.id, disputes.matchId))
       .where(eq(disputes.status, "open"))
       .orderBy(disputes.openedAt);
+
+    if (rows.length === 0) return [];
+
+    const claims = await this.db
+      .select({
+        matchId: matchReports.matchId,
+        reporterId: matchReports.reporterId,
+        discordName: users.discordName,
+        reportingTeam: matchReports.reportingTeam,
+        claimedWinner: matchReports.claimedWinner,
+      })
+      .from(matchReports)
+      .innerJoin(users, eq(users.id, matchReports.reporterId))
+      .where(
+        inArray(
+          matchReports.matchId,
+          rows.map((r) => r.matchId),
+        ),
+      )
+      .orderBy(matchReports.reportingTeam);
+
+    return rows.map((r) => ({
+      disputeId: r.disputeId,
+      matchId: r.matchId,
+      reason: r.reason,
+      openedAt: r.openedAt.toISOString(),
+      type: r.type,
+      region: r.region,
+      playedAt: r.playedAt.toISOString(),
+      reports: claims
+        .filter((c) => c.matchId === r.matchId)
+        .map((c) => ({
+          reporterId: c.reporterId,
+          discordName: c.discordName,
+          reportingTeam: c.reportingTeam,
+          claimedWinner: c.claimedWinner,
+        })),
+    }));
   }
 
   /** A player's finished matches, newest first. */

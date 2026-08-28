@@ -47,7 +47,7 @@ export const disputes = pgTable(
  * Structured event log, ported from the earlier system's audit log.
  *
  * Wider scope here than there: with results self-attested, this is the evidence
- * a moderator reads when deciding a dispute, and the source for the statistical
+ * a Game Master reads when deciding a dispute, and the source for the statistical
  * abuse flags (disagreement rate per captain, rating velocity outliers).
  */
 export const auditLog = pgTable(

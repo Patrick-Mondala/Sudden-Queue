@@ -14,6 +14,7 @@ import {
 } from "@suddenqueue/core";
 import { and, desc, eq, gt, inArray, sql } from "drizzle-orm";
 
+import { isGameMaster } from "../auth/roles.js";
 import type { Database, Executor } from "../db/client.js";
 import {
   parties,
@@ -29,6 +30,7 @@ export interface PartyMemberView {
   discordName: string;
   inGameName: string | null;
   avatarUrl: string | null;
+  isGameMaster: boolean;
   /** Rank only; the rating behind it is not published. */
   tier: string | null;
   placementsRemaining: number;
@@ -116,6 +118,7 @@ export class PartyService {
         discordName: users.discordName,
         inGameName: users.inGameName,
         avatarUrl: users.avatarUrl,
+        role: users.role,
         rating: playerRatings.rating,
         gamesPlayed: playerRatings.gamesPlayed,
         joinedAt: partyMembers.joinedAt,
@@ -137,6 +140,7 @@ export class PartyService {
         discordName: r.discordName,
         inGameName: r.inGameName,
         avatarUrl: r.avatarUrl,
+        isGameMaster: isGameMaster(r.role),
         // Rank, not rating: a party member's points are no more publishable
         // than an opponent's.
         tier: isPlaced(r.gamesPlayed ?? 0) ? tierForRating(r.rating ?? DEFAULT_RATING) : null,

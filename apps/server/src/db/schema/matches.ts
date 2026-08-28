@@ -81,7 +81,7 @@ export const matches = pgTable(
  *
  * `ratingBefore` and `ratingDelta` are the load-bearing columns. They were not
  * needed where a game server was authoritative and results were final.
- * Here a moderator can overturn a result days later, so reversal has to be exact
+ * Here a Game Master can overturn a result days later, so reversal has to be exact
  * arithmetic rather than a recomputation against ratings that have since moved.
  */
 export const matchParticipants = pgTable(

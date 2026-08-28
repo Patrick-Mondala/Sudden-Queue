@@ -11,8 +11,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { ChatService, chatChannels } from "./service.js";
 
 let chat: ChatService;
-const author = { userId: "user-1", discordName: "Player1" };
-const other = { userId: "user-2", discordName: "Player2" };
+const author = { userId: "user-1", discordName: "Player1", isGameMaster: false };
+const other = { userId: "user-2", discordName: "Player2", isGameMaster: true };
 
 beforeEach(() => {
   chat = new ChatService();

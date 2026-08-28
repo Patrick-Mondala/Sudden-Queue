@@ -304,7 +304,7 @@ describe("disagreement", () => {
     expect(row!.n).toBe(1);
   });
 
-  it("a moderator ruling settles it and applies rating once", async () => {
+  it("a Game Master ruling settles it and applies rating once", async () => {
     const m = await liveMatch();
     const before = await ratingOf(m.captain1);
 

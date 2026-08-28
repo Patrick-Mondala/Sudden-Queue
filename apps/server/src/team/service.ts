@@ -13,6 +13,7 @@ import {
 } from "@suddenqueue/core";
 import { and, eq, sql } from "drizzle-orm";
 
+import { isGameMaster } from "../auth/roles.js";
 import type { Database, Executor } from "../db/client.js";
 import {
   playerRatings,
@@ -28,6 +29,7 @@ export interface TeamMemberView {
   userId: string;
   discordName: string;
   inGameName: string | null;
+  isGameMaster: boolean;
   role: TeamRole;
   /** Rank only; the rating behind it is not published. */
   tier: string | null;
@@ -63,6 +65,7 @@ export interface ApplicationView {
   userId: string;
   discordName: string;
   inGameName: string | null;
+  isGameMaster: boolean;
   tier: string | null;
   placementsRemaining: number;
   note: string | null;
@@ -129,6 +132,7 @@ export class TeamService {
         userId: users.id,
         discordName: users.discordName,
         inGameName: users.inGameName,
+        accountRole: users.role,
         role: teamMembers.role,
         joinedAt: teamMembers.joinedAt,
         rating: playerRatings.rating,
@@ -154,6 +158,7 @@ export class TeamService {
           userId: r.userId,
           discordName: r.discordName,
           inGameName: r.inGameName,
+          isGameMaster: isGameMaster(r.accountRole),
           // The stored role and the captain column could disagree after a
           // transfer; the team row is the one that decides.
           role: r.userId === team.captainId ? "captain" : (r.role as TeamRole),
@@ -215,6 +220,7 @@ export class TeamService {
         createdAt: teamApplications.createdAt,
         discordName: users.discordName,
         inGameName: users.inGameName,
+        accountRole: users.role,
         rating: playerRatings.rating,
         gamesPlayed: playerRatings.gamesPlayed,
       })
@@ -232,6 +238,7 @@ export class TeamService {
         userId: r.userId,
         discordName: r.discordName,
         inGameName: r.inGameName,
+        isGameMaster: isGameMaster(r.accountRole),
         tier: isPlaced(games) ? tierForRating(r.rating ?? DEFAULT_RATING) : null,
         placementsRemaining: placementGamesRemaining(games),
         note: r.note,

@@ -13,6 +13,7 @@ export interface ChatMessage {
   channel: string;
   userId: string;
   discordName: string;
+  isGameMaster: boolean;
   text: string;
   ts: number;
 }
@@ -56,7 +57,7 @@ export class ChatService {
 
   post(
     channel: string,
-    author: { userId: string; discordName: string },
+    author: { userId: string; discordName: string; isGameMaster: boolean },
     text: string,
     now = Date.now(),
   ): Result<ChatMessage, ChatError> {
@@ -85,6 +86,7 @@ export class ChatService {
       channel,
       userId: author.userId,
       discordName: author.discordName,
+      isGameMaster: author.isGameMaster,
       text: trimmed,
       ts: now,
     };

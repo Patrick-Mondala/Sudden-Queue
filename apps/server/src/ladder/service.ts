@@ -7,6 +7,7 @@ import {
 } from "@suddenqueue/core";
 import { desc, eq, sql } from "drizzle-orm";
 
+import { isGameMaster } from "../auth/roles.js";
 import type { Database } from "../db/client.js";
 import { playerRatings, teamMembers, teams, users } from "../db/schema/index.js";
 
@@ -15,6 +16,7 @@ export interface LadderRow {
   userId: string;
   discordName: string;
   inGameName: string | null;
+  isGameMaster: boolean;
   tier: string;
   wins: number;
   losses: number;
@@ -27,6 +29,7 @@ export interface PublicProfile {
   userId: string;
   discordName: string;
   inGameName: string | null;
+  isGameMaster: boolean;
   /** Null while they are still in placements. */
   tier: string | null;
   peakTier: string | null;
@@ -63,6 +66,7 @@ export class LadderService {
         userId: users.id,
         discordName: users.discordName,
         inGameName: users.inGameName,
+        role: users.role,
         rating: playerRatings.rating,
         wins: playerRatings.wins,
         losses: playerRatings.losses,
@@ -86,6 +90,7 @@ export class LadderService {
       userId: r.userId,
       discordName: r.discordName,
       inGameName: r.inGameName,
+      isGameMaster: isGameMaster(r.role),
       tier: tierForRating(r.rating),
       wins: r.wins,
       losses: r.losses,
@@ -137,6 +142,7 @@ export class LadderService {
         userId: users.id,
         discordName: users.discordName,
         inGameName: users.inGameName,
+        role: users.role,
         rating: playerRatings.rating,
         peakRating: playerRatings.peakRating,
         gamesPlayed: playerRatings.gamesPlayed,
@@ -167,6 +173,7 @@ export class LadderService {
       userId: row.userId,
       discordName: row.discordName,
       inGameName: row.inGameName,
+      isGameMaster: isGameMaster(row.role),
       tier: placed ? tierForRating(row.rating ?? DEFAULT_RATING) : null,
       // Peak is only meaningful once there is a rank to have peaked at.
       peakTier: placed ? tierForRating(row.peakRating ?? DEFAULT_RATING) : null,

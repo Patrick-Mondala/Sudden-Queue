@@ -620,7 +620,7 @@ describe("reporting through the API", () => {
     expect(clash.json().state).toBe("DISPUTED");
   });
 
-  it("keeps the dispute queue behind a moderator check", async () => {
+  it("keeps the dispute queue behind a game master check", async () => {
     const player = await login();
     const denied = await app.server.inject({
       method: "GET",
@@ -631,7 +631,7 @@ describe("reporting through the API", () => {
 
     await handle.db
       .update(users)
-      .set({ role: "moderator" })
+      .set({ role: "game_master" })
       .where(eq(users.id, player.userId));
 
     const allowed = await app.server.inject({
@@ -642,7 +642,7 @@ describe("reporting through the API", () => {
     expect(allowed.statusCode).toBe(200);
   });
 
-  it("lets a moderator rule on a dispute and settle it", async () => {
+  it("lets a game master rule on a dispute and settle it", async () => {
     const m = await liveMatch();
     await app.server.inject({
       method: "POST",
@@ -658,7 +658,7 @@ describe("reporting through the API", () => {
     });
 
     const mod = await login();
-    await handle.db.update(users).set({ role: "moderator" }).where(eq(users.id, mod.userId));
+    await handle.db.update(users).set({ role: "game_master" }).where(eq(users.id, mod.userId));
 
     const ruling = await app.server.inject({
       method: "POST",
@@ -676,7 +676,7 @@ describe("reporting through the API", () => {
 
   it("requires a note on a ruling", async () => {
     const mod = await login();
-    await handle.db.update(users).set({ role: "moderator" }).where(eq(users.id, mod.userId));
+    await handle.db.update(users).set({ role: "game_master" }).where(eq(users.id, mod.userId));
 
     const res = await app.server.inject({
       method: "POST",
@@ -1883,5 +1883,210 @@ describe("chat channels", () => {
   it("needs a session at all", async () => {
     const res = await app.server.inject({ method: "GET", url: "/chat/party:whatever" });
     expect(res.statusCode).toBe(401);
+  });
+});
+
+describe("Game Masters", () => {
+  /** Promotes an account the way the grant script does. */
+  async function makeGameMaster(userId: string) {
+    await handle.db.update(users).set({ role: "game_master" }).where(eq(users.id, userId));
+  }
+
+  /** A match both captains have reported differently on. */
+  async function disputedMatch() {
+    const players = [];
+    for (let i = 0; i < 10; i += 1) {
+      const u = await login();
+      await app.server.inject({
+        method: "POST",
+        url: "/queue/join",
+        headers: authed(u.token),
+        payload: { regions: ["na"] },
+      });
+      players.push(u);
+    }
+
+    await app.matchmaker.runPass();
+    const [match] = await handle.db
+      .select()
+      .from(matches)
+      .orderBy(desc(matches.createdAt))
+      .limit(1);
+
+    await handle.db.update(matches).set({ state: "LIVE" }).where(eq(matches.id, match!.id));
+
+    const view = (await app.services.lifecycle.view(match!.id))!;
+    const tokenFor = new Map(players.map((p) => [p.userId, p.token]));
+    const cap1 = tokenFor.get(view.captain1!)!;
+    const cap2 = tokenFor.get(view.captain2!)!;
+
+    // Each captain claims their own side won.
+    await app.server.inject({
+      method: "POST",
+      url: `/match/${match!.id}/report`,
+      headers: authed(cap1),
+      payload: { winner: "TEAM1" },
+    });
+    await app.server.inject({
+      method: "POST",
+      url: `/match/${match!.id}/report`,
+      headers: authed(cap2),
+      payload: { winner: "TEAM2" },
+    });
+
+    return { matchId: match!.id, players, view, cap1, cap2 };
+  }
+
+  it("keeps a player out of the dispute queue", async () => {
+    const a = await login();
+    const res = await app.server.inject({
+      method: "GET",
+      url: "/mod/disputes",
+      headers: authed(a.token),
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().message).toMatch(/Game Master/i);
+  });
+
+  it("shows a Game Master both claims, not just an id", async () => {
+    const { matchId } = await disputedMatch();
+    const gm = await login();
+    await makeGameMaster(gm.userId);
+
+    const res = await app.server.inject({
+      method: "GET",
+      url: "/mod/disputes",
+      headers: authed(gm.token),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const [dispute] = res.json();
+    expect(dispute.matchId).toBe(matchId);
+    expect(dispute.type).toBe("PUG");
+
+    // A list of ids is not a queue anyone can work.
+    expect(dispute.reports).toHaveLength(2);
+    expect(dispute.reports.map((r: { claimedWinner: string }) => r.claimedWinner).sort()).toEqual([
+      "TEAM1",
+      "TEAM2",
+    ]);
+    expect(dispute.reports[0].discordName).toBeTruthy();
+  });
+
+  it("lets a Game Master read a match they are not in", async () => {
+    const { matchId } = await disputedMatch();
+    const gm = await login();
+    await makeGameMaster(gm.userId);
+
+    // Ruling on a match means seeing who played it.
+    const res = await app.server.inject({
+      method: "GET",
+      url: `/match/${matchId}`,
+      headers: authed(gm.token),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().team1).toHaveLength(5);
+  });
+
+  it("settles a dispute and moves rating once", async () => {
+    const { matchId, view } = await disputedMatch();
+    const gm = await login();
+    await makeGameMaster(gm.userId);
+
+    const winnerId = view.team1[0]!.id;
+    const [before] = await handle.db
+      .select()
+      .from(playerRatings)
+      .where(eq(playerRatings.userId, winnerId));
+
+    const res = await app.server.inject({
+      method: "POST",
+      url: `/mod/disputes/${matchId}/resolve`,
+      headers: authed(gm.token),
+      payload: { winner: "TEAM1", note: "Scoreboard screenshot matches TEAM1." },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const [after] = await handle.db
+      .select()
+      .from(playerRatings)
+      .where(eq(playerRatings.userId, winnerId));
+    expect(after!.rating).toBeGreaterThan(before!.rating);
+
+    // A ruling is final; the queue should not still be offering it.
+    const remaining = await app.server.inject({
+      method: "GET",
+      url: "/mod/disputes",
+      headers: authed(gm.token),
+    });
+    expect(remaining.json()).toHaveLength(0);
+  });
+
+  it("insists on a note, since a ruling has to say why", async () => {
+    const { matchId } = await disputedMatch();
+    const gm = await login();
+    await makeGameMaster(gm.userId);
+
+    const res = await app.server.inject({
+      method: "POST",
+      url: `/mod/disputes/${matchId}/resolve`,
+      headers: authed(gm.token),
+      payload: { winner: "TEAM1", note: "" },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("will not let a player rule on their own match", async () => {
+    const { matchId, cap1 } = await disputedMatch();
+
+    const res = await app.server.inject({
+      method: "POST",
+      url: `/mod/disputes/${matchId}/resolve`,
+      headers: authed(cap1),
+      payload: { winner: "TEAM1", note: "we definitely won" },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("marks a Game Master everywhere their name is published", async () => {
+    const gm = await login();
+    await makeGameMaster(gm.userId);
+
+    const me = await app.server.inject({ method: "GET", url: "/me", headers: authed(gm.token) });
+    expect(me.json().isGameMaster).toBe(true);
+
+    const party = await app.server.inject({
+      method: "GET",
+      url: "/party",
+      headers: authed(gm.token),
+    });
+    expect(party.json().members[0].isGameMaster).toBe(true);
+
+    const conn = { send: () => {}, close: () => {} };
+    app.notifier.add(gm.userId, conn);
+    const other = await login();
+    const online = await app.server.inject({
+      method: "GET",
+      url: "/players/online",
+      headers: authed(other.token),
+    });
+    expect(online.json().players.find((p: { id: string }) => p.id === gm.userId).isGameMaster).toBe(
+      true,
+    );
+    app.notifier.remove(gm.userId, conn);
+
+    const profile = await app.server.inject({
+      method: "GET",
+      url: `/players/${gm.userId}`,
+      headers: authed(other.token),
+    });
+    expect(profile.json().isGameMaster).toBe(true);
+  });
+
+  it("leaves an ordinary player unmarked", async () => {
+    const a = await login();
+    const me = await app.server.inject({ method: "GET", url: "/me", headers: authed(a.token) });
+    expect(me.json().isGameMaster).toBe(false);
   });
 });

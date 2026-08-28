@@ -14,7 +14,7 @@ export interface SessionUser {
   discordId: string;
   discordName: string;
   inGameName: string | null;
-  role: "player" | "moderator" | "admin";
+  role: "player" | "game_master" | "admin";
 }
 
 /**

@@ -19,7 +19,8 @@
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint .",
-    "check": "npm run lint && npm run typecheck && npm test"
+    "check": "npm run lint && npm run typecheck && npm test",
+    "grant": "npm run grant --workspace @suddenqueue/server --"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

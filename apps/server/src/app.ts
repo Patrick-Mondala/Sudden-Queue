@@ -22,6 +22,7 @@ import { AuthService } from "./auth/service.js";
 import { DiscordAuth } from "./auth/discord.js";
 import { LoginHandoff } from "./auth/handoff.js";
 import { SessionService, type SessionUser } from "./auth/sessions.js";
+import { isGameMaster } from "./auth/roles.js";
 import type { Config } from "./config.js";
 import type { Database } from "./db/client.js";
 import { partyInvites, partyMembers, playerRatings, users } from "./db/schema/index.js";
@@ -420,6 +421,7 @@ export async function buildApp({
       discordName: user.discordName,
       inGameName: user.inGameName,
       role: user.role,
+      isGameMaster: isGameMaster(user.role),
       rating,
       // Rank stays hidden until placements are done, so early volatility does
       // not read as the ladder being broken.
@@ -485,6 +487,7 @@ export async function buildApp({
         id: users.id,
         discordName: users.discordName,
         inGameName: users.inGameName,
+        role: users.role,
         rating: playerRatings.rating,
         gamesPlayed: playerRatings.gamesPlayed,
         partySize: sql<number>`(
@@ -518,6 +521,7 @@ export async function buildApp({
           id: r.id,
           discordName: r.discordName,
           inGameName: r.inGameName ?? r.discordName,
+          isGameMaster: isGameMaster(r.role),
           tier: isPlaced(gamesPlayed) ? tierForRating(r.rating ?? DEFAULT_RATING) : null,
           placementsRemaining: placementGamesRemaining(gamesPlayed),
           unavailable,
@@ -560,6 +564,7 @@ export async function buildApp({
         partyId: result.data.partyId,
         fromUserId: user.userId,
         fromName: user.discordName,
+        fromIsGameMaster: isGameMaster(user.role),
         fromTier: isPlaced(games) ? tierForRating(inviter?.rating ?? DEFAULT_RATING) : null,
         // The toast counts down to this, so it has to come from the server.
         expiresAt: new Date(Date.now() + INVITE_EXPIRATION_SECONDS * 1000).toISOString(),
@@ -650,7 +655,7 @@ export async function buildApp({
   /**
    * Whether anyone in the party is barred from queueing, and why.
    *
-   * Covers both a missed-accept cooldown and a moderator ban. The ban was
+   * Covers both a missed-accept cooldown and a Game Master ban. The ban was
    * already stored and never checked, so it did not actually stop anyone.
    */
   async function blockedFromQueue(
@@ -1388,17 +1393,17 @@ export async function buildApp({
 
   // ------------------------------------------------------------- moderation
 
-  function requireModerator(req: FastifyRequest, reply: FastifyReply): boolean {
+  function requireGameMaster(req: FastifyRequest, reply: FastifyReply): boolean {
     const user = requireUser(req);
-    if (user.role === "player") {
-      void reply.code(403).send({ error: "FORBIDDEN", message: "Moderator access required" });
+    if (!isGameMaster(user.role)) {
+      void reply.code(403).send({ error: "FORBIDDEN", message: "Game Master access required" });
       return false;
     }
     return true;
   }
 
   server.get("/mod/disputes", { preHandler: authenticate }, async (req, reply) => {
-    if (!requireModerator(req, reply)) return reply;
+    if (!requireGameMaster(req, reply)) return reply;
     return reporting.openDisputes();
   });
 
@@ -1408,7 +1413,7 @@ export async function buildApp({
   });
 
   server.post("/mod/disputes/:id/resolve", { preHandler: authenticate }, async (req, reply) => {
-    if (!requireModerator(req, reply)) return reply;
+    if (!requireGameMaster(req, reply)) return reply;
 
     const { id } = req.params as { id: string };
     const body = rulingBody.safeParse(req.body);
@@ -1560,7 +1565,11 @@ export async function buildApp({
 
           const posted = chat.post(
             channel,
-            { userId, discordName: session.data.discordName },
+            {
+              userId,
+              discordName: session.data.discordName,
+              isGameMaster: isGameMaster(session.data.role),
+            },
             text,
           );
 
