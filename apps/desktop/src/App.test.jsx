@@ -48,6 +48,12 @@ const server = {
   removeTeamMember: vi.fn(),
   leaveTeam: vi.fn(),
   disbandTeam: vi.fn(),
+  scrims: vi.fn(),
+  postListing: vi.fn(),
+  removeListing: vi.fn(),
+  requestScrim: vi.fn(),
+  withdrawScrimRequest: vi.fn(),
+  decideScrimRequest: vi.fn(),
   invite: vi.fn(),
   getInvites: vi.fn(),
   acceptInvite: vi.fn(),
@@ -141,6 +147,7 @@ beforeEach(() => {
   server.getInvites.mockResolvedValue([]);
   server.myTeam.mockResolvedValue({ team: null, role: null, applications: [], myApplication: null });
   server.listTeams.mockResolvedValue({ teams: [] });
+  server.scrims.mockResolvedValue({ listings: [], myListing: null, incoming: [] });
 });
 
 afterEach(cleanup);
@@ -625,5 +632,167 @@ describe("teams", () => {
 
     // Someone else accepted, promoted or removed a player.
     expect(await screen.findByText("Renamed")).toBeTruthy();
+  });
+});
+
+describe("scrims", () => {
+  const member = (i, role = "member") => ({
+    userId: `user-${i}`,
+    discordName: `Player${i}`,
+    inGameName: `PLAYER_${i}`,
+    role,
+    tier: "B",
+    placementsRemaining: 0,
+    joinedAt: new Date().toISOString(),
+  });
+
+  const squad = (role = "captain", size = 5) => ({
+    team: {
+      id: "team-1",
+      tag: "ACE",
+      name: "Aces High",
+      region: "na",
+      captainId: "user-1",
+      applicationsOpen: true,
+      createdAt: new Date().toISOString(),
+      members: Array.from({ length: size }, (_, i) => member(i + 1, i === 0 ? "captain" : "member")),
+    },
+    role,
+    applications: [],
+    myApplication: null,
+  });
+
+  const listing = {
+    id: "listing-2",
+    teamId: "team-2",
+    tag: "BRV",
+    name: "Bravo",
+    region: "na",
+    note: "Bo1 tonight",
+    postedAt: new Date().toISOString(),
+    memberCount: 5,
+    tier: "A-",
+    requested: false,
+  };
+
+  const board = (over = {}) => ({ listings: [listing], myListing: null, incoming: [], ...over });
+
+  beforeEach(() => {
+    server.scrims.mockResolvedValue(board());
+    server.postListing.mockResolvedValue({ listingId: "listing-1" });
+    server.removeListing.mockResolvedValue({ ok: true });
+    server.requestScrim.mockResolvedValue({ requestId: "req-1" });
+    server.decideScrimRequest.mockResolvedValue({ accepted: true, matchId: MATCH.id });
+  });
+
+  async function openScrims() {
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Scrims/i }));
+  }
+
+  it("says scrims are for teams when you have none", async () => {
+    await openScrims();
+    expect(await screen.findByText(/Scrims are for teams/i)).toBeTruthy();
+  });
+
+  it("shows the board once you are on a team", async () => {
+    server.myTeam.mockResolvedValue(squad());
+    await openScrims();
+
+    expect(await screen.findByText("Bravo")).toBeTruthy();
+    expect(screen.getByText(/Bo1 tonight/)).toBeTruthy();
+  });
+
+  it("lets a captain post a listing", async () => {
+    server.myTeam.mockResolvedValue(squad());
+    await openScrims();
+    await screen.findByText("Bravo");
+
+    await userEvent.type(screen.getByLabelText(/Listing note/i), "Bo3, we host voice");
+    await userEvent.click(screen.getByRole("button", { name: /Post to scrim list/i }));
+
+    await waitFor(() =>
+      expect(server.postListing).toHaveBeenCalledWith("na", "Bo3, we host voice"),
+    );
+  });
+
+  it("offers to take the listing down once it is up", async () => {
+    server.myTeam.mockResolvedValue(squad());
+    server.scrims.mockResolvedValue(board({ myListing: { id: "listing-1", region: "na", note: null } }));
+    await openScrims();
+
+    await userEvent.click(await screen.findByRole("button", { name: /Remove listing/i }));
+    await waitFor(() => expect(server.removeListing).toHaveBeenCalled());
+  });
+
+  it("keeps a plain member out of arranging anything", async () => {
+    server.myTeam.mockResolvedValue(squad("member"));
+    await openScrims();
+    await screen.findByText("Bravo");
+
+    expect(screen.getByRole("button", { name: /Request/i }).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: /Post to scrim list/i })).toBeNull();
+    expect(screen.getByText(/Only the captain and officers can list/i)).toBeTruthy();
+  });
+
+  it("will not let a team of four ask for a five-a-side", async () => {
+    server.myTeam.mockResolvedValue(squad("captain", 4));
+    await openScrims();
+    await screen.findByText("Bravo");
+
+    expect(screen.getByRole("button", { name: /Request/i }).disabled).toBe(true);
+    expect(screen.getByText(/A scrim is five a side/i)).toBeTruthy();
+  });
+
+  it("requests a scrim, then shows it as asked", async () => {
+    server.myTeam.mockResolvedValue(squad());
+    await openScrims();
+    await screen.findByText("Bravo");
+
+    server.scrims.mockResolvedValue(board({ listings: [{ ...listing, requested: true }] }));
+    await userEvent.click(screen.getByRole("button", { name: /Request/i }));
+
+    await waitFor(() => expect(server.requestScrim).toHaveBeenCalledWith("listing-2"));
+    expect(await screen.findByRole("button", { name: /Asked/i })).toBeTruthy();
+  });
+
+  it("answers an incoming request", async () => {
+    const incoming = [
+      { id: "req-9", listingId: "listing-1", teamId: "team-3", tag: "CLD", name: "Cold", tier: "A", createdAt: new Date().toISOString() },
+    ];
+    server.myTeam.mockResolvedValue(squad());
+    server.scrims.mockResolvedValue(board({ myListing: { id: "listing-1", region: "na", note: null }, incoming }));
+    await openScrims();
+
+    expect(await screen.findByText(/Requests \(1\)/i)).toBeTruthy();
+    expect(screen.getByText("Cold")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: /^Accept$/ }));
+    await waitFor(() => expect(server.decideScrimRequest).toHaveBeenCalledWith("req-9", true));
+  });
+
+  it("reloads when a listing moves under you", async () => {
+    server.myTeam.mockResolvedValue(squad());
+    await openScrims();
+    await screen.findByText("Bravo");
+
+    server.scrims.mockResolvedValue(board({ listings: [] }));
+    emit({ type: "scrim.request.received", listingId: "listing-1" });
+
+    // Someone took theirs down, or it got matched while you were looking.
+    await waitFor(() => expect(screen.queryByText("Bravo")).toBeNull());
+  });
+
+  it("raises the same accept prompt a PUG does", async () => {
+    server.myTeam.mockResolvedValue(squad());
+    await openScrims();
+    await screen.findByText("Bravo");
+
+    // Accepting a scrim goes out over the same match.found the queue uses, so
+    // the overlay does not need to know which it was.
+    emit({ type: "match.found", matchId: MATCH.id, match: { ...MATCH, type: "SCRIM" } });
+
+    expect(await screen.findByText(/Match found/i)).toBeTruthy();
+    expect(screen.getByText(/SCRIM · NA · 5v5/)).toBeTruthy();
   });
 });

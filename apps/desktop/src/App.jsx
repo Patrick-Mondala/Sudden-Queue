@@ -496,6 +496,206 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
    PROFILE
    ───────────────────────────────────────────────────────────── */
 /**
+ * Scrims: teams looking for practice, and whoever is asking after yours.
+ *
+ * Everything here needs a team, so the screen says so rather than showing a
+ * board you cannot act on.
+ */
+function ScrimsScreen({ notify }) {
+  const [state, setState] = useState(null); // { listings, myListing, incoming }
+  const [myTeam, setMyTeam] = useState(undefined); // undefined = still loading
+  const [regions, setRegions] = usePersistentState("sq.scrims.filter", ["na", "sa", "eu", "asia"]);
+  const [note, setNote] = useState("");
+  const [postRegion, setPostRegion] = useState(["na"]);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [board, mine] = await Promise.all([server.scrims(), server.myTeam()]);
+      setState(board);
+      setMyTeam(mine);
+    } catch (err) {
+      notify(err?.message ?? "Could not load scrims");
+      setState({ listings: [], myListing: null, incoming: [] });
+      setMyTeam({ team: null, role: null });
+    }
+  }, [notify]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // A listing can be taken down, or answered, while you are looking at it.
+  useEffect(() => {
+    return liveBus.on((e) => {
+      if (e.type?.startsWith("scrim.") || e.type?.startsWith("team.")) load();
+    });
+  }, [load]);
+
+  const act = async (fn, after) => {
+    setBusy(true);
+    try {
+      await fn();
+      await load();
+      if (after) notify(after);
+    } catch (err) {
+      notify(err?.message ?? "That did not work");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (state === null || myTeam === undefined) {
+    return <Panel style={{ height: "100%", display: "grid", placeItems: "center", color: T.dim, fontSize: 12.5 }}>Loading…</Panel>;
+  }
+
+  if (!myTeam.team) {
+    return (
+      <ComingSoon
+        eyebrow="Scrims"
+        title="Scrims are for teams"
+        body="Register a team or join one, and its captain and officers can list it here for practice matches — unrated, but the same accept and report flow as a PUG."
+      />
+    );
+  }
+
+  const canManage = myTeam.role === "captain" || myTeam.role === "officer";
+  const roster = myTeam.team.members.length;
+  const tooSmall = roster < 5;
+  const listings = state.listings.filter((l) => regions.includes(l.region));
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: 16, height: "100%", minHeight: 0 }}>
+      <Panel pad={0} style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderBottom: `1px solid ${T.line}` }}>
+          <Eyebrow style={{ flex: 1 }}>Teams looking to scrim</Eyebrow>
+          <RegionPicker value={regions} onChange={setRegions} />
+        </div>
+
+        <div style={{ flex: 1, overflow: "auto", padding: 8 }}>
+          {listings.length === 0 ? (
+            <div style={{ color: T.dim, fontSize: 12.5, padding: 24, textAlign: "center", lineHeight: 1.5 }}>
+              Nobody is listed in these regions. Put your own team up and wait for an ask.
+            </div>
+          ) : (
+            listings.map((l) => (
+              <div key={l.id} className="row-hover" style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 8px", borderRadius: 4 }}>
+                <div style={{ width: 32, height: 32, borderRadius: 4, background: T.raised, display: "grid", placeItems: "center", fontFamily: T.mono, fontSize: 10.5, color: T.muted, border: `1px solid ${T.line2}`, flexShrink: 0 }}>{l.tag}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>{l.name}</div>
+                  <div style={{ fontSize: 11, color: T.muted, whiteSpace: "nowrap" }}>
+                    {l.region.toUpperCase()} · {ago(Date.parse(l.postedAt))}{l.note ? ` · ${l.note}` : ""}
+                  </div>
+                </div>
+                <Tier tier={l.tier} size={12} />
+                {l.requested ? (
+                  <Btn size="sm" disabled style={{ minWidth: 92, justifyContent: "center" }}><Dot pulse /> Asked</Btn>
+                ) : (
+                  <Btn
+                    size="sm"
+                    kind="primary"
+                    disabled={busy || !canManage || tooSmall}
+                    title={!canManage ? "Only the captain and officers arrange scrims" : tooSmall ? "You need five players" : undefined}
+                    onClick={() => act(() => server.requestScrim(l.id), `Asked ${l.name} for a scrim`)}
+                    style={{ minWidth: 92, justifyContent: "center" }}
+                  >
+                    Request
+                  </Btn>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </Panel>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
+        <Panel>
+          <Eyebrow style={{ marginBottom: 10 }}>Your listing</Eyebrow>
+          {!canManage ? (
+            <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>
+              Only the captain and officers can list {myTeam.team.name} for scrims.
+            </div>
+          ) : tooSmall ? (
+            <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>
+              A scrim is five a side. {myTeam.team.name} has {roster}.
+            </div>
+          ) : state.myListing ? (
+            <>
+              <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5, marginBottom: 12 }}>
+                Listed in {state.myListing.region.toUpperCase()}
+                {state.myListing.note ? ` — ${state.myListing.note}` : ""}.
+              </div>
+              <Btn kind="danger" style={{ width: "100%", justifyContent: "center" }} disabled={busy} onClick={() => act(() => server.removeListing(), "Listing removed")}>
+                Remove listing
+              </Btn>
+            </>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <RegionPicker value={postRegion} onChange={(v) => setPostRegion(v.slice(-1))} multi={false} />
+              <input
+                value={note}
+                onChange={(e) => setNote(e.target.value.slice(0, 200))}
+                placeholder="Note — format, times, voice"
+                aria-label="Listing note"
+                style={{ background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13 }}
+              />
+              <Btn
+                kind="primary"
+                style={{ width: "100%", justifyContent: "center" }}
+                disabled={busy || postRegion.length === 0}
+                onClick={() => act(async () => {
+                  await server.postListing(postRegion[0], note.trim() || null);
+                  setNote("");
+                }, "Your team is listed")}
+              >
+                Post to scrim list
+              </Btn>
+            </div>
+          )}
+        </Panel>
+
+        <Panel style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+          <Eyebrow style={{ marginBottom: 10 }}>
+            Requests{state.incoming.length ? ` (${state.incoming.length})` : ""}
+          </Eyebrow>
+          <div style={{ flex: 1, overflow: "auto" }}>
+            {!canManage ? (
+              <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>
+                Captains and officers answer these.
+              </div>
+            ) : state.incoming.length === 0 ? (
+              <div style={{ fontSize: 12.5, color: T.dim, lineHeight: 1.5 }}>
+                Nobody has asked yet. Requests from other teams land here.
+              </div>
+            ) : (
+              state.incoming.map((r) => (
+                <div key={r.id} style={{ padding: "10px 0", borderBottom: `1px solid ${T.line}` }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                    <div style={{ width: 26, height: 26, borderRadius: 4, background: T.raised, display: "grid", placeItems: "center", fontFamily: T.mono, fontSize: 9.5, color: T.muted, border: `1px solid ${T.line2}`, flexShrink: 0 }}>{r.tag}</div>
+                    <div style={{ flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }}>{r.name}</div>
+                    <Tier tier={r.tier} size={11} />
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <Btn size="sm" kind="primary" style={{ flex: 1, justifyContent: "center" }} disabled={busy} onClick={() => act(() => server.decideScrimRequest(r.id, true))}>
+                      Accept
+                    </Btn>
+                    <Btn size="sm" style={{ flex: 1, justifyContent: "center" }} disabled={busy} onClick={() => act(() => server.decideScrimRequest(r.id, false), "Request declined")}>
+                      Decline
+                    </Btn>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+          <div style={{ fontSize: 11.5, color: T.dim, lineHeight: 1.5, marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.line}` }}>
+            Accepting sends all ten players the same accept prompt as a PUG. Scrims never move
+            your rank.
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Teams: the one you are on, or the directory if you are not on one.
  *
  * A player has exactly one team, so this is two screens sharing a route rather
@@ -1745,14 +1945,7 @@ export default function App() {
   else if (nav === "play") content = <PlayScreen me={me} party={party} setParty={setParty} queue={queue} setQueue={setQueue} cooldownUntil={cooldownUntil} history={history} notify={notify} onViewMatch={openMatch} onView={setViewProfile} onInvite={() => setInviteOpen(true)} />;
   // These three have no server endpoints yet, so they say so rather than
   // standing in for them.
-  else if (nav === "scrims")
-    content = (
-      <ComingSoon
-        eyebrow="Scrim list"
-        title="Teams looking to scrim"
-        body="Scrims aren't wired up yet. Once teams exist, captains will list here for practice matches — unrated, but running the same accept and report flow as a PUG."
-      />
-    );
+  else if (nav === "scrims") content = <ScrimsScreen notify={notify} />;
   else if (nav === "teams") content = <TeamsScreen me={me} notify={notify} onView={setViewProfile} />;
   else if (nav === "ladder")
     content = (

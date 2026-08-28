@@ -167,6 +167,15 @@ export const api = {
   leaveParty: () => request("/party/leave", { method: "POST" }),
   kick: (userId) => request("/party/kick", { method: "POST", body: { userId } }),
 
+  scrims: (region) => request(region ? `/scrims?region=${region}` : "/scrims"),
+  postListing: (region, note) => request("/scrims", { method: "POST", body: { region, note } }),
+  removeListing: () => request("/scrims/mine", { method: "DELETE" }),
+  requestScrim: (listingId) => request(`/scrims/${listingId}/request`, { method: "POST" }),
+  withdrawScrimRequest: (requestId) =>
+    request(`/scrims/requests/${requestId}/withdraw`, { method: "POST" }),
+  decideScrimRequest: (requestId, accept) =>
+    request(`/scrims/requests/${requestId}/decide`, { method: "POST", body: { accept } }),
+
   listTeams: (region) => request(region ? `/teams?region=${region}` : "/teams"),
   getTeam: (teamId) => request(`/teams/${teamId}`),
   myTeam: () => request("/me/team"),
