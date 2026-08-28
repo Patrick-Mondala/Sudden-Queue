@@ -167,6 +167,23 @@ export const api = {
   leaveParty: () => request("/party/leave", { method: "POST" }),
   kick: (userId) => request("/party/kick", { method: "POST", body: { userId } }),
 
+  listTeams: (region) => request(region ? `/teams?region=${region}` : "/teams"),
+  getTeam: (teamId) => request(`/teams/${teamId}`),
+  myTeam: () => request("/me/team"),
+  createTeam: (body) => request("/teams", { method: "POST", body }),
+  applyToTeam: (teamId, note) => request(`/teams/${teamId}/apply`, { method: "POST", body: { note } }),
+  withdrawApplication: () => request("/me/application/withdraw", { method: "POST" }),
+  decideApplication: (applicationId, accept) =>
+    request(`/team/applications/${applicationId}/decide`, { method: "POST", body: { accept } }),
+  setApplicationsOpen: (open) =>
+    request("/team/applications-open", { method: "PATCH", body: { open } }),
+  setTeamRole: (userId, role) =>
+    request(`/team/members/${userId}/role`, { method: "POST", body: { role } }),
+  transferCaptaincy: (userId) => request("/team/captain", { method: "POST", body: { userId } }),
+  removeTeamMember: (userId) => request(`/team/members/${userId}`, { method: "DELETE" }),
+  leaveTeam: () => request("/team/leave", { method: "POST" }),
+  disbandTeam: () => request("/team", { method: "DELETE" }),
+
   joinQueue: (regions) => request("/queue/join", { method: "POST", body: { regions } }),
   leaveQueue: () => request("/queue/leave", { method: "POST" }),
   queueStats: () => request("/queue/stats", { auth: false }),

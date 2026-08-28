@@ -35,6 +35,19 @@ const server = {
   queueStats: vi.fn(),
   getMatch: vi.fn(),
   onlinePlayers: vi.fn(),
+  listTeams: vi.fn(),
+  getTeam: vi.fn(),
+  myTeam: vi.fn(),
+  createTeam: vi.fn(),
+  applyToTeam: vi.fn(),
+  withdrawApplication: vi.fn(),
+  decideApplication: vi.fn(),
+  setApplicationsOpen: vi.fn(),
+  setTeamRole: vi.fn(),
+  transferCaptaincy: vi.fn(),
+  removeTeamMember: vi.fn(),
+  leaveTeam: vi.fn(),
+  disbandTeam: vi.fn(),
   invite: vi.fn(),
   getInvites: vi.fn(),
   acceptInvite: vi.fn(),
@@ -126,6 +139,8 @@ beforeEach(() => {
   server.accept.mockResolvedValue({});
   server.onlinePlayers.mockResolvedValue({ players: [] });
   server.getInvites.mockResolvedValue([]);
+  server.myTeam.mockResolvedValue({ team: null, role: null, applications: [], myApplication: null });
+  server.listTeams.mockResolvedValue({ teams: [] });
 });
 
 afterEach(cleanup);
@@ -404,5 +419,211 @@ describe("missing a match", () => {
     expect(await screen.findByText(HEADING)).toBeTruthy();
     expect(screen.getByText("2:00")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Queue/i }).disabled).toBe(true);
+  });
+});
+
+describe("teams", () => {
+  const roster = (over = {}) => ({
+    id: "team-1",
+    tag: "ACE",
+    name: "Aces High",
+    region: "na",
+    captainId: "user-1",
+    applicationsOpen: true,
+    createdAt: new Date().toISOString(),
+    members: [
+      {
+        userId: "user-1",
+        discordName: "Player1",
+        inGameName: "PLAYER_1",
+        role: "captain",
+        tier: "B",
+        placementsRemaining: 0,
+        joinedAt: new Date().toISOString(),
+      },
+      {
+        userId: "user-2",
+        discordName: "Aria",
+        inGameName: "ARIA",
+        role: "member",
+        tier: "A",
+        placementsRemaining: 0,
+        joinedAt: new Date().toISOString(),
+      },
+    ],
+    ...over,
+  });
+
+  const noTeam = { team: null, role: null, applications: [], myApplication: null };
+
+  const directory = [
+    { id: "team-2", tag: "BRV", name: "Bravo", region: "na", applicationsOpen: true, memberCount: 3, tier: "B+" },
+    { id: "team-3", tag: "CLD", name: "Cold", region: "na", applicationsOpen: false, memberCount: 5, tier: "A-" },
+  ];
+
+  const mine = (over) => server.myTeam.mockResolvedValue({ ...noTeam, ...over });
+
+  beforeEach(() => {
+    server.listTeams.mockResolvedValue({ teams: directory });
+    server.createTeam.mockResolvedValue({ teamId: "team-1" });
+    server.applyToTeam.mockResolvedValue({ applicationId: "app-1" });
+    server.withdrawApplication.mockResolvedValue({ ok: true });
+    server.decideApplication.mockResolvedValue({ ok: true });
+    server.setTeamRole.mockResolvedValue({ ok: true });
+    server.removeTeamMember.mockResolvedValue({ ok: true });
+    server.disbandTeam.mockResolvedValue({ ok: true });
+    server.leaveTeam.mockResolvedValue({ ok: true });
+    server.setApplicationsOpen.mockResolvedValue({ ok: true });
+  });
+
+  async function openTeams() {
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Teams/i }));
+  }
+
+  it("shows the directory when you have no team", async () => {
+    await openTeams();
+    expect(await screen.findByText("Bravo")).toBeTruthy();
+    expect(screen.getByText("Cold")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Register a team/i })).toBeTruthy();
+  });
+
+  it("will not let you apply to a team that closed applications", async () => {
+    await openTeams();
+    await screen.findByText("Cold");
+
+    const buttons = screen.getAllByRole("button", { name: /^Apply$/ });
+    expect(buttons[0].disabled).toBe(false);
+    expect(buttons[1].disabled).toBe(true);
+  });
+
+  it("applies, then offers to withdraw rather than apply again", async () => {
+    await openTeams();
+    await screen.findByText("Bravo");
+
+    // The reload after applying is what surfaces the outstanding application.
+    mine({ myApplication: { id: "app-1", teamId: "team-2" } });
+    await userEvent.click(screen.getAllByRole("button", { name: /^Apply$/ })[0]);
+
+    await waitFor(() => expect(server.applyToTeam).toHaveBeenCalledWith("team-2", null));
+    expect(await screen.findByRole("button", { name: /Withdraw/i })).toBeTruthy();
+  });
+
+  it("blocks a second application while one is out", async () => {
+    mine({ myApplication: { id: "app-1", teamId: "team-2" } });
+    await openTeams();
+    await screen.findByText("Cold");
+
+    // One at a time, so the other team is not an option either.
+    expect(screen.getByRole("button", { name: /^Apply$/ }).disabled).toBe(true);
+  });
+
+  it("registers a team from the form", async () => {
+    await openTeams();
+    await userEvent.click(await screen.findByRole("button", { name: /Register a team/i }));
+
+    await userEvent.type(screen.getByLabelText(/Team tag/i), "ace");
+    await userEvent.type(screen.getByLabelText(/Team name/i), "Aces High");
+
+    mine({ team: roster(), role: "captain" });
+    await userEvent.click(screen.getByRole("button", { name: /^Register$/ }));
+
+    // The tag is an identity people type, so it is upper-cased on the way in.
+    await waitFor(() =>
+      expect(server.createTeam).toHaveBeenCalledWith({
+        tag: "ACE",
+        name: "Aces High",
+        region: "na",
+      }),
+    );
+  });
+
+  it("shows your roster once you are on a team", async () => {
+    mine({ team: roster(), role: "captain" });
+    await openTeams();
+
+    expect(await screen.findByText("Aces High")).toBeTruthy();
+    expect(screen.getByText("Aria")).toBeTruthy();
+    expect(screen.getByText("captain")).toBeTruthy();
+  });
+
+  it("gives a captain the powers a member does not have", async () => {
+    mine({ team: roster(), role: "captain" });
+    await openTeams();
+    await screen.findByText("Aces High");
+
+    expect(screen.getByRole("button", { name: /Make officer/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Hand over the team/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Disband/i })).toBeTruthy();
+    // A captain leaves by handing over or disbanding, so there is no Leave.
+    expect(screen.queryByRole("button", { name: /^Leave$/ })).toBeNull();
+  });
+
+  it("gives a plain member none of them", async () => {
+    mine({ team: roster(), role: "member" });
+    await openTeams();
+    await screen.findByText("Aces High");
+
+    expect(screen.queryByRole("button", { name: /Make officer/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Remove from team/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Disband/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /^Leave$/ })).toBeTruthy();
+  });
+
+  it("makes disbanding take two clicks", async () => {
+    mine({ team: roster(), role: "captain" });
+    await openTeams();
+    await screen.findByText("Aces High");
+
+    await userEvent.click(screen.getByRole("button", { name: /Disband/i }));
+    expect(server.disbandTeam).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: /Confirm/i }));
+    await waitFor(() => expect(server.disbandTeam).toHaveBeenCalled());
+  });
+
+  it("reviews applications", async () => {
+    const applications = [
+      {
+        id: "app-9",
+        teamId: "team-1",
+        userId: "user-9",
+        discordName: "Rookie",
+        inGameName: "ROOKIE",
+        tier: null,
+        placementsRemaining: 3,
+        note: "I play entry",
+        createdAt: new Date().toISOString(),
+      },
+    ];
+    mine({ team: roster(), role: "captain", applications });
+    await openTeams();
+
+    await userEvent.click(await screen.findByRole("button", { name: /Applications \(1\)/i }));
+    expect(screen.getByText("Rookie")).toBeTruthy();
+    expect(screen.getByText("I play entry")).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: /Accept/i }));
+    await waitFor(() => expect(server.decideApplication).toHaveBeenCalledWith("app-9", true));
+  });
+
+  it("hides the application queue from a plain member", async () => {
+    mine({ team: roster(), role: "member" });
+    await openTeams();
+
+    await userEvent.click(await screen.findByRole("button", { name: /Applications/i }));
+    expect(screen.getByText(/Only the captain and officers/i)).toBeTruthy();
+  });
+
+  it("follows the roster when it changes under you", async () => {
+    mine({ team: roster(), role: "member" });
+    await openTeams();
+    await screen.findByText("Aces High");
+
+    mine({ team: roster({ name: "Renamed" }), role: "member" });
+    emit({ type: "team.updated", team: {} });
+
+    // Someone else accepted, promoted or removed a player.
+    expect(await screen.findByText("Renamed")).toBeTruthy();
   });
 });

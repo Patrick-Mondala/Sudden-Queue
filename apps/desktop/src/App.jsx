@@ -495,6 +495,302 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
 /* ─────────────────────────────────────────────────────────────
    PROFILE
    ───────────────────────────────────────────────────────────── */
+/**
+ * Teams: the one you are on, or the directory if you are not on one.
+ *
+ * A player has exactly one team, so this is two screens sharing a route rather
+ * than one screen with a lot of conditionals -- which is also how it reads.
+ */
+function TeamsScreen({ me, notify, onView }) {
+  const [state, setState] = useState(null); // { team, role, applications, myApplication }
+  const [directory, setDirectory] = useState(null);
+  const [regions, setRegions] = usePersistentState("sq.teams.filter", ["na", "sa", "eu", "asia"]);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [mine, list] = await Promise.all([server.myTeam(), server.listTeams()]);
+      setState(mine);
+      setDirectory(list.teams ?? []);
+    } catch (err) {
+      notify(err?.message ?? "Could not load teams");
+      setState({ team: null, role: null, applications: [], myApplication: null });
+      setDirectory([]);
+    }
+  }, [notify]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // The roster changes under you: someone is accepted, promoted, or the whole
+  // thing is disbanded while you are looking at it.
+  useEffect(() => {
+    return liveBus.on((e) => {
+      if (e.type?.startsWith("team.")) load();
+    });
+  }, [load]);
+
+  /** Runs a team action, reloads, and reports whatever the server said. */
+  const act = async (fn, after) => {
+    setBusy(true);
+    try {
+      await fn();
+      await load();
+      if (after) notify(after);
+    } catch (err) {
+      notify(err?.message ?? "That did not work");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (state === null) {
+    return <Panel style={{ height: "100%", display: "grid", placeItems: "center", color: T.dim, fontSize: 12.5 }}>Loading…</Panel>;
+  }
+
+  return state.team ? (
+    <MyTeamPanel me={me} state={state} busy={busy} act={act} onView={onView} />
+  ) : (
+    <TeamDirectory
+      teams={(directory ?? []).filter((t) => regions.includes(t.region))}
+      regions={regions}
+      setRegions={setRegions}
+      myApplication={state.myApplication}
+      busy={busy}
+      act={act}
+    />
+  );
+}
+
+/** The roster you are on, with whatever powers your role carries. */
+function MyTeamPanel({ me, state, busy, act, onView }) {
+  const [tab, setTab] = useState("roster");
+  const [confirmDisband, setConfirmDisband] = useState(false);
+  const team = state.team;
+  const isCaptain = state.role === "captain";
+  const canManage = isCaptain || state.role === "officer";
+  const officers = team.members.filter((m) => m.role === "officer").length;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16, height: "100%", minHeight: 0 }}>
+      <Panel pad={20}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <div style={{ width: 44, height: 44, borderRadius: 6, background: T.raised, display: "grid", placeItems: "center", fontFamily: T.mono, fontSize: 13, color: T.text, border: `1px solid ${T.line2}`, flexShrink: 0 }}>{team.tag}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <H size={22}>{team.name}</H>
+            <Eyebrow>{team.region.toUpperCase()} · {team.members.length}/{10} players · {officers} officer{officers === 1 ? "" : "s"}</Eyebrow>
+          </div>
+          {canManage && (
+            <Btn size="sm" disabled={busy} onClick={() => act(() => server.setApplicationsOpen(!team.applicationsOpen))}>
+              {team.applicationsOpen ? <Unlock size={13} color={T.ok} /> : <Lock size={13} color={T.danger} />}
+              Applications {team.applicationsOpen ? "open" : "closed"}
+            </Btn>
+          )}
+          {!isCaptain && (
+            <Btn size="sm" disabled={busy} onClick={() => act(() => server.leaveTeam(), "You left the team")}>Leave</Btn>
+          )}
+          {isCaptain && !confirmDisband && (
+            <Btn size="sm" kind="danger" disabled={busy} onClick={() => setConfirmDisband(true)}>Disband</Btn>
+          )}
+          {isCaptain && confirmDisband && (
+            <div style={{ display: "flex", gap: 6 }}>
+              <Btn size="sm" kind="danger" disabled={busy} onClick={() => act(() => server.disbandTeam(), `${team.name} disbanded`)}>Confirm</Btn>
+              <Btn size="sm" disabled={busy} onClick={() => setConfirmDisband(false)}>Cancel</Btn>
+            </div>
+          )}
+        </div>
+        {isCaptain && (
+          <div style={{ fontSize: 11.5, color: T.dim, marginTop: 10 }}>
+            A captain cannot simply leave. Hand the team to someone else first, or disband it.
+          </div>
+        )}
+      </Panel>
+
+      <Panel pad={0} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${T.line}` }}>
+          {[["roster", "Roster"], ["applications", `Applications${state.applications.length ? ` (${state.applications.length})` : ""}`]].map(([id, label]) => (
+            <button key={id} onClick={() => setTab(id)} style={{ flex: 1, background: "transparent", border: "none", borderBottom: `2px solid ${tab === id ? T.accent : "transparent"}`, color: tab === id ? T.text : T.muted, padding: "11px 4px", fontSize: 12.5, fontWeight: 600 }}>{label}</button>
+          ))}
+        </div>
+
+        <div style={{ flex: 1, overflow: "auto", padding: 10 }}>
+          {tab === "roster"
+            ? team.members.map((m) => (
+                <div key={m.userId} className="row-hover" style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px", borderRadius: 4 }}>
+                  <div onClick={() => onView?.({ id: m.userId, discordName: m.discordName, inGameName: m.inGameName, tier: m.tier, placementsRemaining: m.placementsRemaining, avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length] })} style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0, cursor: "pointer" }}>
+                    <Avatar p={{ discordName: m.discordName, avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length] }} size={30} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>
+                        {m.discordName}{m.userId === me.id && <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span>}
+                      </div>
+                      <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{m.inGameName ?? m.discordName}</div>
+                    </div>
+                  </div>
+                  <Tag color={m.role === "captain" ? T.captain : m.role === "officer" ? T.accent : T.muted}>{m.role}</Tag>
+                  <Rank tier={m.tier} placementsRemaining={m.placementsRemaining} size={11} />
+                  {isCaptain && m.userId !== me.id && (
+                    <button
+                      title={m.role === "officer" ? "Demote to member" : "Make officer"}
+                      disabled={busy}
+                      onClick={() => act(() => server.setTeamRole(m.userId, m.role === "officer" ? "member" : "officer"))}
+                      style={{ width: 26, height: 26, display: "grid", placeItems: "center", background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, color: m.role === "officer" ? T.accent : T.muted, flexShrink: 0 }}
+                    >
+                      <Shield size={13} />
+                    </button>
+                  )}
+                  {isCaptain && m.userId !== me.id && (
+                    <button
+                      title="Hand over the team"
+                      disabled={busy}
+                      onClick={() => act(() => server.transferCaptaincy(m.userId), `${m.discordName} now captains ${team.name}`)}
+                      style={{ width: 26, height: 26, display: "grid", placeItems: "center", background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, color: T.captain, flexShrink: 0 }}
+                    >
+                      <Star size={13} />
+                    </button>
+                  )}
+                  {canManage && m.userId !== me.id && m.role !== "captain" && (
+                    <button
+                      title="Remove from team"
+                      disabled={busy}
+                      onClick={() => act(() => server.removeTeamMember(m.userId), `${m.discordName} removed`)}
+                      style={{ width: 26, height: 26, display: "grid", placeItems: "center", background: T.dangerDim, border: `1px solid ${T.danger}`, borderRadius: 4, color: T.danger, flexShrink: 0 }}
+                    >
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+              ))
+            : !canManage ? (
+              <div style={{ color: T.muted, fontSize: 12.5, padding: 20, textAlign: "center" }}>Only the captain and officers review applications.</div>
+            ) : state.applications.length === 0 ? (
+              <div style={{ color: T.dim, fontSize: 12.5, padding: 20, textAlign: "center", lineHeight: 1.5 }}>
+                {team.applicationsOpen ? "Nobody has applied yet." : "Applications are closed."}
+              </div>
+            ) : (
+              state.applications.map((a) => (
+                <div key={a.id} style={{ padding: "10px 8px", borderRadius: 4, borderBottom: `1px solid ${T.line}` }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: a.note ? 8 : 0 }}>
+                    <Avatar p={{ discordName: a.discordName, avatarColor: AV_COLORS[Math.abs(hashString(a.userId)) % AV_COLORS.length] }} size={28} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>{a.discordName}</div>
+                      <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{a.inGameName ?? a.discordName}</div>
+                    </div>
+                    <Rank tier={a.tier} placementsRemaining={a.placementsRemaining} size={11} />
+                    <Btn size="sm" kind="primary" disabled={busy} onClick={() => act(() => server.decideApplication(a.id, true), `${a.discordName} joined ${team.name}`)}>Accept</Btn>
+                    <Btn size="sm" disabled={busy} onClick={() => act(() => server.decideApplication(a.id, false), "Application denied")}>Deny</Btn>
+                  </div>
+                  {a.note && <div style={{ fontSize: 12, color: T.muted, lineHeight: 1.45, paddingLeft: 38 }}>{a.note}</div>}
+                </div>
+              ))
+            )}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+/** No team yet: browse for one, or start your own. */
+function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act }) {
+  const [creating, setCreating] = useState(false);
+  const [tag, setTag] = useState("");
+  const [name, setName] = useState("");
+  const [region, setRegion] = useState(["na"]);
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: 16, height: "100%", minHeight: 0 }}>
+      <Panel pad={0} style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderBottom: `1px solid ${T.line}` }}>
+          <Eyebrow style={{ flex: 1 }}>Teams</Eyebrow>
+          <RegionPicker value={regions} onChange={setRegions} />
+        </div>
+
+        <div style={{ flex: 1, overflow: "auto", padding: 8 }}>
+          {teams.length === 0 ? (
+            <div style={{ color: T.dim, fontSize: 12.5, padding: 24, textAlign: "center", lineHeight: 1.5 }}>
+              No teams in these regions yet. Register the first one.
+            </div>
+          ) : (
+            teams.map((t) => (
+              <div key={t.id} className="row-hover" style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 8px", borderRadius: 4 }}>
+                <div style={{ width: 32, height: 32, borderRadius: 4, background: T.raised, display: "grid", placeItems: "center", fontFamily: T.mono, fontSize: 10.5, color: T.muted, border: `1px solid ${T.line2}`, flexShrink: 0 }}>{t.tag}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>{t.name}</div>
+                  <div style={{ fontSize: 11, color: T.muted, whiteSpace: "nowrap" }}>{t.region.toUpperCase()} · {t.memberCount} player{t.memberCount === 1 ? "" : "s"}</div>
+                </div>
+                <Tier tier={t.tier} size={12} />
+                <Tag color={t.applicationsOpen ? T.ok : T.dim}>{t.applicationsOpen ? "Open" : "Closed"}</Tag>
+                {myApplication?.teamId === t.id ? (
+                  <Btn size="sm" disabled={busy} onClick={() => act(() => server.withdrawApplication(), "Application withdrawn")} style={{ minWidth: 88, justifyContent: "center" }}>
+                    <Dot pulse /> Withdraw
+                  </Btn>
+                ) : (
+                  <Btn
+                    size="sm"
+                    kind={t.applicationsOpen ? "primary" : "ghost"}
+                    disabled={busy || !t.applicationsOpen || !!myApplication || t.memberCount >= 10}
+                    title={myApplication ? "Withdraw your other application first" : undefined}
+                    onClick={() => act(() => server.applyToTeam(t.id, null), `Applied to ${t.name}`)}
+                    style={{ minWidth: 88, justifyContent: "center" }}
+                  >
+                    Apply
+                  </Btn>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </Panel>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
+        <Panel>
+          <Eyebrow style={{ marginBottom: 10 }}>Start a team</Eyebrow>
+          {!creating ? (
+            <>
+              <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5, marginBottom: 12 }}>
+                You become captain, and can appoint officers and review applications.
+              </div>
+              <Btn kind="primary" style={{ width: "100%", justifyContent: "center" }} onClick={() => setCreating(true)}>
+                <Plus size={13} /> Register a team
+              </Btn>
+            </>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <input value={tag} onChange={(e) => setTag(e.target.value.toUpperCase().slice(0, 4))} placeholder="Tag (max 4)" aria-label="Team tag" style={{ background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13, fontFamily: T.mono }} />
+              <input value={name} onChange={(e) => setName(e.target.value.slice(0, 24))} placeholder="Team name" aria-label="Team name" style={{ background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13 }} />
+              <RegionPicker value={region} onChange={(v) => setRegion(v.slice(-1))} multi={false} />
+              <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                <Btn
+                  kind="primary"
+                  style={{ flex: 1, justifyContent: "center" }}
+                  disabled={busy || !tag.trim() || !name.trim() || region.length === 0}
+                  onClick={() =>
+                    act(async () => {
+                      await server.createTeam({ tag: tag.trim(), name: name.trim(), region: region[0] });
+                      setCreating(false);
+                      setTag("");
+                      setName("");
+                    }, "Team registered")
+                  }
+                >
+                  Register
+                </Btn>
+                <Btn onClick={() => setCreating(false)}>Cancel</Btn>
+              </div>
+            </div>
+          )}
+        </Panel>
+
+        <Panel>
+          <Eyebrow style={{ marginBottom: 8 }}>How teams work</Eyebrow>
+          <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.55 }}>
+            One team per player. Any number of officers. Captains and officers review applications
+            and manage the roster. You can only have one application out at a time.
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
 /** Shown where a real feature will go, instead of inventing data for it. */
 function ComingSoon({ eyebrow, title, body }) {
   return (
@@ -1457,14 +1753,7 @@ export default function App() {
         body="Scrims aren't wired up yet. Once teams exist, captains will list here for practice matches — unrated, but running the same accept and report flow as a PUG."
       />
     );
-  else if (nav === "teams")
-    content = (
-      <ComingSoon
-        eyebrow="Teams"
-        title="Find a team"
-        body="Teams aren't wired up yet. Once they are, you'll be able to register one, appoint officers, review applications, and list for scrims."
-      />
-    );
+  else if (nav === "teams") content = <TeamsScreen me={me} notify={notify} onView={setViewProfile} />;
   else if (nav === "ladder")
     content = (
       <ComingSoon
