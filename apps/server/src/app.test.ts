@@ -2736,3 +2736,192 @@ describe("population counters", () => {
     expectNoRatings(counts.at(-1));
   });
 });
+
+describe("suspending an account", () => {
+  /** A socket that reports whether it was closed, not just what it heard. */
+  function watched(userId: string) {
+    const heard: { type: string; text?: string }[] = [];
+    let closed = false;
+    const conn = {
+      send: (payload: string) => heard.push(JSON.parse(payload)),
+      close: () => { closed = true; },
+    };
+    app.notifier.add(userId, conn);
+    connections.push({ userId, conn: conn as unknown as { send: () => void; close: () => void } });
+    return { heard, wasClosed: () => closed };
+  }
+
+  async function makeGameMaster() {
+    const gm = await login();
+    await handle.db.update(users).set({ role: "game_master" }).where(eq(users.id, gm.userId));
+    return gm;
+  }
+
+  const suspend = async (
+    gm: { token: string },
+    targetId: string,
+    body: Record<string, unknown>,
+  ) =>
+    app.server.inject({
+      method: "POST",
+      url: `/mod/users/${targetId}/suspend`,
+      headers: authed(gm.token),
+      payload: body,
+    });
+
+  it("is refused to an ordinary player", async () => {
+    const player = await login();
+    const target = await login();
+
+    const res = await suspend(player, target.userId, { hours: 24, reason: "because" });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("ends the session there and then, not at their next login", async () => {
+    const gm = await makeGameMaster();
+    const target = await login();
+
+    const before = await app.server.inject({ method: "GET", url: "/me", headers: authed(target.token) });
+    expect(before.statusCode).toBe(200);
+
+    await suspend(gm, target.userId, { hours: 24, reason: "Throwing matches" });
+
+    // Otherwise someone already signed in and queueing is not suspended at all.
+    const after = await app.server.inject({ method: "GET", url: "/me", headers: authed(target.token) });
+    expect(after.statusCode).toBe(401);
+  });
+
+  it("tells them why before it takes the socket away", async () => {
+    const gm = await makeGameMaster();
+    const target = await login();
+    const socket = watched(target.userId);
+
+    await suspend(gm, target.userId, { hours: 24, reason: "Throwing matches" });
+
+    // The order matters: a closed socket cannot deliver an explanation, and
+    // being disconnected with no reason is how you get an angry DM.
+    const told = socket.heard.find((e) => e.type === "notification");
+    expect(told?.text).toContain("Throwing matches");
+    expect(socket.wasClosed()).toBe(true);
+  });
+
+  it("takes the seat they were holding in the queue", async () => {
+    const gm = await makeGameMaster();
+    const target = await login();
+    watched(target.userId);
+
+    await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(target.token),
+      payload: { regions: ["na"] },
+    });
+    expect(await app.services.queue.countQueuedPlayers()).toBe(1);
+
+    await suspend(gm, target.userId, { hours: 24, reason: "Throwing matches" });
+
+    expect(await app.services.queue.countQueuedPlayers()).toBe(0);
+  });
+
+  it("keeps them out afterwards", async () => {
+    const gm = await makeGameMaster();
+    const target = await login();
+    await suspend(gm, target.userId, { hours: 24, reason: "Throwing matches" });
+
+    // A fresh session, the way they would get one by signing in again.
+    const again = await app.services.sessions.create(target.userId);
+    const res = await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(again.token),
+      payload: { regions: ["na"] },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error).toBe("BANNED");
+  });
+
+  it("refuses a duration outside the bounds", async () => {
+    const gm = await makeGameMaster();
+    const target = await login();
+
+    const res = await suspend(gm, target.userId, { hours: 0, reason: "because" });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("refuses one with no reason", async () => {
+    const gm = await makeGameMaster();
+    const target = await login();
+
+    const res = await suspend(gm, target.userId, { hours: 24 });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("lets a Game Master lift it again", async () => {
+    const gm = await makeGameMaster();
+    const target = await login();
+    await suspend(gm, target.userId, { hours: 24, reason: "Throwing matches" });
+
+    const res = await app.server.inject({
+      method: "POST",
+      url: `/mod/users/${target.userId}/reinstate`,
+      headers: authed(gm.token),
+      payload: { note: "Appealed" },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const again = await app.services.sessions.create(target.userId);
+    const queued = await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(again.token),
+      payload: { regions: ["na"] },
+    });
+    expect(queued.statusCode).toBe(200);
+  });
+
+  it("lists who is serving one, and what was done to them", async () => {
+    const gm = await makeGameMaster();
+    const target = await login();
+    await suspend(gm, target.userId, { hours: 24, reason: "Throwing matches" });
+
+    const list = await app.server.inject({
+      method: "GET",
+      url: "/mod/suspensions",
+      headers: authed(gm.token),
+    });
+    expect(list.json().users.map((u: { userId: string }) => u.userId)).toContain(target.userId);
+
+    const history = await app.server.inject({
+      method: "GET",
+      url: `/mod/users/${target.userId}/history`,
+      headers: authed(gm.token),
+    });
+    expect(history.json().entries[0]).toMatchObject({ eventType: "user.suspended" });
+  });
+
+  it("finds an account without publishing a rating", async () => {
+    const gm = await makeGameMaster();
+    const target = await login();
+    await handle.db.update(users).set({ discordName: "Griefer99" }).where(eq(users.id, target.userId));
+
+    const res = await app.server.inject({
+      method: "GET",
+      url: "/mod/users?q=grief",
+      headers: authed(gm.token),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().users.map((u: { userId: string }) => u.userId)).toContain(target.userId);
+    expectNoRatings(res.json());
+  });
+
+  it("keeps the search away from ordinary players", async () => {
+    const player = await login();
+    const res = await app.server.inject({
+      method: "GET",
+      url: "/mod/users?q=a",
+      headers: authed(player.token),
+    });
+    expect(res.statusCode).toBe(403);
+  });
+});

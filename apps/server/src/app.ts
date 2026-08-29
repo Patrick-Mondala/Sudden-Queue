@@ -34,6 +34,7 @@ import { TeamService } from "./team/service.js";
 import { ScrimService } from "./scrim/service.js";
 import { LadderService } from "./ladder/service.js";
 import { ChatService } from "./chat/service.js";
+import { ModerationService, MAX_SUSPENSION_HOURS, MIN_SUSPENSION_HOURS, SUSPENSION_REASON_MAX_LENGTH } from "./moderation/service.js";
 import { QueueRepository } from "./queue/repository.js";
 import { Notifier } from "./realtime/notifier.js";
 import { Population } from "./realtime/population.js";
@@ -68,6 +69,7 @@ export interface App {
     queue: QueueRepository;
     lifecycle: MatchLifecycle;
     reporting: MatchReporting;
+    moderation: ModerationService;
     team: TeamService;
     scrim: ScrimService;
     ladder: LadderService;
@@ -176,6 +178,7 @@ export async function buildApp({
   const queue = new QueueRepository(db);
   const lifecycle = new MatchLifecycle(db);
   const reporting = new MatchReporting(db);
+  const moderation = new ModerationService(db);
 
   // ---------------------------------------------------------------- realtime
 
@@ -1576,6 +1579,125 @@ export async function buildApp({
     return result.data;
   });
 
+  const suspendBody = z.object({
+    hours: z.number().int().min(MIN_SUSPENSION_HOURS).max(MAX_SUSPENSION_HOURS),
+    reason: z.string().min(1).max(SUSPENSION_REASON_MAX_LENGTH),
+  });
+
+  const moderationStatus = (code: string): number => {
+    if (code === "USER_NOT_FOUND") return 404;
+    if (code === "CANNOT_SUSPEND_STAFF") return 403;
+    if (code.startsWith("INVALID_")) return 400;
+    return 409;
+  };
+
+  /**
+   * Ends a suspended player's session there and then.
+   *
+   * Without this a suspension only bites at the next login, which for someone
+   * already signed in and queueing is no suspension at all. Sessions go first
+   * so a reconnect cannot succeed, then the sockets, then the seat they were
+   * holding in a party and queue.
+   */
+  async function evict(userId: string, reason: string): Promise<void> {
+    notifier.toUser(userId, {
+      type: "notification",
+      level: "error",
+      text: `Your account has been suspended. ${reason}`,
+    });
+
+    await sessions.revokeAllForUser(userId);
+
+    const partyId = await party.partyIdFor(userId);
+    if (partyId) {
+      await queue.leave(partyId);
+      const others = await party.memberCount(partyId);
+      if (others > 1) {
+        const left = await party.leave(userId);
+        if (!isFail(left)) await broadcastParty(partyId);
+      }
+      notifier.toUsers(await party.memberIds([partyId]), { type: "queue.left", partyId });
+    }
+
+    // Last: the notification above has to reach them before the socket goes.
+    notifier.closeUser(userId);
+    population.nudge();
+  }
+
+  server.get("/mod/users", { preHandler: authenticate }, async (req, reply) => {
+    if (!requireGameMaster(req, reply)) return reply;
+    const q = String((req.query as Record<string, string>)?.q ?? "");
+    return { users: await moderation.search(q) };
+  });
+
+  server.get("/mod/suspensions", { preHandler: authenticate }, async (req, reply) => {
+    if (!requireGameMaster(req, reply)) return reply;
+    return { users: await moderation.suspended() };
+  });
+
+  server.get("/mod/users/:id/history", { preHandler: authenticate }, async (req, reply) => {
+    if (!requireGameMaster(req, reply)) return reply;
+    const { id } = req.params as { id: string };
+    return { entries: await moderation.historyFor(id) };
+  });
+
+  server.post("/mod/users/:id/suspend", { preHandler: authenticate }, async (req, reply) => {
+    if (!requireGameMaster(req, reply)) return reply;
+
+    const body = suspendBody.safeParse(req.body);
+    if (!body.success) {
+      return reply.code(400).send({
+        error: "BAD_REQUEST",
+        message: `A duration in hours (${MIN_SUSPENSION_HOURS}-${MAX_SUSPENSION_HOURS}) and a reason are required`,
+      });
+    }
+
+    const user = requireUser(req);
+    const { id } = req.params as { id: string };
+    const result = await moderation.suspend(
+      { userId: user.userId, role: user.role },
+      id,
+      body.data.hours,
+      body.data.reason,
+    );
+    if (isFail(result)) {
+      return reply
+        .code(moderationStatus(result.code))
+        .send({ error: result.code, message: result.message });
+    }
+
+    await evict(id, result.data.reason);
+
+    return {
+      userId: result.data.userId,
+      discordName: result.data.discordName,
+      until: result.data.until.toISOString(),
+      reason: result.data.reason,
+    };
+  });
+
+  server.post("/mod/users/:id/reinstate", { preHandler: authenticate }, async (req, reply) => {
+    if (!requireGameMaster(req, reply)) return reply;
+
+    const note = z.object({ note: z.string().max(SUSPENSION_REASON_MAX_LENGTH).optional() });
+    const body = note.safeParse(req.body ?? {});
+    const user = requireUser(req);
+    const { id } = req.params as { id: string };
+
+    const result = await moderation.lift(
+      { userId: user.userId, role: user.role },
+      id,
+      body.success ? (body.data.note ?? "") : "",
+    );
+    if (isFail(result)) {
+      return reply
+        .code(moderationStatus(result.code))
+        .send({ error: result.code, message: result.message });
+    }
+
+    return result.data;
+  });
+
   server.get("/match/:id", { preHandler: authenticate }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const view = await lifecycle.view(id);
@@ -1779,6 +1901,6 @@ export async function buildApp({
     matchmaker,
     sweeper,
     sweepScrims,
-    services: { auth, sessions, party, queue, lifecycle, reporting, team, scrim, ladder, chat },
+    services: { auth, sessions, party, queue, lifecycle, reporting, moderation, team, scrim, ladder, chat },
   };
 }

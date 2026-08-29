@@ -140,6 +140,27 @@ export class Notifier {
     for (const id of [...this.byUser.keys()]) this.toUser(id, event);
   }
 
+  /**
+   * Closes and forgets one user's connections.
+   *
+   * Used when an account stops being allowed to hold one at all. The close
+   * runs through the same bookkeeping as any other drop, so whatever listens
+   * for someone going offline still hears about it.
+   */
+  closeUser(userId: string): void {
+    const set = this.byUser.get(userId);
+    if (!set) return;
+
+    for (const conn of [...set]) {
+      try {
+        conn.close();
+      } catch {
+        // Already gone; dropUser below forgets it either way.
+      }
+    }
+    this.dropUser(userId);
+  }
+
   /** Closes and forgets every connection. Used on shutdown. */
   closeAll(): void {
     for (const set of this.byUser.values()) {

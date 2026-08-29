@@ -171,6 +171,14 @@ export const api = {
   resolveDispute: (matchId, winner, note) =>
     request(`/mod/disputes/${matchId}/resolve`, { method: "POST", body: { winner, note } }),
 
+  findPlayers: (q) => request(`/mod/users?q=${encodeURIComponent(q)}`),
+  suspensions: () => request("/mod/suspensions"),
+  moderationHistory: (userId) => request(`/mod/users/${userId}/history`),
+  suspend: (userId, hours, reason) =>
+    request(`/mod/users/${userId}/suspend`, { method: "POST", body: { hours, reason } }),
+  reinstate: (userId, note) =>
+    request(`/mod/users/${userId}/reinstate`, { method: "POST", body: { note } }),
+
   chatHistory: (channel) => request(`/chat/${channel}`),
 
   ladder: (limit, offset) => request(`/ladder?limit=${limit}&offset=${offset}`),

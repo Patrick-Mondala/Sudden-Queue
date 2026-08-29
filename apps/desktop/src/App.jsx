@@ -1089,6 +1089,316 @@ const LADDER_PAGE = 50;
  * time. That is why a ruling needs a note: the ten people it lands on deserve a
  * reason, and the next Game Master to look deserves to know what was seen.
  */
+/** How long a suspension can run for, offered as the durations a GM reaches for. */
+const SUSPENSION_OPTIONS = [
+  ["1 hour", 1],
+  ["24 hours", 24],
+  ["3 days", 72],
+  ["1 week", 168],
+  ["30 days", 720],
+  ["1 year", 8760],
+];
+
+/** Renders a suspension end as something a person reads, not a timestamp. */
+function until(iso) {
+  const ms = Date.parse(iso) - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return "expired";
+  const hours = Math.round(ms / 3_600_000);
+  if (hours < 48) return `${hours}h left`;
+  return `${Math.round(hours / 24)}d left`;
+}
+
+/**
+ * Acting on an account.
+ *
+ * A Game Master could already judge a dispute but not touch the person who
+ * caused it, which left the only remedy as hand-written SQL. Every action here
+ * is recorded and reversible; nothing on this panel is permanent.
+ */
+function PlayersPanel({ me, notify }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState(null);
+  const [suspended, setSuspended] = useState([]);
+  const [target, setTarget] = useState(null);
+  const [hours, setHours] = useState(24);
+  const [reason, setReason] = useState("");
+  const [history, setHistory] = useState([]);
+  const [busy, setBusy] = useState(false);
+
+  const loadSuspended = useCallback(async () => {
+    try {
+      const res = await server.suspensions();
+      setSuspended(res.users ?? []);
+    } catch (err) {
+      notify(err?.message ?? "Could not load suspensions");
+    }
+  }, [notify]);
+
+  useEffect(() => { loadSuspended(); }, [loadSuspended]);
+
+  // Typing is not a search. Waiting a beat keeps a five-letter name from being
+  // five queries against every account on the server.
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length === 0) { setResults(null); return undefined; }
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await server.findPlayers(q);
+        if (!cancelled) setResults(res.users ?? []);
+      } catch (err) {
+        if (!cancelled) notify(err?.message ?? "Search failed");
+      }
+    }, 250);
+
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [query, notify]);
+
+  const open = useCallback(async (user) => {
+    setTarget(user);
+    setReason("");
+    setHours(24);
+    try {
+      const res = await server.moderationHistory(user.userId);
+      setHistory(res.entries ?? []);
+    } catch {
+      // The history is context, not the action. Losing it should not stop a
+      // Game Master from acting on what they already know.
+      setHistory([]);
+    }
+  }, []);
+
+  const refresh = async (userId) => {
+    await loadSuspended();
+    if (query.trim()) {
+      try {
+        const res = await server.findPlayers(query.trim());
+        setResults(res.users ?? []);
+        const fresh = (res.users ?? []).find((u) => u.userId === userId);
+        if (fresh) setTarget(fresh);
+      } catch {
+        // Leave the list as it was; the action itself already succeeded.
+      }
+    }
+    try {
+      const res = await server.moderationHistory(userId);
+      setHistory(res.entries ?? []);
+    } catch {
+      setHistory([]);
+    }
+  };
+
+  const doSuspend = async () => {
+    if (!target || reason.trim().length === 0) return;
+    setBusy(true);
+    try {
+      const res = await server.suspend(target.userId, hours, reason.trim());
+      notify(`${res.discordName} suspended`);
+      setReason("");
+      await refresh(target.userId);
+    } catch (err) {
+      notify(err?.message ?? "Could not suspend");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doReinstate = async () => {
+    if (!target) return;
+    setBusy(true);
+    try {
+      await server.reinstate(target.userId, reason.trim());
+      notify(`${target.discordName} reinstated`);
+      setReason("");
+      await refresh(target.userId);
+    } catch (err) {
+      notify(err?.message ?? "Could not reinstate");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const listed = results ?? suspended;
+  const serving = target && Date.parse(target.bannedUntil ?? 0) > Date.now();
+
+  const row = (u) => (
+    <div
+      key={u.userId}
+      className="row-hover"
+      onClick={() => open(u)}
+      style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 4, cursor: "pointer", background: u.userId === target?.userId ? T.raised : "transparent" }}
+    >
+      <Avatar p={{ discordName: u.discordName, avatarColor: AV_COLORS[Math.abs(hashString(u.userId)) % AV_COLORS.length] }} size={26} />
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <PlayerName name={u.discordName} isGameMaster={u.role !== "player"} style={{ fontWeight: 600, fontSize: 13 }} />
+        <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {u.inGameName ?? u.discordName}
+        </div>
+      </div>
+      {Date.parse(u.bannedUntil ?? 0) > Date.now() && <Tag color={T.danger} bg={T.dangerDim}>{until(u.bannedUntil)}</Tag>}
+    </div>
+  );
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 16, height: "100%", minHeight: 0 }}>
+      <Panel pad={0} style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <div style={{ padding: "14px 16px", borderBottom: `1px solid ${T.line}` }}>
+          <Eyebrow>{results ? "Search" : "Currently suspended"}</Eyebrow>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Discord name, in-game name, or Discord ID"
+            aria-label="Find a player"
+            style={{ width: "100%", boxSizing: "border-box", marginTop: 8, background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 12.5 }}
+          />
+        </div>
+
+        <div style={{ flex: 1, overflow: "auto", padding: 8 }}>
+          {listed.length === 0 ? (
+            <div style={{ color: T.dim, fontSize: 12.5, padding: 20, textAlign: "center", lineHeight: 1.5 }}>
+              {results ? "Nobody by that name." : "Nobody is suspended."}
+            </div>
+          ) : listed.map(row)}
+        </div>
+      </Panel>
+
+      {!target ? (
+        <Panel style={{ display: "grid", placeItems: "center", color: T.dim, fontSize: 12.5 }}>
+          Pick a player to act on.
+        </Panel>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
+          <Panel pad={20}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <Avatar p={{ discordName: target.discordName, avatarColor: AV_COLORS[Math.abs(hashString(target.userId)) % AV_COLORS.length] }} size={40} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <PlayerName name={target.discordName} isGameMaster={target.role !== "player"} style={{ fontWeight: 700, fontSize: 16 }} />
+                <div style={{ fontFamily: T.mono, fontSize: 11, color: T.muted }}>
+                  {target.inGameName ?? "no in-game name"} · {target.discordId}
+                </div>
+              </div>
+            </div>
+
+            {serving && (
+              <div style={{ marginTop: 14, padding: "10px 12px", background: T.dangerDim, border: `1px solid ${T.danger}`, borderRadius: 5 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600, color: T.danger }}>
+                  Suspended — {until(target.bannedUntil)}
+                </div>
+                {target.banReason && (
+                  <div style={{ fontSize: 12, color: T.muted, marginTop: 4, lineHeight: 1.4 }}>{target.banReason}</div>
+                )}
+              </div>
+            )}
+
+            <div style={{ marginTop: 16 }}>
+              <Eyebrow style={{ marginBottom: 8 }}>{serving ? "Note (optional)" : "Reason"}</Eyebrow>
+              <input
+                value={reason}
+                onChange={(e) => setReason(e.target.value.slice(0, 500))}
+                placeholder={serving ? "Why it is being lifted" : "What they did — they are shown this"}
+                aria-label={serving ? "Note" : "Reason"}
+                style={{ width: "100%", boxSizing: "border-box", background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13 }}
+              />
+            </div>
+
+            {serving ? (
+              <Btn kind="primary" disabled={busy} onClick={doReinstate} style={{ marginTop: 14 }}>
+                Lift the suspension
+              </Btn>
+            ) : (
+              <>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 14 }}>
+                  {SUSPENSION_OPTIONS.map(([label, value]) => (
+                    <button
+                      key={value}
+                      onClick={() => setHours(value)}
+                      style={{ background: hours === value ? T.accentDim : "transparent", border: `1px solid ${hours === value ? T.accent : T.line2}`, color: hours === value ? T.accent : T.muted, borderRadius: 4, padding: "5px 10px", fontSize: 11.5, fontFamily: T.mono }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <Btn
+                  kind="danger"
+                  disabled={busy || reason.trim().length === 0 || target.userId === me.id}
+                  onClick={doSuspend}
+                  style={{ marginTop: 14 }}
+                >
+                  Suspend
+                </Btn>
+                {target.userId === me.id && (
+                  <div style={{ fontSize: 11.5, color: T.dim, marginTop: 8 }}>You cannot suspend yourself.</div>
+                )}
+              </>
+            )}
+          </Panel>
+
+          <Panel pad={0} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+            <div style={{ padding: "12px 16px", borderBottom: `1px solid ${T.line}` }}>
+              <Eyebrow>Record</Eyebrow>
+            </div>
+            <div style={{ flex: 1, overflow: "auto", padding: 8 }}>
+              {history.length === 0 ? (
+                <div style={{ color: T.dim, fontSize: 12.5, padding: 20, textAlign: "center" }}>
+                  Nothing on record.
+                </div>
+              ) : history.map((h) => (
+                <div key={h.id} style={{ padding: "9px 10px", borderBottom: `1px solid ${T.line}` }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Tag color={h.eventType === "user.suspended" ? T.danger : T.ok}>
+                      {h.eventType === "user.suspended" ? "suspended" : "reinstated"}
+                    </Tag>
+                    <span style={{ fontSize: 11.5, color: T.muted }}>by {h.actorName ?? "unknown"}</span>
+                    <span style={{ flex: 1, textAlign: "right", fontSize: 11, color: T.dim }}>{ago(Date.parse(h.createdAt))}</span>
+                  </div>
+                  {(h.payload?.reason || h.payload?.note) && (
+                    <div style={{ fontSize: 12, color: T.muted, marginTop: 5, lineHeight: 1.4 }}>
+                      {h.payload.reason ?? h.payload.note}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </Panel>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The Game Master screen: judging matches, and acting on people.
+ *
+ * Two tabs rather than two rail entries -- a Game Master looking at a dispute
+ * is usually one step from wanting the person who caused it, and making that
+ * a different destination makes it feel like a different job.
+ */
+function ModerationScreen({ me, notify, onView }) {
+  const [tab, setTab] = useState("disputes");
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12, height: "100%", minHeight: 0 }}>
+      <div style={{ display: "flex", gap: 6 }}>
+        {[["disputes", "Disputes"], ["players", "Players"]].map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => setTab(id)}
+            style={{ background: tab === id ? T.raised : "transparent", border: `1px solid ${tab === id ? T.line2 : "transparent"}`, color: tab === id ? T.text : T.muted, borderRadius: 4, padding: "7px 14px", fontSize: 12.5, fontWeight: 600 }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        {tab === "disputes"
+          ? <DisputesScreen me={me} notify={notify} onView={onView} />
+          : <PlayersPanel me={me} notify={notify} />}
+      </div>
+    </div>
+  );
+}
+
 function DisputesScreen({ me, notify, onView }) {
   const [disputes, setDisputes] = useState(null);
   const [openId, setOpenId] = useState(null);
@@ -2619,7 +2929,7 @@ export default function App() {
   else if (nav === "teams") content = <TeamsScreen me={me} notify={notify} onView={setViewProfile} />;
   else if (nav === "disputes")
     content = me.isGameMaster ? (
-      <DisputesScreen me={me} notify={notify} onView={setViewProfile} />
+      <ModerationScreen me={me} notify={notify} onView={setViewProfile} />
     ) : (
       <ComingSoon
         eyebrow="Disputes"

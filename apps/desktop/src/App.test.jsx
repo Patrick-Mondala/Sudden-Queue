@@ -85,6 +85,11 @@ const server = {
   chatHistory: vi.fn(),
   disputes: vi.fn(),
   resolveDispute: vi.fn(),
+  findPlayers: vi.fn(),
+  suspensions: vi.fn(),
+  moderationHistory: vi.fn(),
+  suspend: vi.fn(),
+  reinstate: vi.fn(),
   setStarter: vi.fn(),
   confirmLineup: vi.fn(),
   invite: vi.fn(),
@@ -185,6 +190,9 @@ beforeEach(() => {
   server.playerProfile.mockResolvedValue(null);
   server.chatHistory.mockResolvedValue({ channel: "", messages: [] });
   server.disputes.mockResolvedValue([]);
+  server.findPlayers.mockResolvedValue({ users: [] });
+  server.suspensions.mockResolvedValue({ users: [] });
+  server.moderationHistory.mockResolvedValue({ entries: [] });
 });
 
 afterEach(cleanup);
@@ -1525,5 +1533,150 @@ describe("the population counters", () => {
     // The whole point: these arrive unasked. A poll here was two queries per
     // signed-in client every eight seconds.
     expect(server.queueStats).not.toHaveBeenCalled();
+  });
+});
+
+describe("suspending a player", () => {
+  const GM = { ...PROFILE, isGameMaster: true };
+
+  const account = (over = {}) => ({
+    userId: "user-9",
+    discordId: "130891065069666304",
+    discordName: "Griefer99",
+    inGameName: "GRIEF_X",
+    role: "player",
+    bannedUntil: null,
+    banReason: null,
+    ...over,
+  });
+
+  async function openPlayers() {
+    server.me.mockResolvedValue(GM);
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Disputes/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^Players$/i }));
+  }
+
+  it("is not reachable by an ordinary player", async () => {
+    await signedIn();
+    // The rail does not carry a tab that would only ever answer 403.
+    expect(screen.queryByRole("button", { name: /Disputes/i })).toBeNull();
+  });
+
+  it("lists who is serving one before anything is searched", async () => {
+    server.suspensions.mockResolvedValue({
+      users: [account({ bannedUntil: new Date(Date.now() + 86_400_000).toISOString(), banReason: "Throwing" })],
+    });
+    await openPlayers();
+
+    expect(await screen.findByText("Griefer99")).toBeTruthy();
+    expect(screen.getByText(/Currently suspended/i)).toBeTruthy();
+  });
+
+  it("finds an account by name", async () => {
+    server.findPlayers.mockResolvedValue({ users: [account()] });
+    await openPlayers();
+
+    await userEvent.type(screen.getByLabelText(/Find a player/i), "grief");
+
+    expect(await screen.findByText("Griefer99")).toBeTruthy();
+    await waitFor(() => expect(server.findPlayers).toHaveBeenCalledWith("grief"));
+  });
+
+  it("sends the duration and reason that were picked", async () => {
+    server.findPlayers.mockResolvedValue({ users: [account()] });
+    server.suspend.mockResolvedValue({ discordName: "Griefer99", until: new Date().toISOString() });
+    await openPlayers();
+
+    await userEvent.type(screen.getByLabelText(/Find a player/i), "grief");
+    await userEvent.click(await screen.findByText("Griefer99"));
+    await userEvent.click(await screen.findByRole("button", { name: /^1 week$/i }));
+    await userEvent.type(screen.getByLabelText(/^Reason$/i), "Throwing matches");
+    await userEvent.click(screen.getByRole("button", { name: /^Suspend$/i }));
+
+    await waitFor(() =>
+      expect(server.suspend).toHaveBeenCalledWith("user-9", 168, "Throwing matches"),
+    );
+  });
+
+  it("will not send one without a reason", async () => {
+    server.findPlayers.mockResolvedValue({ users: [account()] });
+    await openPlayers();
+
+    await userEvent.type(screen.getByLabelText(/Find a player/i), "grief");
+    await userEvent.click(await screen.findByText("Griefer99"));
+
+    // The player is shown this text when they are turned away, so a blank one
+    // is worse than no suspension.
+    await userEvent.click(screen.getByRole("button", { name: /^Suspend$/i }));
+    expect(server.suspend).not.toHaveBeenCalled();
+  });
+
+  it("offers to lift one that is already running, not to stack another", async () => {
+    const serving = account({
+      bannedUntil: new Date(Date.now() + 86_400_000).toISOString(),
+      banReason: "Throwing matches",
+    });
+    server.suspensions.mockResolvedValue({ users: [serving] });
+    server.reinstate.mockResolvedValue({ discordName: "Griefer99" });
+    await openPlayers();
+
+    await userEvent.click(await screen.findByText("Griefer99"));
+    expect(await screen.findByText(/Throwing matches/)).toBeTruthy();
+
+    await userEvent.click(screen.getByRole("button", { name: /Lift the suspension/i }));
+    await waitFor(() => expect(server.reinstate).toHaveBeenCalledWith("user-9", ""));
+  });
+
+  it("shows the record of what was done and by whom", async () => {
+    server.findPlayers.mockResolvedValue({ users: [account()] });
+    server.moderationHistory.mockResolvedValue({
+      entries: [
+        {
+          id: "a1",
+          eventType: "user.suspended",
+          actorId: "gm-1",
+          actorName: "Gentle",
+          payload: { hours: 24, reason: "Throwing matches" },
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+    await openPlayers();
+
+    await userEvent.type(screen.getByLabelText(/Find a player/i), "grief");
+    await userEvent.click(await screen.findByText("Griefer99"));
+
+    expect(await screen.findByText(/by Gentle/i)).toBeTruthy();
+    expect(screen.getByText(/Throwing matches/)).toBeTruthy();
+  });
+
+  it("surfaces a refusal rather than looking like it worked", async () => {
+    server.findPlayers.mockResolvedValue({ users: [account({ role: "game_master" })] });
+    server.suspend.mockRejectedValue(
+      Object.assign(new Error("Griefer99 cannot be suspended from here"), {
+        status: 403,
+        code: "CANNOT_SUSPEND_STAFF",
+      }),
+    );
+    await openPlayers();
+
+    await userEvent.type(screen.getByLabelText(/Find a player/i), "grief");
+    await userEvent.click(await screen.findByText("Griefer99"));
+    await userEvent.type(screen.getByLabelText(/^Reason$/i), "because");
+    await userEvent.click(screen.getByRole("button", { name: /^Suspend$/i }));
+
+    expect(await screen.findByText(/cannot be suspended from here/i)).toBeTruthy();
+  });
+
+  it("never puts a rating on screen", async () => {
+    server.findPlayers.mockResolvedValue({ users: [account()] });
+    await openPlayers();
+
+    await userEvent.type(screen.getByLabelText(/Find a player/i), "grief");
+    await userEvent.click(await screen.findByText("Griefer99"));
+
+    // The Discord id is a long digit run; the scan has to not read it as one.
+    expect(visibleText()).not.toMatch(/\brating\b/i);
   });
 });
