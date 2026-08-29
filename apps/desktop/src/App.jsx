@@ -128,7 +128,7 @@ function profileToPlayer(profile) {
     id: profile.userId,
     discordName: profile.discordName,
     avatarUrl: profile.avatarUrl ?? null,
-    inGameName: profile.inGameName ?? profile.discordName,
+    inGameName: profile.inGameName ?? null,
     avatarColor: AV_COLORS[Math.abs(hashString(profile.userId)) % AV_COLORS.length],
     tier: profile.tier,
     isGameMaster: profile.isGameMaster ?? false,
@@ -538,7 +538,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
             <Avatar p={me} size={44} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 700, fontSize: 15 }}><PlayerName name={me.discordName} isGameMaster={me.isGameMaster} /></div>
-              <div style={{ fontFamily: T.mono, fontSize: 11.5, color: T.muted }}>{me.inGameName}</div>
+              <div style={{ fontFamily: T.mono, fontSize: 11.5, color: T.muted }}>{me.inGameName ?? me.discordName}</div>
             </div>
             <div style={{ textAlign: "right" }}>
               <Tier tier={me.tier} size={22} />
@@ -1697,7 +1697,83 @@ function LadderScreen({ me, onView, notify }) {
   );
 }
 
-function ProfileScreen({ p, me, history, onBack, onViewMatch }) {
+/** What the server will accept, so the button can say so before the round trip. */
+const IGN_MIN = 2;
+const IGN_MAX = 16;
+
+/**
+ * Your in-game name, which only you can set.
+ *
+ * Nothing verifies this against Sudden Attack -- it is how teammates find you
+ * once they are in the game, not an identity. Which is exactly why it has to be
+ * easy to fix: a typo here means nine people looking for a name that does not
+ * exist.
+ */
+function InGameNameField({ value, onSaved, notify }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value ?? "");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { setDraft(value ?? ""); }, [value]);
+
+  const trimmed = draft.trim();
+  const valid = trimmed.length >= IGN_MIN && trimmed.length <= IGN_MAX;
+
+  const save = async () => {
+    if (!valid) return;
+    setBusy(true);
+    try {
+      await server.setInGameName(trimmed);
+      await onSaved?.();
+      setEditing(false);
+    } catch (err) {
+      notify?.(err?.message ?? "Could not save that name");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!editing) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+        <span style={{ fontFamily: T.mono, fontSize: 12, color: value ? T.muted : T.captain }}>
+          {value ?? "No in-game name set"}
+        </span>
+        <button
+          onClick={() => setEditing(true)}
+          aria-label="Change your in-game name"
+          style={{ background: "transparent", border: "none", color: T.accent, fontSize: 11.5, fontWeight: 600, padding: "2px 4px" }}
+        >
+          {value ? "Change" : "Set it"}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+      <input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value.slice(0, IGN_MAX))}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") save();
+          if (e.key === "Escape") { setDraft(value ?? ""); setEditing(false); }
+        }}
+        aria-label="In-game name"
+        placeholder="Your name in Sudden Attack"
+        style={{ background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "6px 9px", color: T.text, fontFamily: T.mono, fontSize: 12.5, width: 190 }}
+      />
+      <Btn size="sm" kind="primary" disabled={!valid || busy} onClick={save}>Save</Btn>
+      <Btn size="sm" kind="quiet" disabled={busy} onClick={() => { setDraft(value ?? ""); setEditing(false); }}>Cancel</Btn>
+      {!valid && draft.length > 0 && (
+        <span style={{ fontSize: 11, color: T.dim }}>{IGN_MIN}–{IGN_MAX} characters</span>
+      )}
+    </div>
+  );
+}
+
+function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify }) {
   const isMe = p.id === me.id;
 
   /**
@@ -1736,7 +1812,11 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch }) {
             <Avatar p={view} size={64} />
             <div style={{ flex: 1 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}><H size={26}><PlayerName name={view.discordName ?? "Player"} isGameMaster={view.isGameMaster} /></H>{isMe && <Tag color={T.accent}>You</Tag>}</div>
-              <div style={{ fontFamily: T.mono, fontSize: 12, color: T.muted, marginTop: 4 }}>{view.inGameName ?? view.discordName} · Discord linked</div>
+              {isMe ? (
+                <InGameNameField value={view.inGameName ?? null} onSaved={onSaved} notify={notify} />
+              ) : (
+                <div style={{ fontFamily: T.mono, fontSize: 12, color: T.muted, marginTop: 4 }}>{view.inGameName ?? view.discordName} · Discord linked</div>
+              )}
             </div>
             <div style={{ textAlign: "right" }}>
               <Tier tier={view.tier} size={40} />
@@ -2966,7 +3046,7 @@ export default function App() {
     setMatch(null);
     void refreshHistory();
   }} />;
-  else if (viewProfile) content = <ProfileScreen p={viewProfile} me={me} history={history} onBack={() => setViewProfile(null)} onViewMatch={openMatch} />;
+  else if (viewProfile) content = <ProfileScreen p={viewProfile} me={me} history={history} onBack={() => setViewProfile(null)} onViewMatch={openMatch} onSaved={refreshProfile} notify={notify} />;
   else if (nav === "play") content = <PlayScreen me={me} party={party} setParty={setParty} queue={queue} setQueue={setQueue} cooldownUntil={cooldownUntil} history={history} notify={notify} onViewMatch={openMatch} onView={setViewProfile} onInvite={() => setInviteOpen(true)} />;
   // These three have no server endpoints yet, so they say so rather than
   // standing in for them.
@@ -2983,7 +3063,7 @@ export default function App() {
       />
     );
   else if (nav === "ladder") content = <LadderScreen me={me} onView={setViewProfile} notify={notify} />;
-  else content = <ProfileScreen p={me} me={me} history={history} onBack={() => {}} onViewMatch={openMatch} />;
+  else content = <ProfileScreen p={me} me={me} history={history} onBack={() => {}} onViewMatch={openMatch} onSaved={refreshProfile} notify={notify} />;
 
   return (
     <div className="sq" style={{ height: "100vh", width: "100vw", boxSizing: "border-box", background: T.bg, color: T.text, fontFamily: T.body, fontSize: 13, display: "flex", flexDirection: "column", position: "relative", overflow: "hidden" }}>

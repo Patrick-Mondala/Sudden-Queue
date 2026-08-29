@@ -85,6 +85,7 @@ const server = {
   chatHistory: vi.fn(),
   disputes: vi.fn(),
   resolveDispute: vi.fn(),
+  setInGameName: vi.fn(),
   findPlayers: vi.fn(),
   suspensions: vi.fn(),
   moderationHistory: vi.fn(),
@@ -1735,5 +1736,145 @@ describe("avatars", () => {
     await signedIn();
 
     expect(mine().getAttribute("src")).toBe("https://example.com/a.png");
+  });
+});
+
+describe("your in-game name", () => {
+  async function openOwnProfile(profile = {}) {
+    server.me.mockResolvedValue({ ...PROFILE, ...profile });
+    server.playerProfile.mockResolvedValue({
+      userId: "user-1",
+      discordName: "Player1",
+      inGameName: profile.inGameName ?? null,
+      isGameMaster: false,
+      tier: "B",
+      peakTier: "B",
+      placementsRemaining: 0,
+      gamesPlayed: 40,
+      wins: 20,
+      losses: 20,
+      currentWinStreak: 0,
+      longestWinStreak: 0,
+      disputesInvolved: 0,
+      missedAccepts: 0,
+      position: 1,
+      team: null,
+    });
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Profile/i }));
+  }
+
+  it("asks for one when it has never been set", async () => {
+    await openOwnProfile({ inGameName: null });
+
+    // Nine people have to find this person in-game; not knowing it is set is
+    // the failure this prompt exists to prevent.
+    expect(await screen.findByText(/No in-game name set/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Change your in-game name/i })).toBeTruthy();
+  });
+
+  it("saves what was typed", async () => {
+    server.setInGameName.mockResolvedValue({ inGameName: "SNIPER_X" });
+    await openOwnProfile({ inGameName: null });
+
+    await userEvent.click(screen.getByRole("button", { name: /Change your in-game name/i }));
+    await userEvent.type(screen.getByLabelText(/^In-game name$/i), "SNIPER_X");
+    await userEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    await waitFor(() => expect(server.setInGameName).toHaveBeenCalledWith("SNIPER_X"));
+  });
+
+  it("re-reads the profile so the rest of the app catches up", async () => {
+    server.setInGameName.mockResolvedValue({ inGameName: "SNIPER_X" });
+    await openOwnProfile({ inGameName: null });
+    server.me.mockClear();
+
+    await userEvent.click(screen.getByRole("button", { name: /Change your in-game name/i }));
+    await userEvent.type(screen.getByLabelText(/^In-game name$/i), "SNIPER_X");
+    await userEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    // The name shows in the party panel and every roster, not only here.
+    await waitFor(() => expect(server.me).toHaveBeenCalled());
+  });
+
+  it("will not send one that is too short", async () => {
+    await openOwnProfile({ inGameName: null });
+
+    await userEvent.click(screen.getByRole("button", { name: /Change your in-game name/i }));
+    await userEvent.type(screen.getByLabelText(/^In-game name$/i), "x");
+    await userEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    // The server would refuse it; saying so here saves the round trip.
+    expect(server.setInGameName).not.toHaveBeenCalled();
+    expect(screen.getByText(/2–16 characters/)).toBeTruthy();
+  });
+
+  it("ignores Enter on a name the server would refuse", async () => {
+    await openOwnProfile({ inGameName: null });
+
+    await userEvent.click(screen.getByRole("button", { name: /Change your in-game name/i }));
+    // Enter bypasses the disabled Save button, so the guard has to be in the
+    // save itself rather than only on the control.
+    await userEvent.type(screen.getByLabelText(/^In-game name$/i), "x{Enter}");
+
+    expect(server.setInGameName).not.toHaveBeenCalled();
+  });
+
+  it("puts the name back when the edit is abandoned", async () => {
+    await openOwnProfile({ inGameName: "SNIPER_X" });
+
+    await userEvent.click(await screen.findByRole("button", { name: /Change your in-game name/i }));
+    await userEvent.clear(screen.getByLabelText(/^In-game name$/i));
+    await userEvent.type(screen.getByLabelText(/^In-game name$/i), "MISTAKE");
+    await userEvent.click(screen.getByRole("button", { name: /^Cancel$/i }));
+
+    expect(await screen.findByText("SNIPER_X")).toBeTruthy();
+    expect(server.setInGameName).not.toHaveBeenCalled();
+  });
+
+  it("says so when the server refuses", async () => {
+    server.setInGameName.mockRejectedValue(
+      Object.assign(new Error("In-game name must be between 2 and 16 characters"), { status: 400 }),
+    );
+    await openOwnProfile({ inGameName: null });
+
+    await userEvent.click(screen.getByRole("button", { name: /Change your in-game name/i }));
+    await userEvent.type(screen.getByLabelText(/^In-game name$/i), "SNIPER_X");
+    await userEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    expect(await screen.findByText(/must be between 2 and 16/i)).toBeTruthy();
+  });
+
+  it("is not offered on somebody else's profile", async () => {
+    server.playerProfile.mockResolvedValue({
+      userId: "user-2",
+      discordName: "Player2",
+      inGameName: "OTHER_GUY",
+      isGameMaster: false,
+      tier: "B",
+      peakTier: "B",
+      placementsRemaining: 0,
+      gamesPlayed: 10,
+      wins: 5,
+      losses: 5,
+      currentWinStreak: 0,
+      longestWinStreak: 0,
+      disputesInvolved: 0,
+      missedAccepts: 0,
+      position: 2,
+      team: null,
+    });
+    server.ladder.mockResolvedValue({
+      rows: [{ position: 2, userId: "user-2", discordName: "Player2", inGameName: "OTHER_GUY", isGameMaster: false, tier: "B", wins: 5, losses: 5, gamesPlayed: 10, teamTag: null }],
+      total: 1,
+      myPosition: null,
+    });
+    await signedIn();
+
+    await userEvent.click(screen.getByRole("button", { name: /Ladder/i }));
+    await userEvent.click(await screen.findByText("Player2"));
+
+    expect(await screen.findByText(/OTHER_GUY/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Change your in-game name/i })).toBeNull();
   });
 });
