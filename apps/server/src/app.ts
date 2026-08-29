@@ -514,6 +514,7 @@ export async function buildApp({
       .select({
         id: users.id,
         discordName: users.discordName,
+        avatarUrl: users.avatarUrl,
         inGameName: users.inGameName,
         role: users.role,
         rating: playerRatings.rating,
@@ -592,6 +593,7 @@ export async function buildApp({
         partyId: result.data.partyId,
         fromUserId: user.userId,
         fromName: user.discordName,
+        fromAvatarUrl: user.avatarUrl,
         fromIsGameMaster: isGameMaster(user.role),
         fromTier: isPlaced(games) ? tierForRating(inviter?.rating ?? DEFAULT_RATING) : null,
         // The toast counts down to this, so it has to come from the server.
@@ -1829,6 +1831,7 @@ export async function buildApp({
             {
               userId,
               discordName: session.data.discordName,
+              avatarUrl: session.data.avatarUrl,
               isGameMaster: isGameMaster(session.data.role),
             },
             text,

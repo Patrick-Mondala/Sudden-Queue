@@ -135,6 +135,7 @@ export class TeamService {
       .select({
         userId: users.id,
         discordName: users.discordName,
+        avatarUrl: users.avatarUrl,
         inGameName: users.inGameName,
         accountRole: users.role,
         role: teamMembers.role,
@@ -164,6 +165,7 @@ export class TeamService {
         return {
           userId: r.userId,
           discordName: r.discordName,
+          avatarUrl: r.avatarUrl,
           inGameName: r.inGameName,
           isGameMaster: isGameMaster(r.accountRole),
           isStarter: r.isStarter,
@@ -227,6 +229,7 @@ export class TeamService {
         note: teamApplications.note,
         createdAt: teamApplications.createdAt,
         discordName: users.discordName,
+        avatarUrl: users.avatarUrl,
         inGameName: users.inGameName,
         accountRole: users.role,
         rating: playerRatings.rating,
@@ -245,6 +248,7 @@ export class TeamService {
         teamId: r.teamId,
         userId: r.userId,
         discordName: r.discordName,
+        avatarUrl: r.avatarUrl,
         inGameName: r.inGameName,
         isGameMaster: isGameMaster(r.accountRole),
         tier: isPlaced(games) ? tierForRating(r.rating ?? DEFAULT_RATING) : null,

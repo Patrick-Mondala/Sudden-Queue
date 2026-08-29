@@ -43,6 +43,7 @@ export interface ModeratedUser {
   userId: string;
   discordId: string;
   discordName: string;
+  avatarUrl: string | null;
   inGameName: string | null;
   role: Role;
   bannedUntil: Date | null;
@@ -62,6 +63,7 @@ const USER_FIELDS = {
   userId: users.id,
   discordId: users.discordId,
   discordName: users.discordName,
+  avatarUrl: users.avatarUrl,
   inGameName: users.inGameName,
   role: users.role,
   bannedUntil: users.bannedUntil,

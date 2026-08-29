@@ -28,6 +28,7 @@ export interface LadderRow {
 export interface PublicProfile {
   userId: string;
   discordName: string;
+  avatarUrl: string | null;
   inGameName: string | null;
   isGameMaster: boolean;
   /** Null while they are still in placements. */
@@ -65,6 +66,7 @@ export class LadderService {
       .select({
         userId: users.id,
         discordName: users.discordName,
+        avatarUrl: users.avatarUrl,
         inGameName: users.inGameName,
         role: users.role,
         rating: playerRatings.rating,
@@ -89,6 +91,7 @@ export class LadderService {
       position: r.position,
       userId: r.userId,
       discordName: r.discordName,
+      avatarUrl: r.avatarUrl,
       inGameName: r.inGameName,
       isGameMaster: isGameMaster(r.role),
       tier: tierForRating(r.rating),
@@ -141,6 +144,7 @@ export class LadderService {
       .select({
         userId: users.id,
         discordName: users.discordName,
+        avatarUrl: users.avatarUrl,
         inGameName: users.inGameName,
         role: users.role,
         rating: playerRatings.rating,
@@ -172,6 +176,7 @@ export class LadderService {
     return {
       userId: row.userId,
       discordName: row.discordName,
+      avatarUrl: row.avatarUrl,
       inGameName: row.inGameName,
       isGameMaster: isGameMaster(row.role),
       tier: placed ? tierForRating(row.rating ?? DEFAULT_RATING) : null,

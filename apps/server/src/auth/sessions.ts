@@ -13,6 +13,7 @@ export interface SessionUser {
   userId: string;
   discordId: string;
   discordName: string;
+  avatarUrl: string | null;
   inGameName: string | null;
   role: "player" | "game_master" | "admin";
 }
@@ -64,6 +65,7 @@ export class SessionService {
         userId: users.id,
         discordId: users.discordId,
         discordName: users.discordName,
+        avatarUrl: users.avatarUrl,
         inGameName: users.inGameName,
         role: users.role,
       })
@@ -82,6 +84,7 @@ export class SessionService {
       userId: row.userId,
       discordId: row.discordId,
       discordName: row.discordName,
+      avatarUrl: row.avatarUrl,
       inGameName: row.inGameName,
       role: row.role,
     });

@@ -313,6 +313,7 @@ export class PartyService {
         partyId: partyInvites.partyId,
         fromUserId: partyInvites.fromUserId,
         fromName: users.discordName,
+        fromAvatarUrl: users.avatarUrl,
         expiresAt: partyInvites.expiresAt,
       })
       .from(partyInvites)

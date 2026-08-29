@@ -127,6 +127,7 @@ function profileToPlayer(profile) {
   return {
     id: profile.userId,
     discordName: profile.discordName,
+    avatarUrl: profile.avatarUrl ?? null,
     inGameName: profile.inGameName ?? profile.discordName,
     avatarColor: AV_COLORS[Math.abs(hashString(profile.userId)) % AV_COLORS.length],
     tier: profile.tier,
@@ -187,11 +188,53 @@ const Btn = ({ children, kind = "ghost", size = "md", style, ...rest }) => {
   };
   return <button style={{ ...base, ...kinds[kind], ...style }} {...rest}>{children}</button>;
 };
-const Avatar = ({ p, size = 32, ring }) => (
-  <div title={p?.discordName} style={{ width: size, height: size, borderRadius: "50%", background: p?.avatarColor || T.line, display: "grid", placeItems: "center", fontFamily: T.display, fontWeight: 700, fontSize: size * 0.42, color: "#fff", boxShadow: ring ? `0 0 0 2px ${T.bg}, 0 0 0 4px ${ring}` : "none", flexShrink: 0 }}>
-    {(p?.discordName || "?")[0].toUpperCase()}
-  </div>
-);
+/**
+ * Asks Discord for an avatar near the size it will be drawn at.
+ *
+ * The stored URL has no size on it, and Discord then serves whatever was
+ * uploaded -- often a 1024px png for a 22px circle in a chat line. Doubled for
+ * high-density screens, then rounded up to a power of two, which is all the CDN
+ * accepts.
+ */
+function sizedAvatar(url, px) {
+  if (!url || !url.startsWith("https://cdn.discordapp.com/")) return url;
+  const want = Math.max(16, Math.min(256, 2 ** Math.ceil(Math.log2(Math.max(1, px * 2)))));
+  return `${url}${url.includes("?") ? "&" : "?"}size=${want}`;
+}
+
+/**
+ * Someone's face, or the initial standing in for it.
+ *
+ * The picture is not load-bearing: an account with no avatar set, a CDN having
+ * a bad day, or someone offline all have to render as something, so the
+ * coloured initial stays underneath and the image sits on top of it. A broken
+ * image is the one outcome not allowed, because it appears in every roster.
+ */
+const Avatar = ({ p, size = 32, ring }) => {
+  const url = p?.avatarUrl ?? null;
+  const [failed, setFailed] = useState(false);
+
+  // A recycled row can be handed a different person; a failure belongs to the
+  // URL that failed, not to the slot it was drawn in.
+  useEffect(() => { setFailed(false); }, [url]);
+
+  return (
+    <div
+      title={p?.discordName}
+      style={{ width: size, height: size, borderRadius: "50%", background: p?.avatarColor || T.line, display: "grid", placeItems: "center", fontFamily: T.display, fontWeight: 700, fontSize: size * 0.42, color: "#fff", boxShadow: ring ? `0 0 0 2px ${T.bg}, 0 0 0 4px ${ring}` : "none", flexShrink: 0, overflow: "hidden", position: "relative" }}
+    >
+      {(p?.discordName || "?")[0].toUpperCase()}
+      {url && !failed && (
+        <img
+          src={sizedAvatar(url, size)}
+          alt=""
+          onError={() => setFailed(true)}
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+        />
+      )}
+    </div>
+  );
+};
 /**
  * A player's name, with the GM prefix when they carry one.
  *
@@ -869,8 +912,8 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
           {tab === "roster"
             ? team.members.map((m) => (
                 <div key={m.userId} className="row-hover" style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px", borderRadius: 4 }}>
-                  <div onClick={() => onView?.({ id: m.userId, discordName: m.discordName, inGameName: m.inGameName, tier: m.tier, placementsRemaining: m.placementsRemaining, avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length] })} style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0, cursor: "pointer" }}>
-                    <Avatar p={{ discordName: m.discordName, avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length] }} size={30} />
+                  <div onClick={() => onView?.({ id: m.userId, discordName: m.discordName, avatarUrl: m.avatarUrl, inGameName: m.inGameName, tier: m.tier, placementsRemaining: m.placementsRemaining, avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length] })} style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0, cursor: "pointer" }}>
+                    <Avatar p={{ ...m, avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length] }} size={30} />
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>
                         <PlayerName name={m.discordName} isGameMaster={m.isGameMaster} suffix={m.userId === me.id ? <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span> : null} />
@@ -933,7 +976,7 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
               state.applications.map((a) => (
                 <div key={a.id} style={{ padding: "10px 8px", borderRadius: 4, borderBottom: `1px solid ${T.line}` }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: a.note ? 8 : 0 }}>
-                    <Avatar p={{ discordName: a.discordName, avatarColor: AV_COLORS[Math.abs(hashString(a.userId)) % AV_COLORS.length] }} size={28} />
+                    <Avatar p={{ ...a, avatarColor: AV_COLORS[Math.abs(hashString(a.userId)) % AV_COLORS.length] }} size={28} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontWeight: 600, fontSize: 13 }}><PlayerName name={a.discordName} isGameMaster={a.isGameMaster} /></div>
                       <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{a.inGameName ?? a.discordName}</div>
@@ -1229,7 +1272,7 @@ function PlayersPanel({ me, notify }) {
       onClick={() => open(u)}
       style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 10px", borderRadius: 4, cursor: "pointer", background: u.userId === target?.userId ? T.raised : "transparent" }}
     >
-      <Avatar p={{ discordName: u.discordName, avatarColor: AV_COLORS[Math.abs(hashString(u.userId)) % AV_COLORS.length] }} size={26} />
+      <Avatar p={{ ...u, avatarColor: AV_COLORS[Math.abs(hashString(u.userId)) % AV_COLORS.length] }} size={26} />
       <div style={{ minWidth: 0, flex: 1 }}>
         <PlayerName name={u.discordName} isGameMaster={u.role !== "player"} style={{ fontWeight: 600, fontSize: 13 }} />
         <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -1271,7 +1314,7 @@ function PlayersPanel({ me, notify }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
           <Panel pad={20}>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <Avatar p={{ discordName: target.discordName, avatarColor: AV_COLORS[Math.abs(hashString(target.userId)) % AV_COLORS.length] }} size={40} />
+              <Avatar p={{ ...target, avatarColor: AV_COLORS[Math.abs(hashString(target.userId)) % AV_COLORS.length] }} size={40} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <PlayerName name={target.discordName} isGameMaster={target.role !== "player"} style={{ fontWeight: 700, fontSize: 16 }} />
                 <div style={{ fontFamily: T.mono, fontSize: 11, color: T.muted }}>
@@ -1622,7 +1665,7 @@ function LadderScreen({ me, onView, notify }) {
               >
                 <span style={{ fontFamily: T.mono, fontSize: 12, color: r.position <= 3 ? T.captain : T.muted }}>#{r.position}</span>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                  <Avatar p={{ discordName: r.discordName, avatarColor: AV_COLORS[Math.abs(hashString(r.userId)) % AV_COLORS.length] }} size={26} />
+                  <Avatar p={{ ...r, avatarColor: AV_COLORS[Math.abs(hashString(r.userId)) % AV_COLORS.length] }} size={26} />
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>
                       <PlayerName name={r.discordName} isGameMaster={r.isGameMaster} suffix={isMe ? <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span> : null} />
@@ -1962,7 +2005,7 @@ function ChatLog({ messages, me, empty, onView }) {
     <>
       {messages.map((m) => {
         const mine = m.userId === me.id;
-        const who = { discordName: m.discordName, avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length] };
+        const who = { discordName: m.discordName, avatarUrl: m.avatarUrl, avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length] };
         return (
           <div key={m.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", animation: "sqRise .2s ease" }}>
             <div onClick={() => onView?.({ id: m.userId })} style={{ cursor: onView ? "pointer" : "default", flexShrink: 0 }}>
@@ -2335,7 +2378,7 @@ function LineupModal({ pending, notify, onDone }) {
                   <div style={{ width: 16, height: 16, borderRadius: 3, border: `1px solid ${on ? T.accent : T.line2}`, background: on ? T.accent : "transparent", display: "grid", placeItems: "center", flexShrink: 0 }}>
                     {on && <Check size={11} strokeWidth={3} color="#07110F" />}
                   </div>
-                  <Avatar p={{ discordName: r.discordName, avatarColor: AV_COLORS[Math.abs(hashString(r.userId)) % AV_COLORS.length] }} size={26} />
+                  <Avatar p={{ ...r, avatarColor: AV_COLORS[Math.abs(hashString(r.userId)) % AV_COLORS.length] }} size={26} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 600 }}>
                       <PlayerName name={r.discordName} isGameMaster={r.isGameMaster} />
@@ -2393,7 +2436,7 @@ function InviteToasts({ invites, onAccept, onDecline }) {
         return (
           <div key={inv.inviteId} style={{ pointerEvents: "auto", background: T.panel, border: `1px solid ${T.line2}`, borderLeft: `3px solid ${T.captain}`, borderRadius: 5, padding: "10px 12px", boxShadow: "0 10px 30px rgba(0,0,0,.45)", animation: "sqRise .2s ease" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-              <Avatar p={{ discordName: inv.fromName, avatarColor: AV_COLORS[Math.abs(hashString(inv.fromUserId)) % AV_COLORS.length] }} size={24} />
+              <Avatar p={{ discordName: inv.fromName, avatarUrl: inv.fromAvatarUrl, avatarColor: AV_COLORS[Math.abs(hashString(inv.fromUserId)) % AV_COLORS.length] }} size={24} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12.5, fontWeight: 600 }}><PlayerName name={inv.fromName} isGameMaster={inv.fromIsGameMaster} /></div>
                 <div style={{ fontSize: 11, color: T.muted }}>invited you to their party</div>
@@ -2746,6 +2789,7 @@ export default function App() {
       (profile.party?.members ?? []).map((m) => ({
         id: m.userId,
         discordName: m.discordName,
+        avatarUrl: m.avatarUrl ?? null,
         inGameName: m.inGameName ?? m.discordName,
         avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length],
         isGameMaster: m.isGameMaster ?? false,
@@ -2834,6 +2878,7 @@ export default function App() {
             (e.party?.members ?? []).map((m) => ({
               id: m.userId,
               discordName: m.discordName,
+              avatarUrl: m.avatarUrl ?? null,
               inGameName: m.inGameName ?? m.discordName,
               avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length],
               tier: m.tier ?? null,

@@ -1,5 +1,5 @@
 import { configure } from "@testing-library/dom";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -1678,5 +1678,62 @@ describe("suspending a player", () => {
 
     // The Discord id is a long digit run; the scan has to not read it as one.
     expect(visibleText()).not.toMatch(/\brating\b/i);
+  });
+});
+
+describe("avatars", () => {
+  const CDN = "https://cdn.discordapp.com/avatars/42/abc.png";
+
+  /** The header draws the signed-in player, which every screen carries. */
+  const mine = () => document.querySelector("img[alt='']");
+
+  it("draws the Discord picture when there is one", async () => {
+    server.me.mockResolvedValue({ ...PROFILE, avatarUrl: CDN });
+    await signedIn();
+
+    const img = mine();
+    expect(img).toBeTruthy();
+    expect(img.getAttribute("src")).toContain("cdn.discordapp.com/avatars/42/abc.png");
+  });
+
+  it("asks the CDN for a size near the one it draws at", async () => {
+    server.me.mockResolvedValue({ ...PROFILE, avatarUrl: CDN });
+    await signedIn();
+
+    // Discord serves the original upload otherwise, which can be a 1024px png
+    // behind a 24px circle.
+    expect(mine().getAttribute("src")).toMatch(/[?&]size=\d+$/);
+  });
+
+  it("falls back to the initial for an account with no picture", async () => {
+    server.me.mockResolvedValue({ ...PROFILE, avatarUrl: null });
+    await signedIn();
+
+    expect(mine()).toBeNull();
+    // Still recognisably someone, rather than an empty circle.
+    expect(screen.getAllByTitle("Player1").length).toBeGreaterThan(0);
+  });
+
+  it("falls back to the initial when the picture will not load", async () => {
+    server.me.mockResolvedValue({ ...PROFILE, avatarUrl: CDN });
+    await signedIn();
+
+    const img = mine();
+    expect(img).toBeTruthy();
+
+    // A CDN having a bad day must not leave a broken image in every roster.
+    // The same player is drawn in several places, each keeping its own state,
+    // so this asserts on the one that failed rather than on all of them.
+    fireEvent.error(img);
+
+    await waitFor(() => expect(img.isConnected).toBe(false));
+    expect(screen.getAllByTitle("Player1").length).toBeGreaterThan(0);
+  });
+
+  it("leaves a non-Discord url alone rather than appending to it", async () => {
+    server.me.mockResolvedValue({ ...PROFILE, avatarUrl: "https://example.com/a.png" });
+    await signedIn();
+
+    expect(mine().getAttribute("src")).toBe("https://example.com/a.png");
   });
 });

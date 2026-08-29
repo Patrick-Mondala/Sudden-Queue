@@ -16,6 +16,7 @@ export type ServerEvent =
         partyId: string;
         fromUserId: string;
         fromName: string;
+        fromAvatarUrl: string | null;
         fromIsGameMaster: boolean;
         fromTier: string | null;
         /** The toast counts down to this, so the server states it. */
