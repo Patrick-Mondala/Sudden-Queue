@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { Crosshair, Swords, Users, Trophy, User, MessageSquare, Send, X, Check, Shield, Star, Wifi, Timer, Copy, ChevronRight, LogOut, Bell, Filter, Plus, Minus, AlertTriangle, CircleDot, Lock, Unlock } from "lucide-react";
 import { signIn } from "./api/auth.js";
 import { api as server, bus as liveBus, getToken } from "./api/client.js";
+import { checkForUpdate, installUpdate } from "./api/updates.js";
 
 /**
  * Pulls the window forward when a match is found.
@@ -1714,6 +1715,51 @@ function LadderScreen({ me, onView, notify }) {
 }
 
 /**
+ * A new version is out.
+ *
+ * A bar rather than a modal: an update is never more urgent than what someone
+ * is already doing, and one that steals focus mid-queue would be uninstalled
+ * for it. Restarting is the user's call and nothing happens until they make
+ * it.
+ */
+function UpdateBar({ update, onDone, notify }) {
+  const [progress, setProgress] = useState(null);
+  const [installing, setInstalling] = useState(false);
+
+  const run = async () => {
+    setInstalling(true);
+    try {
+      // Normally never returns -- the relaunch replaces this process.
+      await installUpdate(update, setProgress);
+    } catch (err) {
+      notify?.(err?.message ?? "The update could not be installed");
+      setInstalling(false);
+      setProgress(null);
+    }
+  };
+
+  const pct = progress === null ? null : Math.round(progress * 100);
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 14px", background: T.accentDim, borderBottom: `1px solid ${T.accent}` }}>
+      <Dot color={T.accent} pulse />
+      <span style={{ fontSize: 12.5, color: T.text }}>
+        {installing
+          ? `Downloading ${update.version}${pct === null ? "" : ` — ${pct}%`}`
+          : `Version ${update.version} is available.`}
+      </span>
+      {!installing && (
+        <>
+          <Btn size="sm" kind="primary" onClick={run}>Update and restart</Btn>
+          <Btn size="sm" kind="quiet" onClick={onDone}>Later</Btn>
+        </>
+      )}
+      <div style={{ flex: 1 }} />
+    </div>
+  );
+}
+
+/**
  * Asked once a launch, until it is answered.
  *
  * The name is how nine other people find you once the match starts, so an
@@ -2809,6 +2855,21 @@ export default function App() {
   // next opened, not for ever -- the banner is the gentle version, this is the
   // one that gets seen.
   const [namePutOff, setNamePutOff] = useState(false);
+  const [update, setUpdate] = useState(null);
+
+  // Once a launch. Restarting is how anyone gets a new version anyway, so a
+  // running copy re-checking on a timer would only interrupt to say something
+  // the next start would have said anyway.
+  useEffect(() => {
+    let cancelled = false;
+    checkForUpdate()
+      .then((found) => { if (!cancelled) setUpdate(found); })
+      .catch(() => {
+        // A failed check is not worth a word: nothing is broken, and the app
+        // works perfectly well on the version it has.
+      });
+    return () => { cancelled = true; };
+  }, []);
   const notify = useCallback((text) => { const id = Date.now() + Math.random(); setToasts((t) => [...t, { id, text }]); setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3800); }, []);
 
   /**
@@ -3163,6 +3224,10 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 12 }}><Avatar p={me} size={24} /><PlayerName name={me.discordName} isGameMaster={me.isGameMaster} style={{ fontWeight: 600 }} /><Tier tier={me.tier} size={12} /></div>
         <button onClick={() => setMe(null)} title="Sign out" style={{ background: "transparent", border: "none", color: T.dim, padding: 4 }}><LogOut size={14} /></button>
       </div>
+
+      {update && !match && !pendingMatch && (
+        <UpdateBar update={update} notify={notify} onDone={() => setUpdate(null)} />
+      )}
 
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
         {/* nav rail */}

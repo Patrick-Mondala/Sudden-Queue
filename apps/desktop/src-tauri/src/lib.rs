@@ -22,6 +22,12 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }));
+
+        // The updater and the restart it needs to finish. Desktop only:
+        // mobile stores do their own updating and would reject this.
+        builder = builder
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_process::init());
     }
 
     builder

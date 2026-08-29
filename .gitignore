@@ -19,7 +19,10 @@ target/
 .env.*
 !.env.example
 *.pem
+# Includes the updater signing key: anyone holding it can sign an update that
+# every installed copy will accept and run.
 *.key
+*.key.pub
 
 # Logs
 *.log

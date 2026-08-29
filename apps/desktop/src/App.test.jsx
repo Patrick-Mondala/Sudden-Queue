@@ -114,6 +114,10 @@ vi.mock("./api/client.js", () => ({
 
 vi.mock("./api/auth.js", () => ({ signIn: vi.fn() }));
 
+/** The desktop shell is not present under jsdom, so the updater is stood in for. */
+const updates = { checkForUpdate: vi.fn(), installUpdate: vi.fn() };
+vi.mock("./api/updates.js", () => updates);
+
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     unminimize: () => Promise.resolve(),
@@ -194,6 +198,8 @@ beforeEach(() => {
   server.findPlayers.mockResolvedValue({ users: [] });
   server.suspensions.mockResolvedValue({ users: [] });
   server.moderationHistory.mockResolvedValue({ entries: [] });
+  updates.checkForUpdate.mockResolvedValue(null);
+  updates.installUpdate.mockReset();
 });
 
 afterEach(cleanup);
@@ -1954,5 +1960,103 @@ describe("being asked for an in-game name", () => {
     // Twenty seconds to accept; a question about names can wait.
     expect(await screen.findByText(/Match found/i)).toBeTruthy();
     expect(screen.queryByRole("dialog", { name: /Set your in-game name/i })).toBeNull();
+  });
+});
+
+describe("updating the app", () => {
+  const available = (over = {}) => ({
+    version: "0.2.0",
+    notes: "Fixes the thing",
+    date: null,
+    handle: {},
+    ...over,
+  });
+
+  it("says so when a new version is out", async () => {
+    updates.checkForUpdate.mockResolvedValue(available());
+    await signedIn();
+
+    expect(await screen.findByText(/Version 0\.2\.0 is available/i)).toBeTruthy();
+  });
+
+  it("says nothing when there is nothing to install", async () => {
+    await signedIn();
+
+    expect(screen.queryByText(/is available/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Update and restart/i })).toBeNull();
+  });
+
+  it("installs only when asked", async () => {
+    updates.checkForUpdate.mockResolvedValue(available());
+    // Never resolves: installing normally ends in a relaunch, not a return.
+    updates.installUpdate.mockReturnValue(new Promise(() => {}));
+    await signedIn();
+
+    expect(updates.installUpdate).not.toHaveBeenCalled();
+    await userEvent.click(await screen.findByRole("button", { name: /Update and restart/i }));
+
+    await waitFor(() => expect(updates.installUpdate).toHaveBeenCalled());
+  });
+
+  it("shows how far along the download is", async () => {
+    updates.checkForUpdate.mockResolvedValue(available());
+    updates.installUpdate.mockImplementation((_update, onProgress) => {
+      onProgress(0.42);
+      return new Promise(() => {});
+    });
+    await signedIn();
+
+    await userEvent.click(await screen.findByRole("button", { name: /Update and restart/i }));
+
+    expect(await screen.findByText(/Downloading 0\.2\.0 — 42%/i)).toBeTruthy();
+  });
+
+  it("can be put off", async () => {
+    updates.checkForUpdate.mockResolvedValue(available());
+    await signedIn();
+
+    await userEvent.click(await screen.findByRole("button", { name: /^Later$/i }));
+
+    await waitFor(() => expect(screen.queryByText(/Version 0\.2\.0 is available/i)).toBeNull());
+    expect(updates.installUpdate).not.toHaveBeenCalled();
+  });
+
+  it("stays quiet when the check itself fails", async () => {
+    updates.checkForUpdate.mockRejectedValue(new Error("network is down"));
+    await signedIn();
+
+    // Nothing is broken and the app works on the version it has, so a failed
+    // check is not worth a word.
+    expect(screen.queryByText(/network is down/i)).toBeNull();
+    expect(await screen.findByText(/Ready to queue/i)).toBeTruthy();
+  });
+
+  it("says so when the install fails, rather than hanging on the progress", async () => {
+    updates.checkForUpdate.mockResolvedValue(available());
+    updates.installUpdate.mockRejectedValue(new Error("Signature did not verify"));
+    await signedIn();
+
+    await userEvent.click(await screen.findByRole("button", { name: /Update and restart/i }));
+
+    expect(await screen.findByText(/Signature did not verify/i)).toBeTruthy();
+    // Back to an offer, not stuck mid-download.
+    expect(await screen.findByRole("button", { name: /Update and restart/i })).toBeTruthy();
+  });
+
+  it("gets out of the way of a match that has been found", async () => {
+    updates.checkForUpdate.mockResolvedValue(available());
+    await signedIn();
+    expect(await screen.findByText(/Version 0\.2\.0 is available/i)).toBeTruthy();
+
+    emit({
+      type: "match.found",
+      matchId: MATCH.id,
+      acceptDeadline: new Date(Date.now() + 20_000).toISOString(),
+      match: MATCH,
+    });
+
+    // Restarting the app during an accept window loses the match.
+    expect(await screen.findByText(/Match found/i)).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(/Version 0\.2\.0 is available/i)).toBeNull());
   });
 });
