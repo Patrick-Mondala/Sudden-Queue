@@ -1,8 +1,28 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Crosshair, Swords, Users, Trophy, User, MessageSquare, Send, X, Check, Shield, Star, Wifi, Timer, Copy, ChevronRight, LogOut, Bell, Filter, Plus, Minus, AlertTriangle, CircleDot, Lock, Unlock } from "lucide-react";
-import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { signIn } from "./api/auth.js";
 import { api as server, bus as liveBus, getToken } from "./api/client.js";
+
+/**
+ * Pulls the window forward when a match is found.
+ *
+ * Loaded on demand rather than imported, so the app also runs in a plain
+ * browser -- which matters when the Tauri shell cannot be launched at all,
+ * as under Smart App Control. Everything else here is ordinary web code; this
+ * was the only part that was not.
+ */
+async function demandAttention() {
+  try {
+    const { getCurrentWindow, UserAttentionType } = await import("@tauri-apps/api/window");
+    const win = getCurrentWindow();
+    await win.unminimize().catch(() => {});
+    await win.setFocus().catch(() => {});
+    await win.requestUserAttention(UserAttentionType.Critical).catch(() => {});
+  } catch {
+    // Not in the desktop shell. A browser tab cannot demand focus, and the
+    // accept prompt is on screen either way.
+  }
+}
 import "./App.css";
 
 /* ─────────────────────────────────────────────────────────────
@@ -2390,10 +2410,7 @@ export default function App() {
 
   useEffect(() => {
     if (!pendingMatch) return;
-    const win = getCurrentWindow();
-    win.unminimize().catch(() => {});
-    win.setFocus().catch(() => {});
-    win.requestUserAttention(UserAttentionType.Critical).catch(() => {});
+    void demandAttention();
   }, [pendingMatch]);
 
 
