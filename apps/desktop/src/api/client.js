@@ -195,6 +195,11 @@ export const api = {
     request(`/team/applications/${applicationId}/decide`, { method: "POST", body: { accept } }),
   setApplicationsOpen: (open) =>
     request("/team/applications-open", { method: "PATCH", body: { open } }),
+  setStarter: (userId, starting) =>
+    request(`/team/members/${userId}/starter`, { method: "POST", body: { starting } }),
+  confirmLineup: (requestId, userIds) =>
+    request(`/scrims/requests/${requestId}/lineup`, { method: "POST", body: { userIds } }),
+
   setTeamRole: (userId, role) =>
     request(`/team/members/${userId}/role`, { method: "POST", body: { role } }),
   transferCaptaincy: (userId) => request("/team/captain", { method: "POST", body: { userId } }),

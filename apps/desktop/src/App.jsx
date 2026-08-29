@@ -806,7 +806,7 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
   const team = state.team;
   const isCaptain = state.role === "captain";
   const canManage = isCaptain || state.role === "officer";
-  const officers = team.members.filter((m) => m.role === "officer").length;
+  const starters = team.members.filter((m) => m.isStarter).length;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16, height: "100%", minHeight: 0 }}>
@@ -815,7 +815,7 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
           <div style={{ width: 44, height: 44, borderRadius: 6, background: T.raised, display: "grid", placeItems: "center", fontFamily: T.mono, fontSize: 13, color: T.text, border: `1px solid ${T.line2}`, flexShrink: 0 }}>{team.tag}</div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <H size={22}>{team.name}</H>
-            <Eyebrow>{team.region.toUpperCase()} · {team.members.length}/{10} players · {officers} officer{officers === 1 ? "" : "s"}</Eyebrow>
+            <Eyebrow>{team.region.toUpperCase()} · {team.members.length}/{10} players · {starters}/5 starting</Eyebrow>
           </div>
           {canManage && (
             <Btn size="sm" disabled={busy} onClick={() => act(() => server.setApplicationsOpen(!team.applicationsOpen))}>
@@ -863,8 +863,19 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
                       <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{m.inGameName ?? m.discordName}</div>
                     </div>
                   </div>
+                  <Tag color={m.isStarter ? T.ok : T.dim}>{m.isStarter ? "Starter" : "Sub"}</Tag>
                   <Tag color={m.role === "captain" ? T.captain : m.role === "officer" ? T.accent : T.muted}>{m.role}</Tag>
                   <Rank tier={m.tier} placementsRemaining={m.placementsRemaining} size={11} />
+                  {isCaptain && (
+                    <button
+                      title={m.isStarter ? "Move to the bench" : "Move into the starting five"}
+                      disabled={busy}
+                      onClick={() => act(() => server.setStarter(m.userId, !m.isStarter))}
+                      style={{ width: 26, height: 26, display: "grid", placeItems: "center", background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, color: m.isStarter ? T.ok : T.dim, flexShrink: 0 }}
+                    >
+                      <CircleDot size={13} />
+                    </button>
+                  )}
                   {isCaptain && m.userId !== me.id && (
                     <button
                       title={m.role === "officer" ? "Demote to member" : "Make officer"}
@@ -1894,6 +1905,114 @@ function MatchScreen({ match, me, onFinished, notify, onView }) {
 const INVITE_STACK_LIMIT = 3;
 
 /**
+ * Who plays this scrim.
+ *
+ * Only reached by a captain whose roster runs deeper than five -- a team of
+ * exactly five is never asked, because there is nothing to choose. Starters are
+ * preselected, and that is a default rather than a rule: any five of the roster
+ * will do.
+ *
+ * Blocking on purpose, unlike an invite toast. Ten people are waiting on this
+ * answer and the window is thirty seconds.
+ */
+function LineupModal({ pending, notify, onDone }) {
+  const [picked, setPicked] = useState(() =>
+    pending.roster.filter((r) => r.isStarter).map((r) => r.userId),
+  );
+  const [busy, setBusy] = useState(false);
+  useTick(true);
+
+  const left = Math.max(0, Math.ceil((Date.parse(pending.confirmDeadline) - Date.now()) / 1000));
+  const full = picked.length === 5;
+
+  const toggle = (userId) =>
+    setPicked((all) =>
+      all.includes(userId)
+        ? all.filter((id) => id !== userId)
+        : all.length >= 5
+          ? all
+          : [...all, userId],
+    );
+
+  const confirm = async () => {
+    if (!full) return;
+    setBusy(true);
+    try {
+      await server.confirmLineup(pending.requestId, picked);
+      onDone();
+    } catch (err) {
+      notify(err?.message ?? "Could not confirm that lineup");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 72, animation: "sqIn .2s ease" }}>
+      <div role="dialog" aria-modal="true" aria-label="Confirm your lineup" style={{ width: 460, maxWidth: "90vw" }}>
+        <Panel pad={20}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 16 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <Eyebrow style={{ marginBottom: 6 }}>Scrim vs {pending.opponentTag}</Eyebrow>
+              <H size={22}>Who is playing?</H>
+              <div style={{ fontSize: 12.5, color: T.muted, marginTop: 6, lineHeight: 1.5 }}>
+                Five of {pending.roster.length}. Your starters are picked already — change them if
+                you like.
+              </div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontFamily: T.mono, fontSize: 30, fontWeight: 600, lineHeight: 1, color: left <= 10 ? T.danger : T.accent }}>{left}</div>
+              <Eyebrow style={{ marginTop: 2 }}>seconds</Eyebrow>
+            </div>
+          </div>
+
+          <div style={{ maxHeight: "42vh", overflow: "auto", marginBottom: 14 }}>
+            {pending.roster.map((r) => {
+              const on = picked.includes(r.userId);
+              const blocked = !on && picked.length >= 5;
+              return (
+                <button
+                  key={r.userId}
+                  onClick={() => toggle(r.userId)}
+                  disabled={blocked || busy}
+                  style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", marginBottom: 4, borderRadius: 5, textAlign: "left", background: on ? T.accentDim : T.raised, border: `1px solid ${on ? T.accent : T.line}`, color: T.text, opacity: blocked ? 0.45 : 1 }}
+                >
+                  <div style={{ width: 16, height: 16, borderRadius: 3, border: `1px solid ${on ? T.accent : T.line2}`, background: on ? T.accent : "transparent", display: "grid", placeItems: "center", flexShrink: 0 }}>
+                    {on && <Check size={11} strokeWidth={3} color="#07110F" />}
+                  </div>
+                  <Avatar p={{ discordName: r.discordName, avatarColor: AV_COLORS[Math.abs(hashString(r.userId)) % AV_COLORS.length] }} size={26} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>
+                      <PlayerName name={r.discordName} isGameMaster={r.isGameMaster} />
+                    </div>
+                    <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{r.inGameName ?? r.discordName}</div>
+                  </div>
+                  {r.isStarter && <Tag color={T.ok}>Starter</Tag>}
+                  <Rank tier={r.tier} placementsRemaining={r.placementsRemaining} size={11} />
+                </button>
+              );
+            })}
+          </div>
+
+          <Btn
+            kind="primary"
+            style={{ width: "100%", justifyContent: "center" }}
+            disabled={!full || busy}
+            title={full ? undefined : `Pick ${5 - picked.length} more`}
+            onClick={confirm}
+          >
+            {full ? "Confirm these five" : `${picked.length}/5 picked`}
+          </Btn>
+          <div style={{ fontSize: 11.5, color: T.dim, marginTop: 10, lineHeight: 1.5 }}>
+            Both captains confirm before anyone is asked to accept. If the clock runs out the scrim
+            is dropped — nobody is penalised.
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Incoming party invites.
  *
  * Several can be open at once -- being invited by four people the moment you
@@ -2126,6 +2245,9 @@ export default function App() {
   // Chat needs the id, not the roster: a channel is named after the party.
   const [partyId, setPartyId] = useState(null);
   const [cooldownUntil, setCooldownUntil] = useState(0);
+  // A scrim waiting on this captain's five. Held here rather than on the
+  // scrims screen, because it has to interrupt wherever they happen to be.
+  const [pendingLineup, setPendingLineup] = useState(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   const notify = useCallback((text) => { const id = Date.now() + Math.random(); setToasts((t) => [...t, { id, text }]); setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3800); }, []);
 
@@ -2177,6 +2299,15 @@ export default function App() {
     }, 1000);
     return () => clearInterval(iv);
   }, [invites.length]);
+
+  const refreshLineup = useCallback(async () => {
+    try {
+      const board = await server.scrims();
+      setPendingLineup(board.pendingLineup ?? null);
+    } catch {
+      // Not fatal: the next event or poll picks it up.
+    }
+  }, []);
 
   const refreshHistory = useCallback(async () => {
     try {
@@ -2275,8 +2406,9 @@ export default function App() {
     }
 
     await refreshHistory();
+    await refreshLineup();
     setChatOpen(false);
-  }, [refreshHistory]);
+  }, [refreshHistory, refreshLineup]);
 
 
   useEffect(() => { if (me) setParty([me]); }, [me]);
@@ -2367,6 +2499,13 @@ export default function App() {
         case "party.invite.declined":
           dismissInvite(e.inviteId);
           break;
+        case "scrim.lineup.required":
+          void refreshLineup();
+          break;
+        case "scrim.lineup.expired":
+          setPendingLineup(null);
+          notify("The scrim was dropped — nobody confirmed a lineup");
+          break;
         case "notification":
           notify(e.text);
           break;
@@ -2384,7 +2523,7 @@ export default function App() {
       off();
       liveBus.disconnect();
     };
-  }, [me, notify, refreshProfile, dismissInvite]);
+  }, [me, notify, refreshProfile, dismissInvite, refreshLineup]);
 
   // Restore an existing session on launch rather than making the user sign in
   // again every time the app opens. Deliberately mount-only: re-running it when
@@ -2494,6 +2633,14 @@ export default function App() {
         // The server decides the penalty and whether anyone is re-queued, and
         // says so over the socket; guessing here would contradict it.
         onFail={() => { setPendingMatch(null); setQueue({ state: "idle" }); }} />}
+
+      {pendingLineup && (
+        <LineupModal
+          pending={pendingLineup}
+          notify={notify}
+          onDone={() => setPendingLineup(null)}
+        />
+      )}
 
       <InviteToasts invites={invites} onAccept={acceptInvite} onDecline={declineInvite} />
 

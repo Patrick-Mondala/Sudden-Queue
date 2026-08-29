@@ -85,6 +85,8 @@ const server = {
   chatHistory: vi.fn(),
   disputes: vi.fn(),
   resolveDispute: vi.fn(),
+  setStarter: vi.fn(),
+  confirmLineup: vi.fn(),
   invite: vi.fn(),
   getInvites: vi.fn(),
   acceptInvite: vi.fn(),
@@ -178,7 +180,7 @@ beforeEach(() => {
   server.getInvites.mockResolvedValue([]);
   server.myTeam.mockResolvedValue({ team: null, role: null, applications: [], myApplication: null });
   server.listTeams.mockResolvedValue({ teams: [] });
-  server.scrims.mockResolvedValue({ listings: [], myListing: null, incoming: [] });
+  server.scrims.mockResolvedValue({ listings: [], myListing: null, incoming: [], pendingLineup: null });
   server.ladder.mockResolvedValue({ rows: [], total: 0, myPosition: null, limit: 50, offset: 0 });
   server.playerProfile.mockResolvedValue(null);
   server.chatHistory.mockResolvedValue({ channel: "", messages: [] });
@@ -1181,5 +1183,198 @@ describe("Game Masters", () => {
     // Rating only applies on agreement, so this is a first ruling rather than
     // an overturned one -- and a GM should not think they are undoing anything.
     expect(await screen.findByText(/No rating has moved/i)).toBeTruthy();
+  });
+});
+
+describe("scrim lineups", () => {
+  const rosterMember = (i, isStarter) => ({
+    userId: `user-${i}`,
+    discordName: `Player${i}`,
+    inGameName: `PLAYER_${i}`,
+    isGameMaster: false,
+    isStarter,
+    tier: "B",
+    placementsRemaining: 0,
+  });
+
+  const pending = (over = {}) => ({
+    requestId: "req-1",
+    opponentTag: "BRV",
+    opponentName: "Bravo",
+    confirmDeadline: new Date(Date.now() + 30_000).toISOString(),
+    roster: [1, 2, 3, 4, 5, 6, 7].map((i) => rosterMember(i, i <= 5)),
+    ...over,
+  });
+
+  const teamWith = (members) => ({
+    team: {
+      id: "team-1",
+      tag: "ACE",
+      name: "Aces High",
+      region: "na",
+      captainId: "user-1",
+      applicationsOpen: true,
+      createdAt: new Date().toISOString(),
+      members,
+    },
+    role: "captain",
+    applications: [],
+    myApplication: null,
+  });
+
+  const rosterRow = (i, isStarter) => ({
+    userId: `user-${i}`,
+    discordName: `Player${i}`,
+    inGameName: `PLAYER_${i}`,
+    isGameMaster: false,
+    role: i === 1 ? "captain" : "member",
+    isStarter,
+    tier: "B",
+    placementsRemaining: 0,
+    joinedAt: new Date().toISOString(),
+  });
+
+  beforeEach(() => {
+    server.setStarter.mockResolvedValue({ ok: true });
+    server.confirmLineup.mockResolvedValue({ confirmed: true, matchId: MATCH.id });
+  });
+
+  it("marks starters and substitutes on the roster", async () => {
+    server.myTeam.mockResolvedValue(
+      teamWith([1, 2, 3, 4, 5, 6, 7].map((i) => rosterRow(i, i <= 5))),
+    );
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Teams/i }));
+
+    expect((await screen.findAllByText("Starter")).length).toBe(5);
+    expect(screen.getAllByText("Sub").length).toBe(2);
+    expect(screen.getByText(/5\/5 starting/i)).toBeTruthy();
+  });
+
+  it("lets the captain bench someone", async () => {
+    server.myTeam.mockResolvedValue(
+      teamWith([1, 2, 3, 4, 5, 6].map((i) => rosterRow(i, i <= 5))),
+    );
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Teams/i }));
+
+    await userEvent.click((await screen.findAllByRole("button", { name: /Move to the bench/i }))[1]);
+    await waitFor(() => expect(server.setStarter).toHaveBeenCalledWith("user-2", false));
+  });
+
+  it("does not offer the toggle to a member", async () => {
+    server.myTeam.mockResolvedValue({
+      ...teamWith([1, 2, 3, 4, 5, 6].map((i) => rosterRow(i, i <= 5))),
+      role: "member",
+    });
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Teams/i }));
+
+    await screen.findByText("Aces High");
+    expect(screen.queryByRole("button", { name: /Move to the bench/i })).toBeNull();
+  });
+
+  it("asks the captain to pick five, with starters already chosen", async () => {
+    server.scrims.mockResolvedValue({
+      listings: [],
+      myListing: null,
+      incoming: [],
+      pendingLineup: pending(),
+    });
+    await signedIn();
+
+    const modal = await screen.findByRole("dialog", { name: /Confirm your lineup/i });
+    expect(within(modal).getByText(/Who is playing/i)).toBeTruthy();
+    expect(within(modal).getByText(/Scrim vs BRV/i)).toBeTruthy();
+    expect(within(modal).getByRole("button", { name: /Confirm these five/i })).toBeTruthy();
+  });
+
+  it("will not let a sixth be added without dropping someone", async () => {
+    server.scrims.mockResolvedValue({
+      listings: [],
+      myListing: null,
+      incoming: [],
+      pendingLineup: pending(),
+    });
+    await signedIn();
+    const modal = await screen.findByRole("dialog", { name: /Confirm your lineup/i });
+
+    // Five are already picked, so the bench is not clickable until one goes.
+    const sixth = within(modal).getByText("Player6").closest("button");
+    expect(sixth.disabled).toBe(true);
+
+    await userEvent.click(within(modal).getByText("Player1").closest("button"));
+    expect(within(modal).getByText("Player6").closest("button").disabled).toBe(false);
+  });
+
+  it("sends exactly what was picked", async () => {
+    server.scrims.mockResolvedValue({
+      listings: [],
+      myListing: null,
+      incoming: [],
+      pendingLineup: pending(),
+    });
+    await signedIn();
+    const modal = await screen.findByRole("dialog", { name: /Confirm your lineup/i });
+
+    // Swap a starter out for a substitute: starters are a default, not a rule.
+    await userEvent.click(within(modal).getByText("Player5").closest("button"));
+    await userEvent.click(within(modal).getByText("Player7").closest("button"));
+    await userEvent.click(within(modal).getByRole("button", { name: /Confirm these five/i }));
+
+    await waitFor(() =>
+      expect(server.confirmLineup).toHaveBeenCalledWith("req-1", [
+        "user-1",
+        "user-2",
+        "user-3",
+        "user-4",
+        "user-7",
+      ]),
+    );
+  });
+
+  it("cannot be confirmed with fewer than five", async () => {
+    server.scrims.mockResolvedValue({
+      listings: [],
+      myListing: null,
+      incoming: [],
+      pendingLineup: pending(),
+    });
+    await signedIn();
+    const modal = await screen.findByRole("dialog", { name: /Confirm your lineup/i });
+
+    await userEvent.click(within(modal).getByText("Player3").closest("button"));
+    expect(within(modal).getByRole("button", { name: /4\/5 picked/i }).disabled).toBe(true);
+  });
+
+  it("goes away when the window lapses", async () => {
+    server.scrims.mockResolvedValue({
+      listings: [],
+      myListing: null,
+      incoming: [],
+      pendingLineup: pending(),
+    });
+    await signedIn();
+    await screen.findByRole("dialog", { name: /Confirm your lineup/i });
+
+    emit({ type: "scrim.lineup.expired", requestId: "req-1" });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /Confirm your lineup/i })).toBeNull(),
+    );
+    expect(screen.getByText(/nobody confirmed a lineup/i)).toBeTruthy();
+  });
+
+  it("never appears for a team of exactly five", async () => {
+    server.scrims.mockResolvedValue({
+      listings: [],
+      myListing: null,
+      incoming: [],
+      pendingLineup: null,
+    });
+    await signedIn();
+
+    // The server does not ask, because there is nothing to choose.
+    expect(screen.queryByRole("dialog", { name: /Confirm your lineup/i })).toBeNull();
   });
 });
