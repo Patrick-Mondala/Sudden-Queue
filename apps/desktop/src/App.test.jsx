@@ -1761,6 +1761,10 @@ describe("your in-game name", () => {
       team: null,
     });
     await signedIn();
+    // A player with no name set is met by the prompt first; put it off, which
+    // is what someone heading for their profile has already done.
+    const later = screen.queryByRole("button", { name: /^Later$/i });
+    if (later) await userEvent.click(later);
     await userEvent.click(screen.getByRole("button", { name: /Profile/i }));
   }
 
@@ -1876,5 +1880,79 @@ describe("your in-game name", () => {
 
     expect(await screen.findByText(/OTHER_GUY/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Change your in-game name/i })).toBeNull();
+  });
+});
+
+describe("being asked for an in-game name", () => {
+  const nameless = () => server.me.mockResolvedValue({ ...PROFILE, inGameName: null });
+
+  it("asks on sign-in when there is none", async () => {
+    nameless();
+    await signedIn();
+
+    expect(await screen.findByRole("dialog", { name: /Set your in-game name/i })).toBeTruthy();
+  });
+
+  it("does not ask someone who already has one", async () => {
+    await signedIn();
+    expect(screen.queryByRole("dialog", { name: /Set your in-game name/i })).toBeNull();
+  });
+
+  it("saves and gets out of the way", async () => {
+    nameless();
+    server.setInGameName.mockResolvedValue({ inGameName: "SNIPER_X" });
+    await signedIn();
+
+    await userEvent.type(await screen.findByLabelText(/^In-game name$/i), "SNIPER_X");
+    server.me.mockResolvedValue({ ...PROFILE, inGameName: "SNIPER_X" });
+    await userEvent.click(screen.getByRole("button", { name: /Save it/i }));
+
+    await waitFor(() => expect(server.setInGameName).toHaveBeenCalledWith("SNIPER_X"));
+    // Re-reading the profile is what clears the prompt and carries the name to
+    // everywhere else it is drawn, so the prompt going is the thing to assert.
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /Set your in-game name/i })).toBeNull(),
+    );
+  });
+
+  it("can be put off, leaving a way back", async () => {
+    nameless();
+    await signedIn();
+
+    await userEvent.click(await screen.findByRole("button", { name: /^Later$/i }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /Set your in-game name/i })).toBeNull());
+    // Interrupting someone on their way to a queue is not how to be liked, so
+    // the banner carries it from here rather than the modal insisting.
+    expect(screen.getByText(/have not set one/i)).toBeTruthy();
+  });
+
+  it("keeps the banner off once a name is set", async () => {
+    await signedIn();
+    expect(screen.queryByText(/have not set one/i)).toBeNull();
+  });
+
+  it("will not take a name the server would refuse", async () => {
+    nameless();
+    await signedIn();
+
+    await userEvent.type(await screen.findByLabelText(/^In-game name$/i), "x{Enter}");
+    expect(server.setInGameName).not.toHaveBeenCalled();
+  });
+
+  it("stands aside for a match that has been found", async () => {
+    nameless();
+    await signedIn();
+
+    emit({
+      type: "match.found",
+      matchId: MATCH.id,
+      acceptDeadline: new Date(Date.now() + 20_000).toISOString(),
+      match: MATCH,
+    });
+
+    // Twenty seconds to accept; a question about names can wait.
+    expect(await screen.findByText(/Match found/i)).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: /Set your in-game name/i })).toBeNull();
   });
 });

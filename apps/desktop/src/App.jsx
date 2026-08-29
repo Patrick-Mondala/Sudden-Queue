@@ -74,6 +74,10 @@ const winRate = (wins = 0, losses = 0) => {
 /* ─────────────────────────────────────────────────────────────
    ADAPTERS  (server payloads -> the shapes the screens render)
    ───────────────────────────────────────────────────────────── */
+/** What the server will accept, so a control can say so before the round trip. */
+const IGN_MIN = 2;
+const IGN_MAX = 16;
+
 const AV_COLORS = ["#4C6EF5","#B23A48","#2A9D8F","#8E44AD","#D97706","#0EA5E9","#DC2626","#65A30D","#7C3AED","#DB2777"];
 
 /** Stable colour pick for a server-issued id, so avatars do not change per render. */
@@ -417,7 +421,7 @@ function Login({ onSignedIn }) {
 /* ─────────────────────────────────────────────────────────────
    PUG QUEUE
    ───────────────────────────────────────────────────────────── */
-function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, history, notify, onViewMatch, onView, onInvite }) {
+function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, history, notify, onViewMatch, onView, onInvite, onSetName }) {
   const [regions, setRegions] = usePersistentState("sq.pug.regions", ["na", "eu"]);
   useTick(queue.state === "queued" || cooldownUntil > Date.now());
   const elapsed = queue.state === "queued" ? Math.floor((Date.now() - queue.since) / 1000) : 0;
@@ -453,6 +457,18 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16, height: "100%" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
+        {me.inGameName === null && (
+          <Panel pad={12} style={{ borderColor: T.captain, background: T.raised }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <AlertTriangle size={15} color={T.captain} />
+              <div style={{ flex: 1, fontSize: 12.5, color: T.muted, lineHeight: 1.4 }}>
+                Your team will be looking for your <strong style={{ color: T.text }}>in-game name</strong>, and you have not set one.
+              </div>
+              <Btn size="sm" onClick={onSetName}>Set it</Btn>
+            </div>
+          </Panel>
+        )}
+
         {/* queue control */}
         <Panel pad={20} style={{ position: "relative", overflow: "hidden", borderColor: queue.state === "queued" ? T.accent : T.line }}>
           {queue.state === "queued" && <div style={{ position: "absolute", inset: 0, background: `linear-gradient(90deg, transparent, ${T.accentDim}, transparent)`, backgroundSize: "200% 100%", animation: "sqSweep 2.4s linear infinite", pointerEvents: "none" }} />}
@@ -1697,9 +1713,68 @@ function LadderScreen({ me, onView, notify }) {
   );
 }
 
-/** What the server will accept, so the button can say so before the round trip. */
-const IGN_MIN = 2;
-const IGN_MAX = 16;
+/**
+ * Asked once a launch, until it is answered.
+ *
+ * The name is how nine other people find you once the match starts, so an
+ * account without one is a party-up screen telling everybody to add a name
+ * that does not exist in the game. Dismissable, because interrupting someone
+ * on their way to a queue is not the way to make them like the app -- the
+ * banner on the play screen carries it from here.
+ */
+function NamePrompt({ onSaved, onLater, notify }) {
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const trimmed = draft.trim();
+  const valid = trimmed.length >= IGN_MIN && trimmed.length <= IGN_MAX;
+
+  const save = async () => {
+    if (!valid) return;
+    setBusy(true);
+    try {
+      await server.setInGameName(trimmed);
+      await onSaved?.();
+    } catch (err) {
+      notify?.(err?.message ?? "Could not save that name");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 76, animation: "sqIn .2s ease" }}>
+      <div role="dialog" aria-label="Set your in-game name" style={{ width: 400, maxWidth: "90vw" }}>
+        <Panel pad={20}>
+          <Eyebrow style={{ marginBottom: 6 }}>One thing first</Eyebrow>
+          <H size={21}>What are you called in-game?</H>
+          <div style={{ fontSize: 13, color: T.muted, marginTop: 8, lineHeight: 1.5 }}>
+            This is the name your team looks for once a match starts. It is not
+            checked against the game, so type it exactly as it appears there.
+          </div>
+
+          <input
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value.slice(0, IGN_MAX))}
+            onKeyDown={(e) => { if (e.key === "Enter") save(); }}
+            aria-label="In-game name"
+            placeholder="Your name in Sudden Attack"
+            style={{ width: "100%", boxSizing: "border-box", marginTop: 16, background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "9px 11px", color: T.text, fontFamily: T.mono, fontSize: 13.5 }}
+          />
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14 }}>
+            <Btn kind="primary" disabled={!valid || busy} onClick={save} style={{ flex: 1, justifyContent: "center" }}>Save it</Btn>
+            <Btn kind="quiet" disabled={busy} onClick={onLater}>Later</Btn>
+          </div>
+          <div style={{ fontSize: 11.5, color: T.dim, marginTop: 8 }}>
+            {IGN_MIN}–{IGN_MAX} characters. You can change it any time on your profile.
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
+}
 
 /**
  * Your in-game name, which only you can set.
@@ -2730,6 +2805,10 @@ export default function App() {
   // scrims screen, because it has to interrupt wherever they happen to be.
   const [pendingLineup, setPendingLineup] = useState(null);
   const [inviteOpen, setInviteOpen] = useState(false);
+  // Deliberately not persisted. Putting it off should last until the app is
+  // next opened, not for ever -- the banner is the gentle version, this is the
+  // one that gets seen.
+  const [namePutOff, setNamePutOff] = useState(false);
   const notify = useCallback((text) => { const id = Date.now() + Math.random(); setToasts((t) => [...t, { id, text }]); setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3800); }, []);
 
   /**
@@ -3047,7 +3126,7 @@ export default function App() {
     void refreshHistory();
   }} />;
   else if (viewProfile) content = <ProfileScreen p={viewProfile} me={me} history={history} onBack={() => setViewProfile(null)} onViewMatch={openMatch} onSaved={refreshProfile} notify={notify} />;
-  else if (nav === "play") content = <PlayScreen me={me} party={party} setParty={setParty} queue={queue} setQueue={setQueue} cooldownUntil={cooldownUntil} history={history} notify={notify} onViewMatch={openMatch} onView={setViewProfile} onInvite={() => setInviteOpen(true)} />;
+  else if (nav === "play") content = <PlayScreen me={me} party={party} setParty={setParty} queue={queue} setQueue={setQueue} cooldownUntil={cooldownUntil} history={history} notify={notify} onViewMatch={openMatch} onView={setViewProfile} onInvite={() => setInviteOpen(true)} onSetName={() => go("profile")} />;
   // These three have no server endpoints yet, so they say so rather than
   // standing in for them.
   else if (nav === "scrims") content = <ScrimsScreen notify={notify} />;
@@ -3099,6 +3178,14 @@ export default function App() {
         {/* main */}
         <div style={{ flex: 1, minWidth: 0, padding: 16, overflow: "auto", position: "relative" }}>{content}</div>
       </div>
+
+      {me.inGameName === null && !namePutOff && !pendingMatch && !match && (
+        <NamePrompt
+          notify={notify}
+          onSaved={refreshProfile}
+          onLater={() => setNamePutOff(true)}
+        />
+      )}
 
       {pendingMatch && <AcceptOverlay match={pendingMatch}
         onAccepted={() => { setMatch(pendingMatch); setPendingMatch(null); go("play"); }}
