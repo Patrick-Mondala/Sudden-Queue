@@ -36,6 +36,7 @@ import { LadderService } from "./ladder/service.js";
 import { ChatService } from "./chat/service.js";
 import { QueueRepository } from "./queue/repository.js";
 import { Notifier } from "./realtime/notifier.js";
+import { Population } from "./realtime/population.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -55,6 +56,7 @@ export interface AppDeps {
 export interface App {
   server: FastifyInstance;
   notifier: Notifier;
+  population: Population;
   matchmaker: Matchmaker;
   sweeper: MatchSweeper;
   /** Exposed so tests can expire a lineup window without waiting it out. */
@@ -177,6 +179,22 @@ export async function buildApp({
 
   // ---------------------------------------------------------------- realtime
 
+  /**
+   * The header counters, pushed rather than polled.
+   *
+   * Every site below that moves one of these numbers nudges it. Missing one is
+   * a wrong number for a sweep interval, not forever -- see Population.
+   */
+  const population = new Population(
+    notifier,
+    async () => ({
+      online: notifier.onlineCount(),
+      inQueue: await queue.countQueuedPlayers(),
+      inMatch: await lifecycle.countPlayersInMatches(),
+    }),
+    { onError: (err) => server.log.error({ err }, "population refresh failed") },
+  );
+
   const matchmaker = new Matchmaker(queue, lifecycle, {
     onMatchCreated: async (match) => {
       const detail = await lifecycle.view(match.matchId);
@@ -186,6 +204,7 @@ export async function buildApp({
         acceptDeadline: match.acceptDeadline.toISOString(),
         match: detail,
       });
+      population.nudge();
     },
     onTicketsPruned: async (partyIds) => {
       const userIds = await party.memberIds(partyIds);
@@ -194,6 +213,7 @@ export async function buildApp({
         partyId: partyIds[0] ?? "",
         reason: "CONNECTION_LOST",
       });
+      population.nudge();
     },
     onError: (err, ctx) => server.log.error({ err, ctx }, "matchmaker error"),
   });
@@ -221,6 +241,7 @@ export async function buildApp({
         atFault: false,
         cooldownSeconds: 0,
       });
+      population.nudge();
     },
     onLive: async (matchId) => {
       const parts = await lifecycle.participants(matchId);
@@ -228,6 +249,7 @@ export async function buildApp({
         parts.map((p) => p.userId),
         { type: "match.state", matchId, state: "LIVE" },
       );
+      population.nudge();
     },
     onDisputed: async (matchId) => {
       const parts = await lifecycle.participants(matchId);
@@ -235,6 +257,7 @@ export async function buildApp({
         parts.map((p) => p.userId),
         { type: "match.state", matchId, state: "DISPUTED" },
       );
+      population.nudge();
     },
     onError: (err) => server.log.error({ err }, "sweeper error"),
   });
@@ -769,6 +792,7 @@ export async function buildApp({
       joinedAt: Date.now(),
     });
 
+    population.nudge();
     // A new ticket may complete a match immediately; do not wait for the tick.
     matchmaker.requestRun();
 
@@ -788,15 +812,20 @@ export async function buildApp({
 
     const members = await party.memberIds([partyId]);
     notifier.toUsers(members, { type: "queue.left", partyId });
+    population.nudge();
 
     return { ok: true };
   });
 
-  server.get("/queue/stats", async () => ({
-    online: notifier.onlineCount(),
-    inQueue: await queue.countQueuedPlayers(),
-    inMatch: await lifecycle.countPlayersInMatches(),
-  }));
+  /**
+   * The same three numbers the socket pushes.
+   *
+   * Nothing polls this any more -- the client learns the counts on connect and
+   * hears about every change. It stays because a number worth showing is worth
+   * being able to ask for, and it is the one place that reads them without a
+   * socket.
+   */
+  server.get("/queue/stats", async () => population.current());
 
   // -------------------------------------------------------------------- teams
 
@@ -1112,6 +1141,7 @@ export async function buildApp({
       team1Rating: host.rating,
       team2Rating: guest.rating,
     });
+    population.nudge();
 
     if (isFail(committed)) {
       await scrim.reopen(input.listingId, input.requestId);
@@ -1456,6 +1486,7 @@ export async function buildApp({
 
     const parts = await lifecycle.participants(id);
     const userIds = parts.map((p) => p.userId);
+    population.nudge();
 
     if (result.data.state === "COMPLETED" || result.data.state === "DISPUTED") {
       chat.clearMatch(id);
@@ -1579,6 +1610,7 @@ export async function buildApp({
   notifier.onUserOffline = (userId) => {
     chat.forget(userId);
     scheduleDisconnectCheck(userId);
+    population.nudge();
   };
 
   async function dropFromPartyIfStillGone(userId: string): Promise<void> {
@@ -1633,6 +1665,11 @@ export async function buildApp({
     };
 
     notifier.add(userId, conn);
+    // Tell this socket where things stand before anything changes: a second
+    // window for someone already online moves no number, so the broadcast its
+    // arrival triggers would not be sent.
+    population.greet(userId);
+    population.nudge();
     // They are back, so whatever was counting down for them can stop.
     clearTimeout(disconnectTimers.get(userId));
     disconnectTimers.delete(userId);
@@ -1724,11 +1761,13 @@ export async function buildApp({
   if (autoStart) {
     matchmaker.start();
     sweeper.start();
+    population.start();
   }
 
   server.addHook("onClose", async () => {
     matchmaker.stop();
     sweeper.stop();
+    population.stop();
     if (scrimSweep) clearInterval(scrimSweep);
     notifier.closeAll();
   });
@@ -1736,6 +1775,7 @@ export async function buildApp({
   return {
     server,
     notifier,
+    population,
     matchmaker,
     sweeper,
     sweepScrims,

@@ -2277,7 +2277,9 @@ function ChatDock({ me, partyId, open, setOpen, onView }) {
 export default function App() {
   const [me, setMe] = useState(null);
   const [nav, setNav] = useState("play");
-  const [pop, setPop] = useState({ online: 0, inQueue: 0, inMatch: 0 });
+  // Null until the socket says otherwise: zeroes would read as an empty
+  // playerbase during the moment before the first push lands.
+  const [pop, setPop] = useState(null);
   const [party, setParty] = useState([]);
   const [queue, setQueue] = useState({ state: "idle" });
   const [pendingMatch, setPendingMatch] = useState(null);
@@ -2458,21 +2460,6 @@ export default function App() {
 
 
   useEffect(() => { if (me) setParty([me]); }, [me]);
-  useEffect(() => {
-    if (!me) return;
-    const f = async () => {
-      try {
-        const stats = await server.queueStats();
-        setPop({ online: stats.online, inQueue: stats.inQueue, inMatch: stats.inMatch ?? 0 });
-      } catch {
-        // Server unreachable; leave the last known counts rather than showing
-        // zeroes that look like an empty playerbase.
-      }
-    };
-    f();
-    const iv = setInterval(f, 8000);
-    return () => clearInterval(iv);
-  }, [me]);
   /** Server events that the whole shell reacts to, rather than one screen. */
   useEffect(() => {
     if (!me) return;
@@ -2491,6 +2478,10 @@ export default function App() {
           setPendingMatch(found);
           break;
         }
+        case "queue.counts":
+          // Pushed whenever they move, and once on connect. Nothing asks.
+          setPop({ online: e.online, inQueue: e.inQueue, inMatch: e.inMatch });
+          break;
         case "queue.left":
           setQueue({ state: "idle" });
           if (e.reason === "CONNECTION_LOST") notify("Connection dropped — you left the queue");
@@ -2648,8 +2639,8 @@ export default function App() {
         {/* population strip */}
         <div style={{ display: "flex", gap: 14, marginLeft: 6 }}>
           {/* Server counts, already inclusive of you. */}
-          {[["Online", pop.online, T.ok], ["In queue", pop.inQueue, T.accent], ["In match", pop.inMatch, T.captain]].map(([k, v, c]) => (
-            <div key={k} style={{ display: "flex", alignItems: "center", gap: 6 }}><Dot color={c} /><span style={{ fontFamily: T.mono, fontSize: 12.5, fontWeight: 600 }}>{v}</span><span style={{ fontSize: 11.5, color: T.muted }}>{k}</span></div>
+          {[["Online", pop?.online, T.ok], ["In queue", pop?.inQueue, T.accent], ["In match", pop?.inMatch, T.captain]].map(([k, v, c]) => (
+            <div key={k} style={{ display: "flex", alignItems: "center", gap: 6 }}><Dot color={c} /><span style={{ fontFamily: T.mono, fontSize: 12.5, fontWeight: 600 }}>{v ?? "–"}</span><span style={{ fontSize: 11.5, color: T.muted }}>{k}</span></div>
           ))}
         </div>
         <div style={{ flex: 1 }} />

@@ -1477,3 +1477,53 @@ describe("being told a team cannot scrim", () => {
     expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 });
+
+describe("the population counters", () => {
+  /** The header strip: a label and the number beside it. */
+  const counter = (label) => {
+    // The value sits immediately before its label; the dot beside them is a
+    // span too, so picking the first one in the row finds the dot.
+    const node = screen.getByText(label);
+    return node.previousElementSibling.textContent;
+  };
+
+  it("shows what the socket pushed", async () => {
+    await signedIn();
+
+    emit({ type: "queue.counts", online: 42, inQueue: 7, inMatch: 20 });
+
+    await waitFor(() => expect(counter("Online")).toBe("42"));
+    expect(counter("In queue")).toBe("7");
+    expect(counter("In match")).toBe("20");
+  });
+
+  it("keeps up as the numbers move", async () => {
+    await signedIn();
+    emit({ type: "queue.counts", online: 42, inQueue: 7, inMatch: 20 });
+    await waitFor(() => expect(counter("In queue")).toBe("7"));
+
+    emit({ type: "queue.counts", online: 43, inQueue: 0, inMatch: 30 });
+
+    // Zero is a real answer here, and has to survive the render as one.
+    await waitFor(() => expect(counter("In queue")).toBe("0"));
+    expect(counter("In match")).toBe("30");
+  });
+
+  it("holds a placeholder until the first push, rather than showing zeroes", async () => {
+    await signedIn();
+
+    // Zeroes would read as an empty playerbase in the moment before the socket
+    // gets its first word in, which is the worst thing to show a new arrival.
+    expect(counter("Online")).toBe("–");
+  });
+
+  it("does not ask the server for them", async () => {
+    await signedIn();
+    emit({ type: "queue.counts", online: 42, inQueue: 7, inMatch: 20 });
+    await waitFor(() => expect(counter("Online")).toBe("42"));
+
+    // The whole point: these arrive unasked. A poll here was two queries per
+    // signed-in client every eight seconds.
+    expect(server.queueStats).not.toHaveBeenCalled();
+  });
+});

@@ -2605,3 +2605,134 @@ describe("a team has to be present to scrim", () => {
     expect(res.statusCode).toBe(200);
   });
 });
+
+describe("population counters", () => {
+  beforeEach(async () => {
+    // The broadcaster outlives each test, so a coalesced refresh scheduled by
+    // an earlier one can land inside this one and be mistaken for the push
+    // under test. Clearing the timer and syncing to the freshly truncated
+    // database means anything heard from here was caused here.
+    app.population.stop();
+    await app.population.refresh();
+  });
+
+  /** A socket that keeps what it was told, rather than dropping it. */
+  function listen(userId: string) {
+    const heard: { type: string; online?: number; inQueue?: number; inMatch?: number }[] = [];
+    const conn = {
+      send: (payload: string) => heard.push(JSON.parse(payload)),
+      close: () => {},
+    };
+    app.notifier.add(userId, conn);
+    connections.push({ userId, conn: conn as unknown as { send: () => void; close: () => void } });
+    return {
+      counts: () => heard.filter((e) => e.type === "queue.counts"),
+    };
+  }
+
+  /** The broadcast is coalesced, so it lands a beat after the request does. */
+  async function untilCounted(
+    read: () => { inQueue?: number; inMatch?: number; online?: number }[],
+    timeoutMs = 3000,
+  ) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (read().length > 0) return read();
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    return read();
+  }
+
+  it("tells a socket the queue grew, without it asking", async () => {
+    const user = await login();
+    const socket = listen(user.userId);
+
+    const res = await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(user.token),
+      payload: { regions: ["na"] },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const counts = await untilCounted(socket.counts);
+    expect(counts.at(-1)).toMatchObject({ type: "queue.counts", inQueue: 1 });
+  });
+
+  it("tells them again when it shrinks", async () => {
+    const user = await login();
+    const socket = listen(user.userId);
+
+    await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(user.token),
+      payload: { regions: ["na"] },
+    });
+    await untilCounted(socket.counts);
+
+    await app.server.inject({
+      method: "POST",
+      url: "/queue/leave",
+      headers: authed(user.token),
+    });
+
+    await untilCounted(() => socket.counts().filter((c) => c.inQueue === 0));
+    expect(socket.counts().at(-1)).toMatchObject({ inQueue: 0 });
+  });
+
+  it("reaches people who had nothing to do with the change", async () => {
+    const actor = await login();
+    const bystander = await login();
+    const watching = listen(bystander.userId);
+    listen(actor.userId);
+
+    await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(actor.token),
+      payload: { regions: ["na"] },
+    });
+
+    // The whole reason this is pushed rather than polled: the numbers move for
+    // reasons that never reach you.
+    const counts = await untilCounted(watching.counts);
+    expect(counts.at(-1)).toMatchObject({ inQueue: 1 });
+  });
+
+  it("still answers the route, for anyone without a socket", async () => {
+    const user = await login();
+    await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(user.token),
+      payload: { regions: ["na"] },
+    });
+
+    const res = await app.server.inject({ method: "GET", url: "/queue/stats" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ inQueue: 1 });
+  });
+
+  it("publishes counts and nothing else", async () => {
+    const user = await login();
+    const socket = listen(user.userId);
+    await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(user.token),
+      payload: { regions: ["na"] },
+    });
+
+    const counts = await untilCounted(socket.counts);
+    // These go to everyone on the server, so they are the last place a rating
+    // should ever turn up.
+    expect(Object.keys(counts.at(-1)!).sort()).toEqual([
+      "inMatch",
+      "inQueue",
+      "online",
+      "type",
+    ]);
+    expectNoRatings(counts.at(-1));
+  });
+});
