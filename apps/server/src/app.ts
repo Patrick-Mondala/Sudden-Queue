@@ -57,6 +57,8 @@ export interface App {
   notifier: Notifier;
   matchmaker: Matchmaker;
   sweeper: MatchSweeper;
+  /** Exposed so tests can expire a lineup window without waiting it out. */
+  sweepScrims: () => Promise<void>;
   services: {
     auth: AuthService;
     sessions: SessionService;
@@ -985,6 +987,24 @@ export async function buildApp({
     return { ok: true };
   });
 
+  server.post("/team/members/:userId/starter", { preHandler: authenticate }, async (req, reply) => {
+    const { userId } = req.params as { userId: string };
+    const body = z.object({ starting: z.boolean() }).safeParse(req.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: "BAD_REQUEST", message: "starting must be true or false" });
+    }
+
+    const result = await team.setStarter(requireUser(req).userId, userId, body.data.starting);
+    if (isFail(result)) {
+      return reply
+        .code(teamErrorStatus(result.code))
+        .send({ error: result.code, message: result.message });
+    }
+
+    await broadcastTeam(result.data.teamId);
+    return { ok: true };
+  });
+
   server.post("/team/captain", { preHandler: authenticate }, async (req, reply) => {
     const body = z.object({ userId: z.string().uuid() }).safeParse(req.body);
     if (!body.success) {
@@ -1048,12 +1068,67 @@ export async function buildApp({
 
   const scrimErrorStatus = (code: string): number => {
     if (code === "LISTING_NOT_FOUND" || code === "REQUEST_NOT_FOUND") return 404;
-    if (code === "NOT_A_MANAGER" || code === "NOT_IN_TEAM") return 403;
+    if (code === "NOT_A_MANAGER" || code === "NOT_IN_TEAM" || code === "NOT_CAPTAIN") return 403;
     if (code === "INVALID_REGION") return 400;
     return 409;
   };
 
   /** Everything the scrims screen needs, from whichever side you are on. */
+  /**
+   * Turns a settled arrangement into a match.
+   *
+   * Reached either straight from acceptance -- when both rosters are exactly
+   * five and there was nothing to choose -- or from the second captain
+   * confirming. Either way the ten names are settled before this runs.
+   */
+  async function commitScrim(input: {
+    requestId: string;
+    listingId: string;
+    region: string;
+    hostTeamId: string;
+    guestTeamId: string;
+  }): Promise<{ ok: true; matchId: string } | { ok: false; code: string; message: string }> {
+    const lineups = await scrim.lineupsFor(input.requestId);
+    if (!lineups) return { ok: false, code: "NOT_CONFIRMING", message: "A lineup is still missing" };
+
+    const host = await scrim.lineup(input.hostTeamId, lineups.host);
+    const guest = await scrim.lineup(input.guestTeamId, lineups.guest);
+
+    if (!host || !guest) {
+      await scrim.reopen(input.listingId, input.requestId);
+      return { ok: false, code: "ROSTER_TOO_SMALL", message: "One of the rosters is short of five" };
+    }
+
+    const committed = await lifecycle.createScrim({
+      region: input.region,
+      team1Id: input.hostTeamId,
+      team2Id: input.guestTeamId,
+      team1UserIds: host.userIds,
+      team2UserIds: guest.userIds,
+      captain1: host.captainId,
+      captain2: guest.captainId,
+      team1Rating: host.rating,
+      team2Rating: guest.rating,
+    });
+
+    if (isFail(committed)) {
+      await scrim.reopen(input.listingId, input.requestId);
+      return { ok: false, code: committed.code, message: committed.message };
+    }
+
+    await scrim.markMatched(input.listingId);
+
+    const view = await lifecycle.view(committed.data.matchId);
+    notifier.toUsers(committed.data.userIds, {
+      type: "match.found",
+      matchId: committed.data.matchId,
+      acceptDeadline: committed.data.acceptDeadline.toISOString(),
+      match: view,
+    });
+
+    return { ok: true, matchId: committed.data.matchId };
+  }
+
   server.get("/scrims", { preHandler: authenticate }, async (req) => {
     const user = requireUser(req);
     const { region } = req.query as { region?: string };
@@ -1063,6 +1138,8 @@ export async function buildApp({
       listings: await scrim.openListings(teamId, region),
       myListing: teamId ? await scrim.listingFor(teamId) : null,
       incoming: teamId ? await scrim.incomingRequests(teamId) : [],
+      // Null unless this reader is a captain whose team still owes a five.
+      pendingLineup: await scrim.pendingLineupFor(user.userId),
     };
   });
 
@@ -1161,46 +1238,63 @@ export async function buildApp({
       return { accepted: false };
     }
 
-    const host = await scrim.lineup(decided.data.hostTeamId);
-    const guest = await scrim.lineup(decided.data.guestTeamId);
-
-    if (!host || !guest) {
-      await scrim.reopen(decided.data.listingId, id);
-      return reply
-        .code(409)
-        .send({ error: "ROSTER_TOO_SMALL", message: "One of the rosters is short of five" });
+    // A team carrying substitutes has to say who plays before anyone is
+    // asked to accept. Both captains are told; whoever is last to confirm
+    // triggers the match.
+    if (!decided.data.ready) {
+      for (const teamId of [decided.data.hostTeamId, decided.data.guestTeamId]) {
+        notifier.toUsers(await team.memberIds(teamId), {
+          type: "scrim.lineup.required",
+          requestId: id,
+        });
+      }
+      return { accepted: true, awaitingLineup: true };
     }
 
-    const committed = await lifecycle.createScrim({
+    const result = await commitScrim({
+      requestId: id,
+      listingId: decided.data.listingId,
       region: decided.data.region,
-      team1Id: decided.data.hostTeamId,
-      team2Id: decided.data.guestTeamId,
-      team1UserIds: host.userIds,
-      team2UserIds: guest.userIds,
-      captain1: host.captainId,
-      captain2: guest.captainId,
-      team1Rating: host.rating,
-      team2Rating: guest.rating,
+      hostTeamId: decided.data.hostTeamId,
+      guestTeamId: decided.data.guestTeamId,
     });
 
-    if (isFail(committed)) {
-      await scrim.reopen(decided.data.listingId, id);
-      return reply
-        .code(409)
-        .send({ error: committed.code, message: committed.message });
+    if (!result.ok) {
+      return reply.code(409).send({ error: result.code, message: result.message });
     }
 
-    await scrim.markMatched(decided.data.listingId);
+    return { accepted: true, matchId: result.matchId };
+  });
 
-    const view = await lifecycle.view(committed.data.matchId);
-    notifier.toUsers(committed.data.userIds, {
-      type: "match.found",
-      matchId: committed.data.matchId,
-      acceptDeadline: committed.data.acceptDeadline.toISOString(),
-      match: view,
+  server.post("/scrims/requests/:id/lineup", { preHandler: authenticate }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = z.object({ userIds: z.array(z.string().uuid()) }).safeParse(req.body);
+    if (!body.success) {
+      return reply.code(400).send({ error: "BAD_REQUEST", message: "userIds is required" });
+    }
+
+    const confirmed = await scrim.confirmLineup(requireUser(req).userId, id, body.data.userIds);
+    if (isFail(confirmed)) {
+      return reply
+        .code(scrimErrorStatus(confirmed.code))
+        .send({ error: confirmed.code, message: confirmed.message });
+    }
+
+    if (!confirmed.data.ready) return { confirmed: true, awaitingLineup: true };
+
+    const result = await commitScrim({
+      requestId: id,
+      listingId: confirmed.data.listingId,
+      region: confirmed.data.region,
+      hostTeamId: confirmed.data.hostTeamId,
+      guestTeamId: confirmed.data.guestTeamId,
     });
 
-    return { accepted: true, matchId: committed.data.matchId };
+    if (!result.ok) {
+      return reply.code(409).send({ error: result.code, message: result.message });
+    }
+
+    return { confirmed: true, matchId: result.matchId };
   });
 
   // ------------------------------------------------------------------ ladder
@@ -1591,6 +1685,34 @@ export async function buildApp({
     socket.on("error", () => notifier.remove(userId, conn));
   });
 
+  /**
+   * Scrims nobody finished confirming.
+   *
+   * Runs on its own timer rather than the match sweeper's, because it is
+   * about arrangements rather than matches -- nothing here has reached the
+   * lifecycle yet.
+   */
+  async function sweepScrims(): Promise<void> {
+    const dropped = await scrim.expireUnconfirmed();
+    for (const d of dropped) {
+      for (const teamId of d.teamIds) {
+        notifier.toUsers(await team.memberIds(teamId), {
+          type: "scrim.lineup.expired",
+          requestId: d.requestId,
+        });
+      }
+    }
+  }
+
+  let scrimSweep: NodeJS.Timeout | null = null;
+
+  if (autoStart) {
+    scrimSweep = setInterval(() => {
+      void sweepScrims().catch((err) => server.log.error({ err }, "scrim sweep failed"));
+    }, 1_000);
+    scrimSweep.unref?.();
+  }
+
   if (autoStart) {
     matchmaker.start();
     sweeper.start();
@@ -1599,6 +1721,7 @@ export async function buildApp({
   server.addHook("onClose", async () => {
     matchmaker.stop();
     sweeper.stop();
+    if (scrimSweep) clearInterval(scrimSweep);
     notifier.closeAll();
   });
 
@@ -1607,6 +1730,7 @@ export async function buildApp({
     notifier,
     matchmaker,
     sweeper,
+    sweepScrims,
     services: { auth, sessions, party, queue, lifecycle, reporting, team, scrim, ladder, chat },
   };
 }

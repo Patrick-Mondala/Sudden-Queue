@@ -3,6 +3,7 @@ import {
   MAX_TEAM_SIZE,
   REGIONS,
   TEAM_NAME_MAX_LENGTH,
+  TEAM_SIZE,
   TEAM_TAG_MAX_LENGTH,
   type Result,
   fail,
@@ -11,7 +12,7 @@ import {
   placementGamesRemaining,
   tierForRating,
 } from "@suddenqueue/core";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 
 import { isGameMaster } from "../auth/roles.js";
 import type { Database, Executor } from "../db/client.js";
@@ -31,6 +32,8 @@ export interface TeamMemberView {
   inGameName: string | null;
   isGameMaster: boolean;
   role: TeamRole;
+  /** Marked to play. Starters sort to the top and preselect for a scrim. */
+  isStarter: boolean;
   /** Rank only; the rating behind it is not published. */
   tier: string | null;
   placementsRemaining: number;
@@ -87,7 +90,8 @@ export type TeamError =
   | "CANNOT_REMOVE_CAPTAIN"
   | "APPLICATIONS_CLOSED"
   | "ALREADY_APPLIED"
-  | "APPLICATION_NOT_FOUND";
+  | "APPLICATION_NOT_FOUND"
+  | "TOO_MANY_STARTERS";
 
 /**
  * Registered teams — persistent rosters, distinct from the throwaway parties
@@ -134,6 +138,7 @@ export class TeamService {
         inGameName: users.inGameName,
         accountRole: users.role,
         role: teamMembers.role,
+        isStarter: teamMembers.isStarter,
         joinedAt: teamMembers.joinedAt,
         rating: playerRatings.rating,
         gamesPlayed: playerRatings.gamesPlayed,
@@ -142,7 +147,9 @@ export class TeamService {
       .innerJoin(users, eq(users.id, teamMembers.userId))
       .leftJoin(playerRatings, eq(playerRatings.userId, teamMembers.userId))
       .where(eq(teamMembers.teamId, teamId))
-      .orderBy(teamMembers.joinedAt, teamMembers.userId);
+      // Starters first, then seniority within each group -- the roster reads
+      // as the lineup it is rather than as an arrival order.
+      .orderBy(desc(teamMembers.isStarter), teamMembers.joinedAt, teamMembers.userId);
 
     return {
       id: team.id,
@@ -159,6 +166,7 @@ export class TeamService {
           discordName: r.discordName,
           inGameName: r.inGameName,
           isGameMaster: isGameMaster(r.accountRole),
+          isStarter: r.isStarter,
           // The stored role and the captain column could disagree after a
           // transfer; the team row is the one that decides.
           role: r.userId === team.captainId ? "captain" : (r.role as TeamRole),
@@ -296,7 +304,7 @@ export class TeamService {
 
       await tx
         .insert(teamMembers)
-        .values({ teamId: team!.id, userId, role: "captain" });
+        .values({ teamId: team!.id, userId, role: "captain", isStarter: true });
 
       // Registering settles whatever they had outstanding: they have a team now.
       await this.withdrawApplications(tx, userId);
@@ -396,9 +404,24 @@ export class TeamService {
           return fail("TEAM_FULL", "Your roster is full");
         }
 
-        await tx
-          .insert(teamMembers)
-          .values({ teamId: application.teamId, userId: application.userId, role: "member" });
+        // The sixth player onward is a substitute: five is the cap, and a new
+        // arrival should not silently push someone out of the lineup.
+        const [starters] = await tx
+          .select({ n: sql<number>`COUNT(*)::int` })
+          .from(teamMembers)
+          .where(
+            and(
+              eq(teamMembers.teamId, application.teamId),
+              eq(teamMembers.isStarter, true),
+            ),
+          );
+
+        await tx.insert(teamMembers).values({
+          teamId: application.teamId,
+          userId: application.userId,
+          role: "member",
+          isStarter: (starters?.n ?? 0) < TEAM_SIZE,
+        });
       }
 
       await tx
@@ -453,6 +476,60 @@ export class TeamService {
       const rows = await tx
         .update(teamMembers)
         .set({ role })
+        .where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, targetUserId)))
+        .returning({ userId: teamMembers.userId });
+
+      if (rows.length === 0) return fail("NOT_A_MEMBER", "They are not on your roster");
+      return ok({ teamId });
+    });
+  }
+
+  /**
+   * Marks a member as a starter or a substitute.
+   *
+   * Capped at five, and refused rather than silently demoting somebody: which
+   * of the five to drop is the captain's call, not a rule's.
+   */
+  async setStarter(
+    captainId: string,
+    targetUserId: string,
+    starting: boolean,
+  ): Promise<Result<{ teamId: string }, TeamError>> {
+    return this.db.transaction(async (tx) => {
+      const teamId = await this.teamIdForIn(tx, captainId);
+      if (!teamId) return fail("NOT_IN_TEAM", "You are not in a team");
+
+      const [team] = await tx
+        .select({ captainId: teams.captainId })
+        .from(teams)
+        .where(eq(teams.id, teamId))
+        .limit(1);
+
+      if (team!.captainId !== captainId) {
+        return fail("NOT_CAPTAIN", "Only the captain picks the starting five");
+      }
+
+      if (starting) {
+        const [starters] = await tx
+          .select({ n: sql<number>`COUNT(*)::int` })
+          .from(teamMembers)
+          .where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.isStarter, true)));
+
+        const [already] = await tx
+          .select({ isStarter: teamMembers.isStarter })
+          .from(teamMembers)
+          .where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, targetUserId)))
+          .limit(1);
+
+        if (!already) return fail("NOT_A_MEMBER", "They are not on your roster");
+        if (!already.isStarter && (starters?.n ?? 0) >= TEAM_SIZE) {
+          return fail("TOO_MANY_STARTERS", `Only ${TEAM_SIZE} start. Move someone to the bench first.`);
+        }
+      }
+
+      const rows = await tx
+        .update(teamMembers)
+        .set({ isStarter: starting })
         .where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, targetUserId)))
         .returning({ userId: teamMembers.userId });
 

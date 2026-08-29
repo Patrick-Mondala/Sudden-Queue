@@ -3,7 +3,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { type App, buildApp } from "./app.js";
-import { matchParticipants, matches, playerRatings, users } from "./db/schema/index.js";
+import { matchParticipants, matches, playerRatings, scrimRequests, users } from "./db/schema/index.js";
 import { AuthService } from "./auth/service.js";
 import { DiscordAuth } from "./auth/discord.js";
 import type { Config } from "./config.js";
@@ -2088,5 +2088,309 @@ describe("Game Masters", () => {
     const a = await login();
     const me = await app.server.inject({ method: "GET", url: "/me", headers: authed(a.token) });
     expect(me.json().isGameMaster).toBe(false);
+  });
+});
+
+describe("scrim lineups", () => {
+  /** A registered team of any size, built through the routes. */
+  async function squad(tag: string, size: number) {
+    const captain = await login();
+    const created = await app.server.inject({
+      method: "POST",
+      url: "/teams",
+      headers: authed(captain.token),
+      payload: { tag, name: `${tag} Squad`, region: "na" },
+    });
+    const teamId = created.json().teamId as string;
+
+    const members = [captain];
+    for (let i = 1; i < size; i += 1) {
+      const u = await login();
+      const applied = await app.server.inject({
+        method: "POST",
+        url: `/teams/${teamId}/apply`,
+        headers: authed(u.token),
+        payload: {},
+      });
+      await app.server.inject({
+        method: "POST",
+        url: `/team/applications/${applied.json().applicationId}/decide`,
+        headers: authed(captain.token),
+        payload: { accept: true },
+      });
+      members.push(u);
+    }
+
+    return { teamId, captain, members };
+  }
+
+  async function arrange(host: Awaited<ReturnType<typeof squad>>, guest: Awaited<ReturnType<typeof squad>>) {
+    const listed = await app.server.inject({
+      method: "POST",
+      url: "/scrims",
+      headers: authed(host.captain.token),
+      payload: { region: "na", note: null },
+    });
+    const requested = await app.server.inject({
+      method: "POST",
+      url: `/scrims/${listed.json().listingId}/request`,
+      headers: authed(guest.captain.token),
+    });
+    const accepted = await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requested.json().requestId}/decide`,
+      headers: authed(host.captain.token),
+      payload: { accept: true },
+    });
+
+    return { listingId: listed.json().listingId, requestId: requested.json().requestId, accepted };
+  }
+
+  const myTeam = (token: string) =>
+    app.server.inject({ method: "GET", url: "/me/team", headers: authed(token) });
+
+  const board = (token: string) =>
+    app.server.inject({ method: "GET", url: "/scrims", headers: authed(token) });
+
+  it("makes the first five starters and the rest substitutes", async () => {
+    const { captain } = await squad("ACE", 7);
+    const roster = (await myTeam(captain.token)).json().team.members;
+
+    expect(roster.filter((m: { isStarter: boolean }) => m.isStarter)).toHaveLength(5);
+    // Starters sort to the top, so the roster reads as the lineup it is.
+    expect(roster.slice(0, 5).every((m: { isStarter: boolean }) => m.isStarter)).toBe(true);
+    expect(roster.slice(5).every((m: { isStarter: boolean }) => !m.isStarter)).toBe(true);
+  });
+
+  it("lets the captain swap someone onto the bench and back", async () => {
+    const { captain, members } = await squad("ACE", 7);
+    const sub = members[6]!;
+    const starter = members[1]!;
+
+    const overfull = await app.server.inject({
+      method: "POST",
+      url: `/team/members/${sub.userId}/starter`,
+      headers: authed(captain.token),
+      payload: { starting: true },
+    });
+    // Refused rather than silently dropping somebody: which five is the
+    // captain's call.
+    expect(overfull.statusCode).toBe(409);
+    expect(overfull.json().error).toBe("TOO_MANY_STARTERS");
+
+    await app.server.inject({
+      method: "POST",
+      url: `/team/members/${starter.userId}/starter`,
+      headers: authed(captain.token),
+      payload: { starting: false },
+    });
+    const now = await app.server.inject({
+      method: "POST",
+      url: `/team/members/${sub.userId}/starter`,
+      headers: authed(captain.token),
+      payload: { starting: true },
+    });
+    expect(now.statusCode).toBe(200);
+  });
+
+  it("is the captain's call, not an officer's", async () => {
+    const { captain, members } = await squad("ACE", 6);
+    const officer = members[1]!;
+    await app.server.inject({
+      method: "POST",
+      url: `/team/members/${officer.userId}/role`,
+      headers: authed(captain.token),
+      payload: { role: "officer" },
+    });
+
+    const res = await app.server.inject({
+      method: "POST",
+      url: `/team/members/${members[5]!.userId}/starter`,
+      headers: authed(officer.token),
+      payload: { starting: false },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("skips the confirmation when both rosters are exactly five", async () => {
+    const host = await squad("HST", 5);
+    const guest = await squad("GST", 5);
+    const { accepted } = await arrange(host, guest);
+
+    // Nothing to choose, so nobody is asked and the match goes straight out.
+    expect(accepted.json().matchId).toBeTruthy();
+    expect(accepted.json().awaitingLineup).toBeUndefined();
+  });
+
+  it("asks both captains when a roster carries substitutes", async () => {
+    const host = await squad("HST", 7);
+    const guest = await squad("GST", 5);
+    const { accepted } = await arrange(host, guest);
+
+    expect(accepted.json().awaitingLineup).toBe(true);
+    expect(accepted.json().matchId).toBeUndefined();
+
+    // The host has to pick; the guest of five does not.
+    const hostBoard = await board(host.captain.token);
+    expect(hostBoard.json().pendingLineup).toBeTruthy();
+    expect(hostBoard.json().pendingLineup.roster).toHaveLength(7);
+    expect(hostBoard.json().pendingLineup.opponentTag).toBe("GST");
+
+    expect((await board(guest.captain.token)).json().pendingLineup).toBeNull();
+  });
+
+  it("preselects the starters", async () => {
+    const host = await squad("HST", 8);
+    const guest = await squad("GST", 5);
+    await arrange(host, guest);
+
+    const pending = (await board(host.captain.token)).json().pendingLineup;
+    expect(pending.roster.filter((r: { isStarter: boolean }) => r.isStarter)).toHaveLength(5);
+    expect(pending.roster.slice(0, 5).every((r: { isStarter: boolean }) => r.isStarter)).toBe(true);
+  });
+
+  it("starts the match once the last captain confirms", async () => {
+    const host = await squad("HST", 7);
+    const guest = await squad("GST", 5);
+    const { requestId } = await arrange(host, guest);
+
+    const pending = (await board(host.captain.token)).json().pendingLineup;
+    const five = pending.roster.slice(0, 5).map((r: { userId: string }) => r.userId);
+
+    const confirmed = await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requestId}/lineup`,
+      headers: authed(host.captain.token),
+      payload: { userIds: five },
+    });
+
+    expect(confirmed.statusCode).toBe(200);
+    expect(confirmed.json().matchId).toBeTruthy();
+
+    const match = await app.server.inject({
+      method: "GET",
+      url: `/match/${confirmed.json().matchId}`,
+      headers: authed(host.captain.token),
+    });
+    expect(match.json().type).toBe("SCRIM");
+    expect(match.json().team1.map((p: { id: string }) => p.id).sort()).toEqual(five.sort());
+  });
+
+  it("lets a captain field a substitute over a starter", async () => {
+    const host = await squad("HST", 7);
+    const guest = await squad("GST", 5);
+    const { requestId } = await arrange(host, guest);
+
+    const pending = (await board(host.captain.token)).json().pendingLineup;
+    const benched = pending.roster.filter((r: { isStarter: boolean }) => !r.isStarter)[0]!;
+    const chosen = [
+      ...pending.roster.slice(0, 4).map((r: { userId: string }) => r.userId),
+      benched.userId,
+    ];
+
+    const confirmed = await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requestId}/lineup`,
+      headers: authed(host.captain.token),
+      payload: { userIds: chosen },
+    });
+
+    // Starters are a default, not a rule.
+    expect(confirmed.statusCode).toBe(200);
+    const match = await app.server.inject({
+      method: "GET",
+      url: `/match/${confirmed.json().matchId}`,
+      headers: authed(host.captain.token),
+    });
+    expect(match.json().team1.map((p: { id: string }) => p.id)).toContain(benched.userId);
+  });
+
+  it("refuses a lineup that is not five of your own", async () => {
+    const host = await squad("HST", 7);
+    const guest = await squad("GST", 5);
+    const { requestId } = await arrange(host, guest);
+
+    const pending = (await board(host.captain.token)).json().pendingLineup;
+    const ids = pending.roster.map((r: { userId: string }) => r.userId);
+
+    const tooFew = await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requestId}/lineup`,
+      headers: authed(host.captain.token),
+      payload: { userIds: ids.slice(0, 4) },
+    });
+    expect(tooFew.json().error).toBe("BAD_LINEUP");
+
+    const notMine = await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requestId}/lineup`,
+      headers: authed(host.captain.token),
+      payload: { userIds: [...ids.slice(0, 4), guest.captain.userId] },
+    });
+    expect(notMine.json().error).toBe("BAD_LINEUP");
+  });
+
+  it("only the captain may confirm it", async () => {
+    const host = await squad("HST", 7);
+    const guest = await squad("GST", 5);
+    const { requestId } = await arrange(host, guest);
+
+    const pending = (await board(host.captain.token)).json().pendingLineup;
+    const five = pending.roster.slice(0, 5).map((r: { userId: string }) => r.userId);
+
+    const res = await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requestId}/lineup`,
+      headers: authed(host.members[1]!.token),
+      payload: { userIds: five },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("drops the scrim and keeps the listing down when nobody confirms", async () => {
+    const host = await squad("HST", 7);
+    const guest = await squad("GST", 5);
+    const other = await squad("OTH", 5);
+    const { requestId } = await arrange(host, guest);
+
+    await handle.db
+      .update(scrimRequests)
+      .set({ confirmDeadline: new Date(Date.now() - 1000) })
+      .where(eq(scrimRequests.id, requestId));
+    await app.sweepScrims();
+
+    // The host said yes and then did not field a team, so they re-post when
+    // they are actually ready.
+    expect((await board(other.captain.token)).json().listings).toHaveLength(0);
+    expect((await board(host.captain.token)).json().pendingLineup).toBeNull();
+
+    const late = await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requestId}/lineup`,
+      headers: authed(host.captain.token),
+      payload: { userIds: [] },
+    });
+    expect(late.json().error).toBe("NOT_CONFIRMING");
+  });
+
+  it("penalises nobody for a lineup that never came", async () => {
+    const host = await squad("HST", 7);
+    const guest = await squad("GST", 5);
+    const { requestId } = await arrange(host, guest);
+
+    await handle.db
+      .update(scrimRequests)
+      .set({ confirmDeadline: new Date(Date.now() - 1000) })
+      .where(eq(scrimRequests.id, requestId));
+    await app.sweepScrims();
+
+    // The accept prompt never went out, so nobody lost a match over it.
+    const me = await app.server.inject({
+      method: "GET",
+      url: "/me",
+      headers: authed(guest.captain.token),
+    });
+    expect(me.json().queueCooldownSeconds).toBe(0);
+    expect(me.json().missedAccepts).toBe(0);
   });
 });

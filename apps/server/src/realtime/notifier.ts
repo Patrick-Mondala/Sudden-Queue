@@ -53,6 +53,8 @@ export type ServerEvent =
   | { type: "team.disbanded"; teamId: string }
   | { type: "scrim.request.received"; listingId: string }
   | { type: "scrim.request.decided"; listingId: string; accepted: boolean }
+  | { type: "scrim.lineup.required"; requestId: string }
+  | { type: "scrim.lineup.expired"; requestId: string }
   | { type: "chat.message"; channel: string; message: unknown }
   | { type: "notification"; level: "info" | "warn" | "error"; text: string };
 

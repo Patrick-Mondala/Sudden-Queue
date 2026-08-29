@@ -63,6 +63,16 @@ export const teamMembers = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     role: teamRole("role").notNull().default("member"),
+
+    /**
+     * Marked to play, as opposed to carried as a substitute.
+     *
+     * Capped at five by the service rather than the schema, since "at most five
+     * rows per team have this set" is not something a column can say. Starters
+     * sort to the top of the roster and are preselected when a scrim needs a
+     * lineup.
+     */
+    isStarter: boolean("is_starter").notNull().default(false),
     joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -118,6 +128,18 @@ export const scrimRequests = pgTable(
       .notNull()
       .references(() => teams.id, { onDelete: "cascade" }),
     status: scrimRequestStatus("status").notNull().default("pending"),
+
+    /**
+     * The five each side is fielding, once its captain has said so.
+     *
+     * Null means not yet confirmed. A roster of exactly five is filled in on
+     * acceptance, because there is nothing to choose.
+     */
+    hostLineup: uuid("host_lineup").array(),
+    guestLineup: uuid("guest_lineup").array(),
+    /** Both captains have this long to confirm before the scrim is dropped. */
+    confirmDeadline: timestamp("confirm_deadline", { withTimezone: true }),
+
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
   },

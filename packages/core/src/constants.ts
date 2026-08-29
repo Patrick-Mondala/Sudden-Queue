@@ -125,5 +125,14 @@ export const CHAT_MAX_MESSAGE_LENGTH = 200;
 export const CHAT_MAX_STORED_MESSAGES = 100;
 
 /** A burst allowance, so one person cannot fill the window on their own. */
+/**
+ * How long a captain has to field a side once a scrim is agreed.
+ *
+ * Short on purpose: the roster is already on screen with five preselected, so
+ * confirming is a click unless they want to change it, and a half-arranged
+ * scrim should not sit on the board while someone is away.
+ */
+export const SCRIM_LINEUP_SECONDS = 30;
+
 export const CHAT_RATE_LIMIT = 5;
 export const CHAT_RATE_WINDOW_SECONDS = 5;

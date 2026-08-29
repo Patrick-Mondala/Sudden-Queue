@@ -1,15 +1,18 @@
 import {
   DEFAULT_RATING,
   REGIONS,
+  SCRIM_LINEUP_SECONDS,
   TEAM_SIZE,
   type Result,
   fail,
   isPlaced,
   ok,
+  placementGamesRemaining,
   tierForRating,
 } from "@suddenqueue/core";
-import { and, desc, eq, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, ne, sql } from "drizzle-orm";
 
+import { isGameMaster } from "../auth/roles.js";
 import type { Database, Executor } from "../db/client.js";
 import {
   playerRatings,
@@ -17,6 +20,7 @@ import {
   scrimRequests,
   teamMembers,
   teams,
+  users,
 } from "../db/schema/index.js";
 
 export interface ListingView {
@@ -43,6 +47,23 @@ export interface RequestView {
   createdAt: string;
 }
 
+/** A lineup a captain still owes, and the roster to pick it from. */
+export interface PendingLineup {
+  requestId: string;
+  opponentTag: string;
+  opponentName: string;
+  confirmDeadline: string;
+  roster: {
+    userId: string;
+    discordName: string;
+    inGameName: string | null;
+    isGameMaster: boolean;
+    isStarter: boolean;
+    tier: string | null;
+    placementsRemaining: number;
+  }[];
+}
+
 export type ScrimError =
   | "NOT_IN_TEAM"
   | "NOT_A_MANAGER"
@@ -55,7 +76,10 @@ export type ScrimError =
   | "INVALID_REGION"
   | "PLAYER_BUSY"
   | "PLAYER_QUEUED"
-  | "WRONG_SIZE";
+  | "WRONG_SIZE"
+  | "NOT_CAPTAIN"
+  | "NOT_CONFIRMING"
+  | "BAD_LINEUP";
 
 /**
  * Scrims — practice matches between two registered teams.
@@ -312,6 +336,8 @@ export class ScrimService {
     Result<
       {
         accepted: boolean;
+        /** Both lineups are settled, so the match can be committed now. */
+        ready: boolean;
         listingId: string;
         region: string;
         hostTeamId: string;
@@ -352,13 +378,42 @@ export class ScrimService {
         return fail("NOT_A_MANAGER", "That request is not for your team");
       }
 
+      if (!accept) {
+        await tx
+          .update(scrimRequests)
+          .set({ status: "declined", decidedAt: new Date() })
+          .where(eq(scrimRequests.id, requestId));
+
+        return ok({
+          accepted: false,
+          ready: false,
+          listingId: listing.id,
+          region: listing.region,
+          hostTeamId: listing.teamId,
+          guestTeamId: request.requestingTeamId,
+        });
+      }
+
+      // A roster of exactly five has nothing to choose, so it is filled in
+      // here and its captain is never asked. Only a team carrying subs gets
+      // the confirmation step.
+      const hostLine = await this.autoLineup(tx, listing.teamId);
+      const guestLine = await this.autoLineup(tx, request.requestingTeamId);
+
       await tx
         .update(scrimRequests)
-        .set({ status: accept ? "accepted" : "declined", decidedAt: new Date() })
+        .set({
+          status: "accepted",
+          decidedAt: new Date(),
+          hostLineup: hostLine,
+          guestLineup: guestLine,
+          confirmDeadline: new Date(Date.now() + SCRIM_LINEUP_SECONDS * 1000),
+        })
         .where(eq(scrimRequests.id, requestId));
 
       return ok({
-        accepted: accept,
+        accepted: true,
+        ready: hostLine !== null && guestLine !== null,
         listingId: listing.id,
         region: listing.region,
         hostTeamId: listing.teamId,
@@ -395,6 +450,244 @@ export class ScrimService {
   }
 
   /**
+   * The lineup a team does not have to be asked for.
+   *
+   * Exactly five on the roster means exactly one possible answer. Anything
+   * more and the captain picks, so this returns null and the confirmation
+   * step takes over.
+   */
+  private async autoLineup(tx: Executor, teamId: string): Promise<string[] | null> {
+    const rows = await tx
+      .select({ userId: teamMembers.userId })
+      .from(teamMembers)
+      .where(eq(teamMembers.teamId, teamId));
+
+    return rows.length === TEAM_SIZE ? rows.map((r) => r.userId) : null;
+  }
+
+  /** What this player's team still owes, if they are the one who owes it. */
+  async pendingLineupFor(userId: string): Promise<PendingLineup | null> {
+    const [team] = await this.db
+      .select({ teamId: teams.id, captainId: teams.captainId })
+      .from(teamMembers)
+      .innerJoin(teams, eq(teams.id, teamMembers.teamId))
+      .where(eq(teamMembers.userId, userId))
+      .limit(1);
+
+    // Picking who plays is the captain's call, so nobody else is asked.
+    if (!team || team.captainId !== userId) return null;
+
+    const [row] = await this.db
+      .select({
+        requestId: scrimRequests.id,
+        hostLineup: scrimRequests.hostLineup,
+        guestLineup: scrimRequests.guestLineup,
+        confirmDeadline: scrimRequests.confirmDeadline,
+        hostTeamId: scrimListings.teamId,
+        guestTeamId: scrimRequests.requestingTeamId,
+      })
+      .from(scrimRequests)
+      .innerJoin(scrimListings, eq(scrimListings.id, scrimRequests.listingId))
+      .where(
+        and(
+          eq(scrimRequests.status, "accepted"),
+          sql`(${scrimListings.teamId} = ${team.teamId} AND ${scrimRequests.hostLineup} IS NULL)
+              OR (${scrimRequests.requestingTeamId} = ${team.teamId} AND ${scrimRequests.guestLineup} IS NULL)`,
+        ),
+      )
+      .limit(1);
+
+    if (!row) return null;
+
+    const opponentId = row.hostTeamId === team.teamId ? row.guestTeamId : row.hostTeamId;
+    const [opponent] = await this.db
+      .select({ tag: teams.tag, name: teams.name })
+      .from(teams)
+      .where(eq(teams.id, opponentId))
+      .limit(1);
+
+    const roster = await this.db
+      .select({
+        userId: teamMembers.userId,
+        isStarter: teamMembers.isStarter,
+        discordName: users.discordName,
+        inGameName: users.inGameName,
+        accountRole: users.role,
+        rating: playerRatings.rating,
+        gamesPlayed: playerRatings.gamesPlayed,
+      })
+      .from(teamMembers)
+      .innerJoin(users, eq(users.id, teamMembers.userId))
+      .leftJoin(playerRatings, eq(playerRatings.userId, teamMembers.userId))
+      .where(eq(teamMembers.teamId, team.teamId))
+      .orderBy(desc(teamMembers.isStarter), teamMembers.joinedAt, teamMembers.userId);
+
+    return {
+      requestId: row.requestId,
+      opponentTag: opponent?.tag ?? "",
+      opponentName: opponent?.name ?? "the other team",
+      confirmDeadline: (row.confirmDeadline ?? new Date()).toISOString(),
+      roster: roster.map((r) => {
+        const games = r.gamesPlayed ?? 0;
+        return {
+          userId: r.userId,
+          discordName: r.discordName,
+          inGameName: r.inGameName,
+          isGameMaster: isGameMaster(r.accountRole),
+          isStarter: r.isStarter,
+          tier: isPlaced(games) ? tierForRating(r.rating ?? DEFAULT_RATING) : null,
+          placementsRemaining: placementGamesRemaining(games),
+        };
+      }),
+    };
+  }
+
+  /**
+   * Records one captain's five.
+   *
+   * Returns whether both sides are now settled, which is the caller's cue to
+   * commit the match -- this service still does not reach into the lifecycle.
+   */
+  async confirmLineup(
+    captainId: string,
+    requestId: string,
+    userIds: string[],
+  ): Promise<Result<{ ready: boolean; hostTeamId: string; guestTeamId: string; listingId: string; region: string }, ScrimError>> {
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({
+          id: scrimRequests.id,
+          status: scrimRequests.status,
+          hostLineup: scrimRequests.hostLineup,
+          guestLineup: scrimRequests.guestLineup,
+          confirmDeadline: scrimRequests.confirmDeadline,
+          guestTeamId: scrimRequests.requestingTeamId,
+          listingId: scrimListings.id,
+          hostTeamId: scrimListings.teamId,
+          region: scrimListings.region,
+        })
+        .from(scrimRequests)
+        .innerJoin(scrimListings, eq(scrimListings.id, scrimRequests.listingId))
+        .where(eq(scrimRequests.id, requestId))
+        .for("update");
+
+      if (!row || row.status !== "accepted") {
+        return fail("NOT_CONFIRMING", "That scrim is no longer waiting on a lineup");
+      }
+      if (row.confirmDeadline && row.confirmDeadline.getTime() <= Date.now()) {
+        return fail("NOT_CONFIRMING", "That scrim timed out waiting for a lineup");
+      }
+
+      const [team] = await tx
+        .select({ teamId: teams.id, captainId: teams.captainId })
+        .from(teamMembers)
+        .innerJoin(teams, eq(teams.id, teamMembers.teamId))
+        .where(eq(teamMembers.userId, captainId))
+        .limit(1);
+
+      if (!team) return fail("NOT_IN_TEAM", "You are not in a team");
+      if (team.captainId !== captainId) {
+        return fail("NOT_CAPTAIN", "Only the captain confirms the lineup");
+      }
+
+      const isHost = row.hostTeamId === team.teamId;
+      if (!isHost && row.guestTeamId !== team.teamId) {
+        return fail("NOT_A_MANAGER", "That scrim is not yours");
+      }
+
+      // Five, no duplicates, and all of them actually on this roster -- the
+      // client sends a selection, not a promise.
+      const unique = [...new Set(userIds)];
+      if (unique.length !== TEAM_SIZE) {
+        return fail("BAD_LINEUP", `Pick exactly ${TEAM_SIZE} players`);
+      }
+
+      const onRoster = await tx
+        .select({ userId: teamMembers.userId })
+        .from(teamMembers)
+        .where(and(eq(teamMembers.teamId, team.teamId), inArray(teamMembers.userId, unique)));
+
+      if (onRoster.length !== TEAM_SIZE) {
+        return fail("BAD_LINEUP", "Everyone you pick has to be on your roster");
+      }
+
+      await tx
+        .update(scrimRequests)
+        .set(isHost ? { hostLineup: unique } : { guestLineup: unique })
+        .where(eq(scrimRequests.id, requestId));
+
+      const otherSide = isHost ? row.guestLineup : row.hostLineup;
+
+      return ok({
+        ready: otherSide !== null,
+        hostTeamId: row.hostTeamId,
+        guestTeamId: row.guestTeamId,
+        listingId: row.listingId,
+        region: row.region,
+      });
+    });
+  }
+
+  /** The five each side settled on, once both have. */
+  async lineupsFor(
+    requestId: string,
+  ): Promise<{ host: string[]; guest: string[] } | null> {
+    const [row] = await this.db
+      .select({ hostLineup: scrimRequests.hostLineup, guestLineup: scrimRequests.guestLineup })
+      .from(scrimRequests)
+      .where(eq(scrimRequests.id, requestId))
+      .limit(1);
+
+    if (!row?.hostLineup || !row.guestLineup) return null;
+    return { host: row.hostLineup, guest: row.guestLineup };
+  }
+
+  /**
+   * Drops scrims nobody finished confirming.
+   *
+   * The listing stays down rather than going back on the board: the host said
+   * yes to a match and then did not field a team, so they can re-post when
+   * they are actually ready. Nobody is penalised -- the accept prompt never
+   * went out, so no one lost a match over it.
+   */
+  async expireUnconfirmed(): Promise<{ requestId: string; teamIds: string[] }[]> {
+    const stale = await this.db
+      .select({
+        requestId: scrimRequests.id,
+        listingId: scrimListings.id,
+        hostTeamId: scrimListings.teamId,
+        guestTeamId: scrimRequests.requestingTeamId,
+      })
+      .from(scrimRequests)
+      .innerJoin(scrimListings, eq(scrimListings.id, scrimRequests.listingId))
+      .where(
+        and(
+          eq(scrimRequests.status, "accepted"),
+          lt(scrimRequests.confirmDeadline, new Date()),
+        ),
+      );
+
+    const dropped = [];
+    for (const row of stale) {
+      await this.db
+        .update(scrimRequests)
+        .set({ status: "expired", decidedAt: new Date() })
+        .where(eq(scrimRequests.id, row.requestId));
+      await this.db
+        .update(scrimListings)
+        .set({ status: "removed" })
+        .where(eq(scrimListings.id, row.listingId));
+
+      dropped.push({
+        requestId: row.requestId,
+        teamIds: [row.hostTeamId, row.guestTeamId],
+      });
+    }
+
+    return dropped;
+  }
+
+  /**
    * The five who play, and who reports for them.
    *
    * Seniority order with the captain pulled to the front. A team of ten cannot
@@ -403,6 +696,7 @@ export class ScrimService {
    */
   async lineup(
     teamId: string,
+    chosen?: string[],
   ): Promise<{ userIds: string[]; captainId: string; rating: number } | null> {
     const [team] = await this.db
       .select({ captainId: teams.captainId })
@@ -423,10 +717,14 @@ export class ScrimService {
       .where(eq(teamMembers.teamId, teamId))
       .orderBy(teamMembers.joinedAt, teamMembers.userId);
 
-    const ordered = [
-      ...rows.filter((r) => r.userId === team.captainId),
-      ...rows.filter((r) => r.userId !== team.captainId),
-    ].slice(0, TEAM_SIZE);
+    // A confirmed lineup is the answer; the seniority fallback only applies
+    // to a roster of exactly five, which was never asked.
+    const ordered = chosen
+      ? rows.filter((r) => chosen.includes(r.userId))
+      : [
+          ...rows.filter((r) => r.userId === team.captainId),
+          ...rows.filter((r) => r.userId !== team.captainId),
+        ].slice(0, TEAM_SIZE);
 
     if (ordered.length < TEAM_SIZE) return null;
 

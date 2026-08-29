@@ -29,6 +29,13 @@
       "when": 1787958597330,
       "tag": "0003_great_lady_bullseye",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1787978090336,
+      "tag": "0004_magenta_reavers",
+      "breakpoints": true
     }
   ]
 }
