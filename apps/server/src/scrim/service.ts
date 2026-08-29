@@ -79,7 +79,9 @@ export type ScrimError =
   | "WRONG_SIZE"
   | "NOT_CAPTAIN"
   | "NOT_CONFIRMING"
-  | "BAD_LINEUP";
+  | "BAD_LINEUP"
+  | "CAPTAIN_OFFLINE"
+  | "NOT_ENOUGH_ONLINE";
 
 /**
  * Scrims — practice matches between two registered teams.
@@ -196,6 +198,7 @@ export class ScrimService {
   async postListing(
     userId: string,
     input: { region: string; note: string | null },
+    online: ReadonlySet<string>,
   ): Promise<Result<{ listingId: string }, ScrimError>> {
     if (!REGIONS.includes(input.region as (typeof REGIONS)[number])) {
       return fail("INVALID_REGION", "Pick a region the ladder runs in");
@@ -208,6 +211,9 @@ export class ScrimService {
       if (manager.memberCount < TEAM_SIZE) {
         return fail("ROSTER_TOO_SMALL", `A scrim needs ${TEAM_SIZE} players a side`);
       }
+
+      const notReady = await this.readiness(tx, manager.teamId, online);
+      if (notReady) return notReady;
 
       const [existing] = await tx
         .select({ id: scrimListings.id })
@@ -255,6 +261,7 @@ export class ScrimService {
   async request(
     userId: string,
     listingId: string,
+    online: ReadonlySet<string>,
   ): Promise<Result<{ requestId: string; hostTeamId: string }, ScrimError>> {
     return this.db.transaction(async (tx) => {
       const manager = await this.requireManager(tx, userId);
@@ -263,6 +270,9 @@ export class ScrimService {
       if (manager.memberCount < TEAM_SIZE) {
         return fail("ROSTER_TOO_SMALL", `A scrim needs ${TEAM_SIZE} players a side`);
       }
+
+      const notReady = await this.readiness(tx, manager.teamId, online);
+      if (notReady) return notReady;
 
       const [listing] = await tx
         .select({ id: scrimListings.id, teamId: scrimListings.teamId, status: scrimListings.status })
@@ -332,6 +342,7 @@ export class ScrimService {
     userId: string,
     requestId: string,
     accept: boolean,
+    online: ReadonlySet<string>,
   ): Promise<
     Result<
       {
@@ -392,6 +403,14 @@ export class ScrimService {
           hostTeamId: listing.teamId,
           guestTeamId: request.requestingTeamId,
         });
+      }
+
+      // Both sides are checked again here, not just at listing time. A team
+      // can go home between putting itself up and being asked, and this is
+      // the moment ten people get committed to a match.
+      for (const teamId of [listing.teamId, request.requestingTeamId]) {
+        const notReady = await this.readiness(tx, teamId, online);
+        if (notReady) return notReady;
       }
 
       // A roster of exactly five has nothing to choose, so it is filled in
@@ -735,6 +754,51 @@ export class ScrimService {
     );
 
     return { userIds: ordered.map((r) => r.userId), captainId: team.captainId, rating };
+  }
+
+  /**
+   * Whether a team can actually field a scrim right now.
+   *
+   * A scrim is an appointment for ten people in the next few minutes, so what
+   * matters is who is here, not who is on the roster. The captain has to be
+   * among them because only they confirm the lineup and only they report the
+   * result -- arranging a match your captain cannot finish is worse than not
+   * arranging one.
+   *
+   * Online is a fact about the socket table, so the caller passes it in rather
+   * than this reaching for it.
+   */
+  private async readiness(
+    tx: Executor,
+    teamId: string,
+    online: ReadonlySet<string>,
+  ): Promise<Result<never, ScrimError> | null> {
+    const [team] = await tx
+      .select({ captainId: teams.captainId })
+      .from(teams)
+      .where(eq(teams.id, teamId))
+      .limit(1);
+
+    if (!team) return fail("NOT_IN_TEAM", "You are not in a team");
+
+    if (!online.has(team.captainId)) {
+      return fail("CAPTAIN_OFFLINE", "You may not scrim while your captain is offline.");
+    }
+
+    const members = await tx
+      .select({ userId: teamMembers.userId })
+      .from(teamMembers)
+      .where(eq(teamMembers.teamId, teamId));
+
+    const here = members.filter((m) => online.has(m.userId)).length;
+    if (here < TEAM_SIZE) {
+      return fail(
+        "NOT_ENOUGH_ONLINE",
+        `Your team does not have enough players online to scrim. ${here} of ${TEAM_SIZE} are here.`,
+      );
+    }
+
+    return null;
   }
 
   // ---------------------------------------------------------------- helpers

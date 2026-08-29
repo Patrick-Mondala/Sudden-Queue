@@ -1378,3 +1378,102 @@ describe("scrim lineups", () => {
     expect(screen.queryByRole("dialog", { name: /Confirm your lineup/i })).toBeNull();
   });
 });
+
+describe("being told a team cannot scrim", () => {
+  const squad = (role = "captain") => ({
+    team: {
+      id: "team-1",
+      tag: "ACE",
+      name: "Aces High",
+      region: "na",
+      captainId: "user-1",
+      applicationsOpen: true,
+      createdAt: new Date().toISOString(),
+      members: Array.from({ length: 5 }, (_, i) => ({
+        userId: `user-${i + 1}`,
+        discordName: `Player${i + 1}`,
+        inGameName: `PLAYER_${i + 1}`,
+        isGameMaster: false,
+        role: i === 0 ? "captain" : "member",
+        isStarter: true,
+        tier: "B",
+        placementsRemaining: 0,
+        joinedAt: new Date().toISOString(),
+      })),
+    },
+    role,
+    applications: [],
+    myApplication: null,
+  });
+
+  const refusal = (code, message) =>
+    Object.assign(new Error(message), { status: 409, code });
+
+  beforeEach(() => {
+    server.myTeam.mockResolvedValue(squad());
+    server.scrims.mockResolvedValue({
+      listings: [
+        { id: "listing-2", teamId: "team-2", tag: "BRV", name: "Bravo", region: "na", note: null, postedAt: new Date().toISOString(), memberCount: 5, tier: "B", requested: false },
+      ],
+      myListing: null,
+      incoming: [],
+      pendingLineup: null,
+    });
+  });
+
+  async function openScrims() {
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Scrims/i }));
+    await screen.findByText("Bravo");
+  }
+
+  it("stops and explains when the captain is offline", async () => {
+    server.postListing.mockRejectedValue(
+      refusal("CAPTAIN_OFFLINE", "You may not scrim while your captain is offline."),
+    );
+    await openScrims();
+
+    await userEvent.click(screen.getByRole("button", { name: /Post to scrim list/i }));
+
+    // A toast slides away while you are still looking at the button you pressed.
+    const alert = await screen.findByRole("alertdialog", { name: /captain is offline/i });
+    expect(within(alert).getByText(/may not scrim while your captain is offline/i)).toBeTruthy();
+  });
+
+  it("says the same when too few are online", async () => {
+    server.requestScrim.mockRejectedValue(
+      refusal(
+        "NOT_ENOUGH_ONLINE",
+        "Your team does not have enough players online to scrim. 3 of 5 are here.",
+      ),
+    );
+    await openScrims();
+
+    await userEvent.click(screen.getByRole("button", { name: /Request/i }));
+
+    const alert = await screen.findByRole("alertdialog", { name: /Not enough of your team/i });
+    expect(within(alert).getByText(/3 of 5 are here/i)).toBeTruthy();
+  });
+
+  it("closes on acknowledgement", async () => {
+    server.postListing.mockRejectedValue(refusal("CAPTAIN_OFFLINE", "Captain is offline."));
+    await openScrims();
+    await userEvent.click(screen.getByRole("button", { name: /Post to scrim list/i }));
+
+    await userEvent.click(await screen.findByRole("button", { name: /Got it/i }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  });
+
+  it("leaves ordinary refusals as toasts", async () => {
+    server.postListing.mockRejectedValue(
+      refusal("ALREADY_LISTED", "Your team is already on the list"),
+    );
+    await openScrims();
+
+    await userEvent.click(screen.getByRole("button", { name: /Post to scrim list/i }));
+
+    // Nothing to explain and nothing to fix, so it does not take the screen.
+    expect(await screen.findByText(/already on the list/i)).toBeTruthy();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+});

@@ -1,6 +1,6 @@
 import { INVITE_RATE_LIMIT, isOk } from "@suddenqueue/core";
 import { and, desc, eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { type App, buildApp } from "./app.js";
 import { matchParticipants, matches, playerRatings, scrimRequests, users } from "./db/schema/index.js";
@@ -39,6 +39,11 @@ beforeEach(async () => {
   await truncateAll(handle);
 });
 
+afterEach(() => {
+  for (const c of connections) app.notifier.remove(c.userId, c.conn);
+  connections.length = 0;
+});
+
 /** Signs a user in directly, skipping the Discord round trip. */
 async function login(discordId = `d${Date.now()}${Math.random()}`) {
   const auth = new AuthService(
@@ -65,6 +70,30 @@ async function login(discordId = `d${Date.now()}${Math.random()}`) {
 
 function authed(token: string) {
   return { authorization: `Bearer ${token}` };
+}
+
+/** Sockets left open for the whole file, closed after each test. */
+const connections: { userId: string; conn: { send: () => void; close: () => void } }[] = [];
+
+/**
+ * Marks players as connected.
+ *
+ * Scrims will not be arranged by a team that is not present, and presence is a
+ * socket fact rather than a stored one -- so a test that never opens one has a
+ * roster of ghosts.
+ */
+function goOnline(...userIds: string[]) {
+  for (const userId of userIds) {
+    const conn = { send: () => {}, close: () => {} };
+    app.notifier.add(userId, conn);
+    connections.push({ userId, conn });
+  }
+}
+
+function goOffline(userId: string) {
+  for (const c of connections.filter((c) => c.userId === userId)) {
+    app.notifier.remove(c.userId, c.conn);
+  }
 }
 
 describe("health and auth gating", () => {
@@ -1566,6 +1595,7 @@ describe("scrims over the API", () => {
       members.push(u);
     }
 
+    goOnline(...members.map((m) => m.userId));
     return { teamId, captain, members };
   }
 
@@ -2121,6 +2151,7 @@ describe("scrim lineups", () => {
       members.push(u);
     }
 
+    goOnline(...members.map((m) => m.userId));
     return { teamId, captain, members };
   }
 
@@ -2392,5 +2423,185 @@ describe("scrim lineups", () => {
     });
     expect(me.json().queueCooldownSeconds).toBe(0);
     expect(me.json().missedAccepts).toBe(0);
+  });
+});
+
+describe("a team has to be present to scrim", () => {
+  async function squad(tag: string, size = 5) {
+    const captain = await login();
+    const created = await app.server.inject({
+      method: "POST",
+      url: "/teams",
+      headers: authed(captain.token),
+      payload: { tag, name: `${tag} Squad`, region: "na" },
+    });
+    const teamId = created.json().teamId as string;
+
+    const members = [captain];
+    for (let i = 1; i < size; i += 1) {
+      const u = await login();
+      const applied = await app.server.inject({
+        method: "POST",
+        url: `/teams/${teamId}/apply`,
+        headers: authed(u.token),
+        payload: {},
+      });
+      await app.server.inject({
+        method: "POST",
+        url: `/team/applications/${applied.json().applicationId}/decide`,
+        headers: authed(captain.token),
+        payload: { accept: true },
+      });
+      members.push(u);
+    }
+
+    // One officer, so a test can act as somebody other than the captain
+    // without tripping the permission check before the readiness one.
+    if (members[1]) {
+      await app.server.inject({
+        method: "POST",
+        url: `/team/members/${members[1].userId}/role`,
+        headers: authed(captain.token),
+        payload: { role: "officer" },
+      });
+    }
+
+    goOnline(...members.map((m) => m.userId));
+    return { teamId, captain, members };
+  }
+
+  const list = (token: string) =>
+    app.server.inject({
+      method: "POST",
+      url: "/scrims",
+      headers: authed(token),
+      payload: { region: "na", note: null },
+    });
+
+  it("refuses to list a team whose captain has gone", async () => {
+    const host = await squad("HST");
+    goOffline(host.captain.userId);
+
+    const res = await list(host.members[1]!.token);
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("CAPTAIN_OFFLINE");
+    // Only the captain confirms a lineup and only the captain reports, so a
+    // scrim without them is one nobody can finish.
+    expect(res.json().message).toMatch(/captain is offline/i);
+  });
+
+  it("refuses to list a team that is short of five", async () => {
+    const host = await squad("HST");
+    goOffline(host.members[4]!.userId);
+
+    const res = await list(host.captain.token);
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("NOT_ENOUGH_ONLINE");
+    expect(res.json().message).toMatch(/not have enough players online/i);
+  });
+
+  it("says how many are actually here", async () => {
+    const host = await squad("HST");
+    goOffline(host.members[3]!.userId);
+    goOffline(host.members[4]!.userId);
+
+    const res = await list(host.captain.token);
+    expect(res.json().message).toMatch(/3 of 5/);
+  });
+
+  it("lists once everyone is back", async () => {
+    const host = await squad("HST");
+    goOffline(host.members[2]!.userId);
+    expect((await list(host.captain.token)).statusCode).toBe(409);
+
+    goOnline(host.members[2]!.userId);
+    expect((await list(host.captain.token)).statusCode).toBe(200);
+  });
+
+  it("holds a requesting team to the same rule", async () => {
+    const host = await squad("HST");
+    const guest = await squad("GST");
+    const listed = await list(host.captain.token);
+
+    goOffline(guest.captain.userId);
+    const res = await app.server.inject({
+      method: "POST",
+      url: `/scrims/${listed.json().listingId}/request`,
+      headers: authed(guest.members[1]!.token),
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("CAPTAIN_OFFLINE");
+  });
+
+  it("checks again when the request is answered", async () => {
+    const host = await squad("HST");
+    const guest = await squad("GST");
+    const listed = await list(host.captain.token);
+    const requested = await app.server.inject({
+      method: "POST",
+      url: `/scrims/${listed.json().listingId}/request`,
+      headers: authed(guest.captain.token),
+    });
+
+    // Everyone was here when they asked, and two of them went home while the
+    // host was deciding. This is the moment ten people get committed.
+    goOffline(guest.members[3]!.userId);
+    goOffline(guest.members[4]!.userId);
+
+    const accepted = await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requested.json().requestId}/decide`,
+      headers: authed(host.captain.token),
+      payload: { accept: true },
+    });
+
+    expect(accepted.statusCode).toBe(409);
+    expect(accepted.json().error).toBe("NOT_ENOUGH_ONLINE");
+
+    // Nothing was consumed: the request is still there for when they return.
+    const board = await app.server.inject({
+      method: "GET",
+      url: "/scrims",
+      headers: authed(host.captain.token),
+    });
+    expect(board.json().incoming).toHaveLength(1);
+  });
+
+  it("still lets a request be declined by an absent team", async () => {
+    const host = await squad("HST");
+    const guest = await squad("GST");
+    const listed = await list(host.captain.token);
+    const requested = await app.server.inject({
+      method: "POST",
+      url: `/scrims/${listed.json().listingId}/request`,
+      headers: authed(guest.captain.token),
+    });
+
+    goOffline(guest.members[2]!.userId);
+
+    // Saying no commits nobody to anything, so it is never blocked.
+    const declined = await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requested.json().requestId}/decide`,
+      headers: authed(host.captain.token),
+      payload: { accept: false },
+    });
+    expect(declined.statusCode).toBe(200);
+    expect(declined.json().accepted).toBe(false);
+  });
+
+  it("does not stop a team taking its own listing down", async () => {
+    const host = await squad("HST");
+    await list(host.captain.token);
+    goOffline(host.captain.userId);
+
+    // Tidying up after yourself is not arranging a match.
+    const res = await app.server.inject({
+      method: "DELETE",
+      url: "/scrims/mine",
+      headers: authed(host.members[1]!.token),
+    });
+    expect(res.statusCode).toBe(200);
   });
 });

@@ -2,7 +2,7 @@ import { TEAM_SIZE, isFail, isOk } from "@suddenqueue/core";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { matchParticipants, matches, playerRatings } from "../db/schema/index.js";
+import { matchParticipants, matches, playerRatings, users } from "../db/schema/index.js";
 import { MatchLifecycle } from "../match/lifecycle.js";
 import { MatchReporting } from "../match/reporting.js";
 import { PartyService } from "../party/service.js";
@@ -37,6 +37,19 @@ beforeEach(async () => {
   await truncateAll(handle);
 });
 
+/**
+ * Everyone in the database, treated as connected.
+ *
+ * Scrims now require the captain and five of the roster to be online, which is
+ * a socket fact the service is handed rather than one it reads. These tests are
+ * about the arranging rules, so they say everybody is here and let the
+ * readiness tests below say otherwise.
+ */
+async function allOnline(): Promise<Set<string>> {
+  const rows = await handle.db.select({ id: users.id }).from(users);
+  return new Set(rows.map((r) => r.id));
+}
+
 /** A team with a full five, so it can actually scrim. */
 async function makeSquad(tag: string, size = TEAM_SIZE) {
   const captain = await makeUser(handle, { gamesPlayed: 40 });
@@ -58,13 +71,13 @@ async function makeSquad(tag: string, size = TEAM_SIZE) {
 
 /** Posts, requests, accepts, and commits the match the way the route does. */
 async function arrangeScrim(host: Awaited<ReturnType<typeof makeSquad>>, guest: Awaited<ReturnType<typeof makeSquad>>) {
-  const listing = await scrim.postListing(host.captain, { region: "na", note: "Bo1" });
+  const listing = await scrim.postListing(host.captain, { region: "na", note: "Bo1" }, await allOnline());
   if (!isOk(listing)) throw new Error("listing failed");
 
-  const requested = await scrim.request(guest.captain, listing.data.listingId);
+  const requested = await scrim.request(guest.captain, listing.data.listingId, await allOnline());
   if (!isOk(requested)) throw new Error("request failed");
 
-  const decided = await scrim.decideRequest(host.captain, requested.data.requestId, true);
+  const decided = await scrim.decideRequest(host.captain, requested.data.requestId, true, await allOnline());
   if (!isOk(decided)) throw new Error("decide failed");
 
   const hostLine = (await scrim.lineup(host.teamId))!;
@@ -90,7 +103,7 @@ describe("listing a team for practice", () => {
     const host = await makeSquad("HST");
     const guest = await makeSquad("GST");
 
-    const posted = await scrim.postListing(host.captain, { region: "na", note: "Bo1 tonight" });
+    const posted = await scrim.postListing(host.captain, { region: "na", note: "Bo1 tonight" }, await allOnline());
     expect(isOk(posted)).toBe(true);
 
     // Your own listing belongs on your team panel, not in the list of teams to
@@ -107,16 +120,16 @@ describe("listing a team for practice", () => {
   it("refuses a roster that cannot field five", async () => {
     const short = await makeSquad("SHT", 4);
 
-    const res = await scrim.postListing(short.captain, { region: "na", note: null });
+    const res = await scrim.postListing(short.captain, { region: "na", note: null }, await allOnline());
     expect(isFail(res)).toBe(true);
     if (isFail(res)) expect(res.code).toBe("ROSTER_TOO_SMALL");
   });
 
   it("allows one listing at a time", async () => {
     const host = await makeSquad("HST");
-    await scrim.postListing(host.captain, { region: "na", note: null });
+    await scrim.postListing(host.captain, { region: "na", note: null }, await allOnline());
 
-    const again = await scrim.postListing(host.captain, { region: "eu", note: null });
+    const again = await scrim.postListing(host.captain, { region: "eu", note: null }, await allOnline());
     expect(isFail(again)).toBe(true);
     if (isFail(again)) expect(again.code).toBe("ALREADY_LISTED");
   });
@@ -125,7 +138,7 @@ describe("listing a team for practice", () => {
     const host = await makeSquad("HST");
     const member = host.members[1]!;
 
-    const res = await scrim.postListing(member, { region: "na", note: null });
+    const res = await scrim.postListing(member, { region: "na", note: null }, await allOnline());
     expect(isFail(res)).toBe(true);
     if (isFail(res)) expect(res.code).toBe("NOT_A_MANAGER");
   });
@@ -134,9 +147,9 @@ describe("listing a team for practice", () => {
     const host = await makeSquad("HST");
     const guest = await makeSquad("GST");
 
-    const listing = await scrim.postListing(host.captain, { region: "na", note: null });
+    const listing = await scrim.postListing(host.captain, { region: "na", note: null }, await allOnline());
     if (!isOk(listing)) throw new Error("listing failed");
-    await scrim.request(guest.captain, listing.data.listingId);
+    await scrim.request(guest.captain, listing.data.listingId, await allOnline());
 
     await scrim.removeListing(host.captain);
 
@@ -149,10 +162,10 @@ describe("asking for a scrim", () => {
   it("reaches the host, and shows as asked on the way back", async () => {
     const host = await makeSquad("HST");
     const guest = await makeSquad("GST");
-    const listing = await scrim.postListing(host.captain, { region: "na", note: null });
+    const listing = await scrim.postListing(host.captain, { region: "na", note: null }, await allOnline());
     if (!isOk(listing)) throw new Error("listing failed");
 
-    expect(isOk(await scrim.request(guest.captain, listing.data.listingId))).toBe(true);
+    expect(isOk(await scrim.request(guest.captain, listing.data.listingId, await allOnline()))).toBe(true);
 
     const incoming = await scrim.incomingRequests(host.teamId);
     expect(incoming).toHaveLength(1);
@@ -164,11 +177,11 @@ describe("asking for a scrim", () => {
   it("will not let a team ask twice", async () => {
     const host = await makeSquad("HST");
     const guest = await makeSquad("GST");
-    const listing = await scrim.postListing(host.captain, { region: "na", note: null });
+    const listing = await scrim.postListing(host.captain, { region: "na", note: null }, await allOnline());
     if (!isOk(listing)) throw new Error("listing failed");
 
-    await scrim.request(guest.captain, listing.data.listingId);
-    const again = await scrim.request(guest.captain, listing.data.listingId);
+    await scrim.request(guest.captain, listing.data.listingId, await allOnline());
+    const again = await scrim.request(guest.captain, listing.data.listingId, await allOnline());
 
     expect(isFail(again)).toBe(true);
     if (isFail(again)) expect(again.code).toBe("ALREADY_REQUESTED");
@@ -176,10 +189,10 @@ describe("asking for a scrim", () => {
 
   it("will not let a team ask itself", async () => {
     const host = await makeSquad("HST");
-    const listing = await scrim.postListing(host.captain, { region: "na", note: null });
+    const listing = await scrim.postListing(host.captain, { region: "na", note: null }, await allOnline());
     if (!isOk(listing)) throw new Error("listing failed");
 
-    const res = await scrim.request(host.captain, listing.data.listingId);
+    const res = await scrim.request(host.captain, listing.data.listingId, await allOnline());
     expect(isFail(res)).toBe(true);
     if (isFail(res)) expect(res.code).toBe("OWN_LISTING");
   });

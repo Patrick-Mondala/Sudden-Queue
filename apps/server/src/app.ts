@@ -1070,6 +1070,8 @@ export async function buildApp({
     if (code === "LISTING_NOT_FOUND" || code === "REQUEST_NOT_FOUND") return 404;
     if (code === "NOT_A_MANAGER" || code === "NOT_IN_TEAM" || code === "NOT_CAPTAIN") return 403;
     if (code === "INVALID_REGION") return 400;
+    // CAPTAIN_OFFLINE and NOT_ENOUGH_ONLINE fall through to 409: nothing is
+    // wrong with the request, the team simply is not there yet.
     return 409;
   };
 
@@ -1151,10 +1153,11 @@ export async function buildApp({
       return reply.code(400).send({ error: "BAD_REQUEST", message: "region is required" });
     }
 
-    const result = await scrim.postListing(requireUser(req).userId, {
-      region: body.data.region,
-      note: body.data.note ?? null,
-    });
+    const result = await scrim.postListing(
+      requireUser(req).userId,
+      { region: body.data.region, note: body.data.note ?? null },
+      new Set(notifier.onlineUserIds()),
+    );
     if (isFail(result)) {
       return reply
         .code(scrimErrorStatus(result.code))
@@ -1176,7 +1179,7 @@ export async function buildApp({
 
   server.post("/scrims/:id/request", { preHandler: authenticate }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const result = await scrim.request(requireUser(req).userId, id);
+    const result = await scrim.request(requireUser(req).userId, id, new Set(notifier.onlineUserIds()));
     if (isFail(result)) {
       return reply
         .code(scrimErrorStatus(result.code))
@@ -1222,7 +1225,12 @@ export async function buildApp({
         .send({ error: "BAD_REQUEST", message: "accept must be true or false" });
     }
 
-    const decided = await scrim.decideRequest(requireUser(req).userId, id, body.data.accept);
+    const decided = await scrim.decideRequest(
+      requireUser(req).userId,
+      id,
+      body.data.accept,
+      new Set(notifier.onlineUserIds()),
+    );
     if (isFail(decided)) {
       return reply
         .code(scrimErrorStatus(decided.code))

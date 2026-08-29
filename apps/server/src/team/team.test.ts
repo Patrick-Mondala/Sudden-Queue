@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { teams } from "../db/schema/index.js";
-import { makeUser, setupTestDatabase, truncateAll } from "../test/helpers.js";
+import { expectNoRatings, makeUser, setupTestDatabase, truncateAll } from "../test/helpers.js";
 import { TeamService } from "./service.js";
 
 let handle: Awaited<ReturnType<typeof setupTestDatabase>>;
@@ -351,7 +351,7 @@ describe("the team list", () => {
 
     expect(row!.id).toBe(teamId);
     expect(row!.tier).toBeTruthy();
-    expect(JSON.stringify(row)).not.toMatch(/\b1[0-9]{3}\b/);
+    expectNoRatings(row);
   });
 
   it("ignores unplaced players when ranking, rather than dragging the team down", async () => {

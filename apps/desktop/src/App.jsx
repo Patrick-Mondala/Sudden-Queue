@@ -539,6 +539,12 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
  * Everything here needs a team, so the screen says so rather than showing a
  * board you cannot act on.
  */
+/** Refusals that are about the team rather than the request. */
+const SCRIM_BLOCKERS = {
+  CAPTAIN_OFFLINE: "Your captain is offline",
+  NOT_ENOUGH_ONLINE: "Not enough of your team is online",
+};
+
 function ScrimsScreen({ notify }) {
   const [state, setState] = useState(null); // { listings, myListing, incoming }
   const [myTeam, setMyTeam] = useState(undefined); // undefined = still loading
@@ -546,6 +552,7 @@ function ScrimsScreen({ notify }) {
   const [note, setNote] = useState("");
   const [postRegion, setPostRegion] = useState(["na"]);
   const [busy, setBusy] = useState(false);
+  const [blocked, setBlocked] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -575,7 +582,11 @@ function ScrimsScreen({ notify }) {
       await load();
       if (after) notify(after);
     } catch (err) {
-      notify(err?.message ?? "That did not work");
+      // Why a team cannot scrim is worth stopping for; everything else is a
+      // toast.
+      const title = SCRIM_BLOCKERS[err?.code];
+      if (title) setBlocked({ title, message: err.message });
+      else notify(err?.message ?? "That did not work");
     } finally {
       setBusy(false);
     }
@@ -602,6 +613,10 @@ function ScrimsScreen({ notify }) {
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: 16, height: "100%", minHeight: 0 }}>
+      {blocked && (
+        <AlertModal title={blocked.title} message={blocked.message} onClose={() => setBlocked(null)} />
+      )}
+
       <Panel pad={0} style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderBottom: `1px solid ${T.line}` }}>
           <Eyebrow style={{ flex: 1 }}>Teams looking to scrim</Eyebrow>
@@ -1903,6 +1918,37 @@ function MatchScreen({ match, me, onFinished, notify, onView }) {
  */
 /** How many invites are shown at once before the rest are counted instead. */
 const INVITE_STACK_LIMIT = 3;
+
+/**
+ * A refusal that deserves reading.
+ *
+ * Most failures here are toasts, which is right for something you can shrug
+ * at. This is for the ones that explain why an action you meant to take will
+ * not happen -- a toast slides away while you are still looking at the button
+ * you pressed, and leaves you pressing it again.
+ */
+function AlertModal({ title, message, onClose }) {
+  return (
+    <div style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 74, animation: "sqIn .2s ease" }} onClick={onClose}>
+      <div role="alertdialog" aria-label={title} style={{ width: 380, maxWidth: "90vw" }} onClick={(e) => e.stopPropagation()}>
+        <Panel pad={20}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+            <div style={{ width: 30, height: 30, borderRadius: "50%", background: T.dangerDim, border: `1px solid ${T.danger}`, display: "grid", placeItems: "center", flexShrink: 0 }}>
+              <AlertTriangle size={15} color={T.danger} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <H size={19}>{title}</H>
+              <div style={{ fontSize: 13, color: T.muted, marginTop: 8, lineHeight: 1.5 }}>{message}</div>
+            </div>
+          </div>
+          <Btn kind="primary" style={{ width: "100%", justifyContent: "center", marginTop: 18 }} onClick={onClose}>
+            Got it
+          </Btn>
+        </Panel>
+      </div>
+    </div>
+  );
+}
 
 /**
  * Who plays this scrim.
