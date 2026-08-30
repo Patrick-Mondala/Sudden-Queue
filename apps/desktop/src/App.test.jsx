@@ -232,7 +232,12 @@ describe("mounting", () => {
 
   it("restores a session and renders the lobby", async () => {
     await signedIn();
-    expect(screen.getByText("PLAYER_1")).toBeTruthy();
+
+    // The in-game name is the one people are called by, so it is what the
+    // shell shows -- in the title bar and again on the play screen. The
+    // Discord name is the footnote underneath.
+    expect(screen.getAllByText("PLAYER_1").length).toBeGreaterThan(0);
+    expect(screen.getByText("Player1")).toBeTruthy();
   });
 });
 
@@ -314,23 +319,23 @@ describe("inviting people", () => {
 
   it("lists everyone online", async () => {
     const modal = await openInvites();
-    for (const p of online) expect(within(modal).getByText(p.discordName)).toBeTruthy();
+    for (const p of online) expect(within(modal).getByText(p.inGameName)).toBeTruthy();
   });
 
   it("filters as you type", async () => {
     const modal = await openInvites();
     await userEvent.type(within(modal).getByLabelText(/Search players/i), "bor");
 
-    await waitFor(() => expect(within(modal).queryByText("Aria")).toBeNull());
-    expect(within(modal).getByText("Boreas")).toBeTruthy();
+    await waitFor(() => expect(within(modal).queryByText("ARIA")).toBeNull());
+    expect(within(modal).getByText("BOREAS")).toBeTruthy();
   });
 
   it("matches on in-game name too, since that is what people are called in game", async () => {
     const modal = await openInvites();
     await userEvent.type(within(modal).getByLabelText(/Search players/i), "CINDER");
 
-    await waitFor(() => expect(within(modal).queryByText("Aria")).toBeNull());
-    expect(within(modal).getByText("Cinder")).toBeTruthy();
+    await waitFor(() => expect(within(modal).queryByText("ARIA")).toBeNull());
+    expect(within(modal).getByText("CINDER")).toBeTruthy();
   });
 
   it("shows someone already in a party without an Invite button", async () => {
@@ -916,7 +921,7 @@ describe("the ladder", () => {
   it("lists placed players with their standing", async () => {
     await openLadder();
 
-    expect(await screen.findByText("Rung1")).toBeTruthy();
+    expect(await screen.findByText("RUNG_1")).toBeTruthy();
     expect(screen.getByText("#1")).toBeTruthy();
     expect(screen.getByText(/3 placed players/i)).toBeTruthy();
   });
@@ -931,7 +936,7 @@ describe("the ladder", () => {
 
   it("publishes ranks and records, never a rating", async () => {
     await openLadder();
-    await screen.findByText("Rung1");
+    await screen.findByText("RUNG_1");
 
     expect(screen.getAllByText("A").length).toBeGreaterThan(0);
     expect(screen.getAllByText("30–10").length).toBeGreaterThan(0);
@@ -940,7 +945,7 @@ describe("the ladder", () => {
 
   it("pages only when there is more than a page", async () => {
     await openLadder();
-    await screen.findByText("Rung1");
+    await screen.findByText("RUNG_1");
     expect(screen.queryByRole("button", { name: /Next/i })).toBeNull();
 
     cleanup();
@@ -953,7 +958,7 @@ describe("the ladder", () => {
 
   it("opens a profile from a rung, fetching what the row did not carry", async () => {
     await openLadder();
-    await userEvent.click(await screen.findByText("Rung3"));
+    await userEvent.click(await screen.findByText("RUNG_3"));
 
     // The row carries a name and a rank; the profile carries the rest.
     await waitFor(() => expect(server.playerProfile).toHaveBeenCalledWith("user-3"));
@@ -964,7 +969,7 @@ describe("the ladder", () => {
 
   it("shows real reliability counters rather than a promise to publish them", async () => {
     await openLadder();
-    await userEvent.click(await screen.findByText("Rung3"));
+    await userEvent.click(await screen.findByText("RUNG_3"));
 
     expect(await screen.findByText("Disputes")).toBeTruthy();
     expect(screen.getByText("Missed accepts")).toBeTruthy();
@@ -974,7 +979,7 @@ describe("the ladder", () => {
   it("falls back to what it was handed when the fetch fails", async () => {
     server.playerProfile.mockRejectedValue(new Error("offline"));
     await openLadder();
-    await userEvent.click(await screen.findByText("Rung3"));
+    await userEvent.click(await screen.findByText("RUNG_3"));
 
     // Thinner, not wrong: the row already knew this much.
     expect(await screen.findByText(/Loading…/i)).toBeTruthy();
@@ -1731,7 +1736,7 @@ describe("avatars", () => {
 
     expect(mine()).toBeNull();
     // Still recognisably someone, rather than an empty circle.
-    expect(screen.getAllByTitle("Player1").length).toBeGreaterThan(0);
+    expect(screen.getAllByTitle("PLAYER_1").length).toBeGreaterThan(0);
   });
 
   it("falls back to the initial when the picture will not load", async () => {
@@ -1747,7 +1752,7 @@ describe("avatars", () => {
     fireEvent.error(img);
 
     await waitFor(() => expect(img.isConnected).toBe(false));
-    expect(screen.getAllByTitle("Player1").length).toBeGreaterThan(0);
+    expect(screen.getAllByTitle("PLAYER_1").length).toBeGreaterThan(0);
   });
 
   it("leaves a non-Discord url alone rather than appending to it", async () => {
@@ -1851,7 +1856,11 @@ describe("your in-game name", () => {
     await userEvent.type(screen.getByLabelText(/^In-game name$/i), "MISTAKE");
     await userEvent.click(screen.getByRole("button", { name: /^Cancel$/i }));
 
-    expect(await screen.findByText("SNIPER_X")).toBeTruthy();
+    // In several places at once, and rightly so now that the in-game name is
+    // what somebody is called: the title bar, the profile heading, and the
+    // field being edited. What matters is that the abandoned edit is gone.
+    await waitFor(() => expect(screen.getAllByText("SNIPER_X").length).toBeGreaterThan(0));
+    expect(screen.queryByText("MISTAKE")).toBeNull();
     expect(server.setInGameName).not.toHaveBeenCalled();
   });
 

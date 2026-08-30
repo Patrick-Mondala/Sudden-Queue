@@ -412,6 +412,7 @@ export class MatchReporting {
         matchId: matchReports.matchId,
         reporterId: matchReports.reporterId,
         discordName: users.discordName,
+        inGameName: users.inGameName,
         reportingTeam: matchReports.reportingTeam,
         claimedWinner: matchReports.claimedWinner,
       })
@@ -438,6 +439,7 @@ export class MatchReporting {
         .map((c) => ({
           reporterId: c.reporterId,
           discordName: c.discordName,
+          inGameName: c.inGameName,
           reportingTeam: c.reportingTeam,
           claimedWinner: c.claimedWinner,
         })),

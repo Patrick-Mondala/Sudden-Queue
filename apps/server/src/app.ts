@@ -748,7 +748,9 @@ export async function buildApp({
         inviteId: result.data.inviteId,
         partyId: result.data.partyId,
         fromUserId: user.userId,
-        fromName: user.discordName,
+        // The name the invitee will recognise, which is the one they would see
+        // in a game rather than the one on a Discord account.
+        fromName: user.inGameName ?? user.discordName,
         fromAvatarUrl: user.avatarUrl,
         fromIsGameMaster: isGameMaster(user.role),
         fromTier: isPlaced(games) ? tierForRating(inviter?.rating ?? DEFAULT_RATING) : null,
@@ -1996,6 +1998,11 @@ export async function buildApp({
             {
               userId,
               discordName: session.data.discordName,
+              // Read once, when the socket connected. Somebody who sets their
+              // in-game name mid-session keeps the old one on their chat lines
+              // until they reconnect, which is a restart away and cheaper than
+              // a database read on every message anyone sends.
+              inGameName: session.data.inGameName,
               avatarUrl: session.data.avatarUrl,
               isGameMaster: isGameMaster(session.data.role),
             },

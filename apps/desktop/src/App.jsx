@@ -218,6 +218,31 @@ const Btn = ({ children, kind = "ghost", size = "md", style, ...rest }) => {
   return <button style={{ ...base, ...kinds[kind], ...style }} {...rest}>{children}</button>;
 };
 /**
+ * What to call somebody.
+ *
+ * The in-game name, because that is the one that does any work: it is what you
+ * type to add them in the game, what you look for on a scoreboard, and what
+ * people recognise each other by. The Discord name is how they signed in --
+ * near enough irrelevant to playing -- so it is the fallback for anyone who
+ * has not set an in-game name yet, and nothing else.
+ */
+const displayName = (p) => p?.inGameName?.trim() || p?.discordName || null;
+
+/**
+ * The other name, where showing both earns its place.
+ *
+ * Null when it would only repeat what is already on screen, so a player who
+ * has not set an in-game name gets one name rather than the same one twice.
+ * Compared rather than inferred from which field was set: several payloads
+ * arrive with inGameName already filled in from the Discord name, and a rule
+ * that trusted the field would print both lines identically.
+ */
+const altName = (p) => {
+  const shown = displayName(p);
+  return p?.discordName && p.discordName !== shown ? p.discordName : null;
+};
+
+/**
  * Asks Discord for an avatar near the size it will be drawn at.
  *
  * The stored URL has no size on it, and Discord then serves whatever was
@@ -249,10 +274,10 @@ const Avatar = ({ p, size = 32, ring }) => {
 
   return (
     <div
-      title={p?.discordName}
+      title={displayName(p) ?? undefined}
       style={{ width: size, height: size, borderRadius: "50%", background: p?.avatarColor || T.line, display: "grid", placeItems: "center", fontFamily: T.display, fontWeight: 700, fontSize: size * 0.42, color: "#fff", boxShadow: ring ? `0 0 0 2px ${T.bg}, 0 0 0 4px ${ring}` : "none", flexShrink: 0, overflow: "hidden", position: "relative" }}
     >
-      {(p?.discordName || "?")[0].toUpperCase()}
+      {(displayName(p) || "?")[0].toUpperCase()}
       {url && !failed && (
         <img
           src={sizedAvatar(url, size)}
@@ -267,17 +292,19 @@ const Avatar = ({ p, size = 32, ring }) => {
 /**
  * A player's name, with the GM prefix when they carry one.
  *
- * Every surface that shows a name goes through this rather than reading
- * discordName directly, so a Game Master is marked in the roster, the ladder,
- * a chat line and an invite alike -- and adding a surface later cannot quietly
- * miss it.
+ * Every surface that shows a name goes through this rather than reading a
+ * field directly, so a Game Master is marked in the roster, the ladder, a chat
+ * line and an invite alike -- and adding a surface later cannot quietly miss
+ * it. It takes the player rather than a string for the same reason: which of
+ * their two names to show is one decision, made here, and not fourteen
+ * decisions made wherever somebody happened to be writing markup.
  */
-const PlayerName = ({ name, isGameMaster, style, suffix }) => (
+const PlayerName = ({ p, name, isGameMaster, style, suffix }) => (
   <span style={{ whiteSpace: "nowrap", ...style }}>
-    {isGameMaster && (
+    {(isGameMaster ?? p?.isGameMaster) && (
       <span style={{ fontFamily: T.display, fontWeight: 800, fontSize: "0.85em", letterSpacing: "0.04em", color: T.captain, marginRight: 5 }}>{t("GM")}</span>
     )}
-    {name}
+    {displayName(p) ?? name ?? t("Player")}
     {suffix}
   </span>
 );
@@ -554,7 +581,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
                 <div key={i} onClick={() => p && onView?.(p)} style={{ border: `1px dashed ${p ? T.line2 : T.line}`, borderStyle: p ? "solid" : "dashed", borderRadius: 5, padding: 10, minHeight: 92, background: p ? T.raised : "transparent", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, position: "relative", cursor: p && onView ? "pointer" : "default" }}>
                   {p ? <>
                     <Avatar p={p} size={34} ring={i === 0 ? T.captain : null} />
-                    <div style={{ fontSize: 12, fontWeight: 600, maxWidth: "100%", textAlign: "center", whiteSpace: "nowrap" }}><PlayerName name={p.discordName} isGameMaster={p.isGameMaster} /></div>
+                    <div style={{ fontSize: 12, fontWeight: 600, maxWidth: "100%", textAlign: "center", whiteSpace: "nowrap" }}><PlayerName p={p} /></div>
                     <Rank tier={p.tier} placementsRemaining={p.placementsRemaining} size={11} />
                     {i > 0 && queue.state !== "queued" && <button onClick={(e) => { e.stopPropagation(); kick(p.id); }} title={t("Remove")} style={{ position: "absolute", top: 4, right: 4, background: "transparent", border: "none", color: T.dim, padding: 2 }}><X size={12} /></button>}
                     {i === 0 && <span style={{ position: "absolute", top: 4, left: 6 }}><Star size={11} color={T.captain} fill={T.captain} /></span>}
@@ -588,8 +615,8 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
             <Avatar p={me} size={44} />
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 700, fontSize: 15 }}><PlayerName name={me.discordName} isGameMaster={me.isGameMaster} /></div>
-              <div style={{ fontFamily: T.mono, fontSize: 11.5, color: T.muted }}>{me.inGameName ?? me.discordName}</div>
+              <div style={{ fontWeight: 700, fontSize: 15 }}><PlayerName p={me} /></div>
+              <div style={{ fontFamily: T.mono, fontSize: 11.5, color: T.muted }}>{altName(me)}</div>
             </div>
             <div style={{ textAlign: "right" }}>
               <Tier tier={me.tier} size={22} />
@@ -971,9 +998,9 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
                     <Avatar p={{ ...m, avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length] }} size={30} />
                     <div style={{ minWidth: 0 }}>
                       <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>
-                        <PlayerName name={m.discordName} isGameMaster={m.isGameMaster} suffix={m.userId === me.id ? <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span> : null} />
+                        <PlayerName p={m} suffix={m.userId === me.id ? <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span> : null} />
                       </div>
-                      <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{m.inGameName ?? m.discordName}</div>
+                      <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{altName(m)}</div>
                     </div>
                   </div>
                   <Tag color={m.isStarter ? T.ok : T.dim}>{m.isStarter ? t("Starter") : t("Sub")}</Tag>
@@ -1003,7 +1030,7 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
                     <button
                       title={t("Hand over the team")}
                       disabled={busy}
-                      onClick={() => act(() => server.transferCaptaincy(m.userId), `${m.discordName} now captains ${team.name}`)}
+                      onClick={() => act(() => server.transferCaptaincy(m.userId), `${displayName(m)} now captains ${team.name}`)}
                       style={{ width: 26, height: 26, display: "grid", placeItems: "center", background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, color: T.captain, flexShrink: 0 }}
                     >
                       <Star size={13} />
@@ -1014,7 +1041,7 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
                     <button
                       title={t("Remove from team")}
                       disabled={busy}
-                      onClick={() => act(() => server.removeTeamMember(m.userId), `${m.discordName} removed`)}
+                      onClick={() => act(() => server.removeTeamMember(m.userId), `${displayName(m)} removed`)}
                       style={{ width: 26, height: 26, display: "grid", placeItems: "center", background: T.dangerDim, border: `1px solid ${T.danger}`, borderRadius: 4, color: T.danger, flexShrink: 0 }}
                     >
                       <X size={13} />
@@ -1034,11 +1061,11 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
                   <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: a.note ? 8 : 0 }}>
                     <Avatar p={{ ...a, avatarColor: AV_COLORS[Math.abs(hashString(a.userId)) % AV_COLORS.length] }} size={28} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13 }}><PlayerName name={a.discordName} isGameMaster={a.isGameMaster} /></div>
-                      <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{a.inGameName ?? a.discordName}</div>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}><PlayerName p={a} /></div>
+                      <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{altName(a)}</div>
                     </div>
                     <Rank tier={a.tier} placementsRemaining={a.placementsRemaining} size={11} />
-                    <Btn size="sm" kind="primary" disabled={busy} onClick={() => act(() => server.decideApplication(a.id, true), `${a.discordName} joined ${team.name}`)}>{t("Accept")}</Btn>
+                    <Btn size="sm" kind="primary" disabled={busy} onClick={() => act(() => server.decideApplication(a.id, true), `${displayName(a)} joined ${team.name}`)}>{t("Accept")}</Btn>
                     <Btn size="sm" disabled={busy} onClick={() => act(() => server.decideApplication(a.id, false), "Application denied")}>{t("Deny")}</Btn>
                   </div>
                   {a.note && <div style={{ fontSize: 12, color: T.muted, lineHeight: 1.45, paddingLeft: 38 }}>{a.note}</div>}
@@ -1293,7 +1320,7 @@ function PlayersPanel({ me, notify }) {
     setBusy(true);
     try {
       const res = await server.suspend(target.userId, hours, reason.trim());
-      notify(`${res.discordName} suspended`);
+      notify(`${displayName(res)} suspended`);
       setReason("");
       await refresh(target.userId);
     } catch (err) {
@@ -1308,7 +1335,7 @@ function PlayersPanel({ me, notify }) {
     setBusy(true);
     try {
       await server.reinstate(target.userId, reason.trim());
-      notify(`${target.discordName} reinstated`);
+      notify(`${displayName(target)} reinstated`);
       setReason("");
       await refresh(target.userId);
     } catch (err) {
@@ -1330,9 +1357,9 @@ function PlayersPanel({ me, notify }) {
     >
       <Avatar p={{ ...u, avatarColor: AV_COLORS[Math.abs(hashString(u.userId)) % AV_COLORS.length] }} size={26} />
       <div style={{ minWidth: 0, flex: 1 }}>
-        <PlayerName name={u.discordName} isGameMaster={u.role !== "player"} style={{ fontWeight: 600, fontSize: 13 }} />
+        <PlayerName p={u} isGameMaster={u.role !== "player"} style={{ fontWeight: 600, fontSize: 13 }} />
         <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {u.inGameName ?? u.discordName}
+          {altName(u)}
         </div>
       </div>
       {Date.parse(u.bannedUntil ?? 0) > Date.now() && <Tag color={T.danger} bg={T.dangerDim}>{until(u.bannedUntil)}</Tag>}
@@ -1372,9 +1399,9 @@ function PlayersPanel({ me, notify }) {
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <Avatar p={{ ...target, avatarColor: AV_COLORS[Math.abs(hashString(target.userId)) % AV_COLORS.length] }} size={40} />
               <div style={{ flex: 1, minWidth: 0 }}>
-                <PlayerName name={target.discordName} isGameMaster={target.role !== "player"} style={{ fontWeight: 700, fontSize: 16 }} />
+                <PlayerName p={target} isGameMaster={target.role !== "player"} style={{ fontWeight: 700, fontSize: 16 }} />
                 <div style={{ fontFamily: T.mono, fontSize: 11, color: T.muted }}>
-                  {target.inGameName ?? "no in-game name"} · {target.discordId}
+                  {target.discordName} · {target.discordId}
                 </div>
               </div>
             </div>
@@ -1604,7 +1631,7 @@ function DisputesScreen({ me, notify, onView }) {
                 return (
                   <div key={team} style={{ background: T.raised, borderRadius: 5, padding: "10px 12px", border: `1px solid ${T.line2}` }}>
                     <Eyebrow style={{ fontSize: 9.5 }}>Team {team}&apos;s captain</Eyebrow>
-                    <div style={{ fontSize: 13, fontWeight: 600, marginTop: 4 }}>{claim?.discordName ?? "never reported"}</div>
+                    <div style={{ fontSize: 13, fontWeight: 600, marginTop: 4 }}>{displayName(claim) ?? t("never reported")}</div>
                     <div style={{ fontSize: 12, color: claim ? T.text : T.dim, marginTop: 4 }}>
                       {claim ? `claims Team ${claim.claimedWinner === "TEAM1" ? 1 : 2} won` : "no report"}
                     </div>
@@ -1724,10 +1751,10 @@ function LadderScreen({ me, onView, notify }) {
                   <Avatar p={{ ...r, avatarColor: AV_COLORS[Math.abs(hashString(r.userId)) % AV_COLORS.length] }} size={26} />
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>
-                      <PlayerName name={r.discordName} isGameMaster={r.isGameMaster} suffix={isMe ? <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span> : null} />
+                      <PlayerName p={r} suffix={isMe ? <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span> : null} />
                     </div>
                     <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>
-                      {r.inGameName ?? r.discordName}{r.teamTag ? ` · ${r.teamTag}` : ""}
+                      {[altName(r), r.teamTag].filter(Boolean).join(" · ")}
                     </div>
                   </div>
                 </div>
@@ -2054,11 +2081,11 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
             <Avatar p={view} size={64} />
             <div style={{ flex: 1 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}><H size={26}><PlayerName name={view.discordName ?? t("Player")} isGameMaster={view.isGameMaster} /></H>{isMe && <Tag color={T.accent}>{t("You")}</Tag>}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}><H size={26}><PlayerName p={view} /></H>{isMe && <Tag color={T.accent}>{t("You")}</Tag>}</div>
               {isMe ? (
                 <InGameNameField value={view.inGameName ?? null} onSaved={onSaved} notify={notify} />
               ) : (
-                <div style={{ fontFamily: T.mono, fontSize: 12, color: T.muted, marginTop: 4 }}>{view.inGameName ?? view.discordName} · Discord linked</div>
+                <div style={{ fontFamily: T.mono, fontSize: 12, color: T.muted, marginTop: 4 }}>{view.discordName} · Discord</div>
               )}
             </div>
             <div style={{ textAlign: "right" }}>
@@ -2223,8 +2250,10 @@ function Roster({ team, captainId, me, side, label, phase, onView, tier }) {
             <div key={p.id} onClick={() => onView?.(p)} style={{ background: cap ? T.captainDim : T.raised, border: `1px solid ${cap ? T.captain : isMe ? T.accent : T.line}`, borderRadius: 6, padding: "12px 8px 10px", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, position: "relative", animation: "sqRise .35s ease both", cursor: onView ? "pointer" : "default" }}>
               {cap && <div style={{ position: "absolute", top: -9, left: "50%", transform: "translateX(-50%)", background: T.captain, color: "#160E00", fontFamily: T.mono, fontSize: 9.5, letterSpacing: "0.1em", padding: "2px 7px", borderRadius: 3, fontWeight: 700 }}>{t("CAPTAIN")}</div>}
               <Avatar p={p} size={40} ring={cap ? T.captain : isMe ? T.accent : null} />
-              <div style={{ fontFamily: T.mono, fontSize: 11.5, fontWeight: 600, letterSpacing: "0.02em", textAlign: "center", maxWidth: "100%", whiteSpace: "nowrap" }}>{p.inGameName}</div>
-              <div style={{ fontSize: 11, color: T.muted, textAlign: "center", maxWidth: "100%" }}><PlayerName name={p.discordName} isGameMaster={p.isGameMaster} suffix={isMe ? " (you)" : ""} /></div>
+              {/* Monospaced because this is a string you retype into another
+                  program, and a proportional font makes l and 1 an argument. */}
+              <div style={{ fontFamily: T.mono, fontSize: 11.5, fontWeight: 600, letterSpacing: "0.02em", textAlign: "center", maxWidth: "100%" }}><PlayerName p={p} suffix={isMe ? " (you)" : ""} /></div>
+              {altName(p) && <div style={{ fontSize: 11, color: T.muted, textAlign: "center", maxWidth: "100%", whiteSpace: "nowrap" }}>{altName(p)}</div>}
               <Rank tier={p.tier} placementsRemaining={p.placementsRemaining} size={11} />
               {cap && phase === "party" && isMySide && !isMe && <button onClick={(e) => { e.stopPropagation(); navigator.clipboard?.writeText(p.inGameName); }} title={t("Copy your captain's in-game name")} style={{ marginTop: 2, background: "transparent", border: `1px solid ${T.captain}`, color: T.captain, borderRadius: 3, fontSize: 10.5, padding: "3px 8px", display: "inline-flex", gap: 4, alignItems: "center", fontFamily: T.mono }}><Copy size={10} /> copy name</button>}
             </div>
@@ -2329,14 +2358,14 @@ function ChatLog({ messages, me, empty, onView }) {
     <>
       {messages.map((m) => {
         const mine = m.userId === me.id;
-        const who = { discordName: m.discordName, avatarUrl: m.avatarUrl, avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length] };
+        const who = { discordName: m.discordName, inGameName: m.inGameName, avatarUrl: m.avatarUrl, avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length] };
         return (
           <div key={m.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", animation: "sqRise .2s ease" }}>
             <div onClick={() => onView?.({ id: m.userId })} style={{ cursor: onView ? "pointer" : "default", flexShrink: 0 }}>
               <Avatar p={who} size={22} />
             </div>
             <div style={{ minWidth: 0 }}>
-              <span onClick={() => onView?.({ id: m.userId })} style={{ fontSize: 12, fontWeight: 700, color: mine ? T.accent : T.text, cursor: onView ? "pointer" : "default" }}><PlayerName name={m.discordName} isGameMaster={m.isGameMaster} /></span>{" "}
+              <span onClick={() => onView?.({ id: m.userId })} style={{ fontSize: 12, fontWeight: 700, color: mine ? T.accent : T.text, cursor: onView ? "pointer" : "default" }}><PlayerName p={m} /></span>{" "}
               <span style={{ fontSize: 10.5, color: T.dim, fontFamily: T.mono }}>{new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
               <div style={{ fontSize: 13, color: T.text, lineHeight: 1.4, wordBreak: "break-word" }}>{m.text}</div>
             </div>
@@ -2712,9 +2741,9 @@ function LineupModal({ pending, notify, onDone }) {
                   <Avatar p={{ ...r, avatarColor: AV_COLORS[Math.abs(hashString(r.userId)) % AV_COLORS.length] }} size={26} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 600 }}>
-                      <PlayerName name={r.discordName} isGameMaster={r.isGameMaster} />
+                      <PlayerName p={r} />
                     </div>
-                    <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{r.inGameName ?? r.discordName}</div>
+                    <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{altName(r)}</div>
                   </div>
                   {r.isStarter && <Tag color={T.ok}>{t("Starter")}</Tag>}
                   <Rank tier={r.tier} placementsRemaining={r.placementsRemaining} size={11} />
@@ -2838,7 +2867,7 @@ function InviteModal({ party, onClose, notify }) {
       // Mirror the server's cooldown so the button explains itself rather than
       // waiting to be refused.
       setSent((s) => ({ ...s, [p.id]: Date.now() + 60000 }));
-      notify(`Invited ${p.discordName}`);
+      notify(`Invited ${displayName(p)}`);
     } catch (err) {
       if (err?.status === 429) {
         const seconds = Number(/(\d+)s/.exec(err.message ?? "")?.[1] ?? 60);
@@ -2896,8 +2925,8 @@ function InviteModal({ party, onClose, notify }) {
                   <div key={p.id} className="row-hover" style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 8px", borderRadius: 4, opacity: p.unavailable ? 0.55 : 1 }}>
                     <Avatar p={{ ...p, avatarColor: AV_COLORS[Math.abs(hashString(p.id)) % AV_COLORS.length] }} size={30} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13 }}><PlayerName name={p.discordName} isGameMaster={p.isGameMaster} /></div>
-                      <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{p.inGameName}</div>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}><PlayerName p={p} /></div>
+                      <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{altName(p)}</div>
                     </div>
                     <Rank tier={p.tier} placementsRemaining={p.placementsRemaining} size={11} />
                     {p.unavailable ? (
@@ -3450,7 +3479,7 @@ export default function App() {
         <div style={{ flex: 1 }} />
         {queue.state === "queued" && !match && <button onClick={() => go("play")} style={{ background: T.accentDim, border: `1px solid ${T.accent}`, color: T.accent, borderRadius: 4, padding: "4px 10px", fontFamily: T.mono, fontSize: 11.5, display: "flex", gap: 6, alignItems: "center" }}><Dot pulse /> IN QUEUE</button>}
         {match && <span style={{ fontFamily: T.mono, fontSize: 11.5, color: T.captain, display: "flex", gap: 6, alignItems: "center" }}><Dot color={T.captain} pulse /> IN MATCH</span>}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 12 }}><Avatar p={me} size={24} /><PlayerName name={me.discordName} isGameMaster={me.isGameMaster} style={{ fontWeight: 600 }} /><Tier tier={me.tier} size={12} /></div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 12 }}><Avatar p={me} size={24} /><PlayerName p={me} style={{ fontWeight: 600 }} /><Tier tier={me.tier} size={12} /></div>
         <button onClick={() => setMe(null)} title={t("Sign out")} style={{ background: "transparent", border: "none", color: T.dim, padding: 4 }}><LogOut size={14} /></button>
       </div>
 
