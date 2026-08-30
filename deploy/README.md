@@ -47,11 +47,16 @@ sudo -u postgres psql -c "CREATE USER suddenqueue WITH PASSWORD 'CHANGE-THIS';"
 sudo -u postgres psql -c "CREATE DATABASE suddenqueue OWNER suddenqueue;"
 ```
 
-Use a generated password:
+Use a generated password — **hex, not base64**:
 
 ```bash
-openssl rand -base64 24
+openssl rand -hex 32
 ```
+
+The password goes into `DATABASE_URL` as part of a URL, and base64 emits `/`
+and `+`. A `/` does not truncate the password, it makes the whole string an
+invalid URL, and the connection fails before it is attempted. Hex has no
+characters a URL cares about.
 
 Confirm it is not listening to the world. `ss -lntp | grep 5432` should show
 `127.0.0.1:5432` and nothing else.
