@@ -3463,7 +3463,12 @@ export default function App() {
               <Icon size={18} />{label}
             </button>); })}
           <div style={{ flex: 1 }} />
-          <div style={{ padding: 10, textAlign: "center" }}><Eyebrow style={{ fontSize: 9 }}>v0.1</Eyebrow><Eyebrow style={{ fontSize: 9, color: T.dim }}>{t("preview")}</Eyebrow></div>
+          {/* The build's own version, not a literal. It is the number the
+              server checks this client against, so a label that could drift
+              from it would be worse than no label -- the one moment anybody
+              reads this is when they are working out which version they are
+              on. */}
+          <div style={{ padding: 10, textAlign: "center" }}><Eyebrow style={{ fontSize: 9 }}>{CLIENT_VERSION ? `v${CLIENT_VERSION}` : t("dev")}</Eyebrow><Eyebrow style={{ fontSize: 9, color: T.dim }}>{t("preview")}</Eyebrow></div>
         </div>
         {/* main */}
         <div style={{ flex: 1, minWidth: 0, padding: 16, overflow: "auto", position: "relative" }}>{content}</div>
