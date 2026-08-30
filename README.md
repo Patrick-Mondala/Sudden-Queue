@@ -302,16 +302,16 @@ one.
 
 ## Deploying the server
 
-Not done yet. What it needs: a host, a Postgres instance that is not the Docker
-container on your desk, `DISCORD_REDIRECT_URI` and the Discord app's redirect
-pointing at the real domain, and `VITE_API_URL` set when building the client so
-it stops looking for `127.0.0.1:3000`.
+One server, one database, one process — see [deploy/README.md](deploy/README.md)
+for the walkthrough, with a systemd unit, a Caddyfile and a backup script beside
+it.
 
-It is a light workload — one websocket per player, a heartbeat that touches no
+It is a light workload: one websocket per player, a heartbeat that touches no
 database, and pushed events only when something changes. A small VPS covers it.
-The one ceiling worth knowing: sockets and chat buffers live in process memory,
-so it scales by getting a bigger box, not more of them. Crossing that would mean
-Redis for fan-out, somewhere north of a couple of thousand concurrent players.
+The one ceiling worth knowing is that sockets and chat buffers live in process
+memory, so it scales by getting a bigger box, not more of them. Crossing that
+would mean Redis for fan-out, somewhere north of a couple of thousand
+concurrent players.
 
 ## Licence
 

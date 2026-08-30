@@ -1,0 +1,45 @@
+# Caddy in front of the Sudden Queue server.
+#
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# Replace the hostname with yours. Caddy gets and renews the certificate on
+# its own, so there is nothing else to set up for TLS.
+
+queue.example.com {
+	# The server holds a WebSocket per signed-in player. Caddy proxies those
+	# without any special configuration, but the read timeout has to outlast
+	# a quiet socket: the client heartbeat is every five seconds, so a minute
+	# is generous while still cutting off a connection that has really gone.
+	reverse_proxy 127.0.0.1:3000 {
+		flush_interval -1
+	}
+
+	encode zstd gzip
+
+	header {
+		# The API is called by the desktop app, never framed or embedded.
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/sudden-queue.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+}
+
+# Serving on a bare IP address instead? Let's Encrypt will not issue a
+# certificate for one, so this is the only shape that works:
+#
+#   :80 {
+#   	reverse_proxy 127.0.0.1:3000
+#   }
+#
+# It is fine for testing and wrong for players: sign-in tokens would cross the
+# network in the clear, and the Discord callback would be an unencrypted URL.
+# Get a hostname before anyone else uses it.

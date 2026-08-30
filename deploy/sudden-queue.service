@@ -1,0 +1,53 @@
+# systemd unit for the Sudden Queue server.
+#
+#   sudo cp deploy/sudden-queue.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now sudden-queue
+#
+# Adjust User and WorkingDirectory if you did not follow deploy/README.md.
+
+[Unit]
+Description=Sudden Queue server
+Documentation=https://github.com/Patrick-Mondala/Sudden-Queue
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=suddenqueue
+Group=suddenqueue
+WorkingDirectory=/srv/sudden-queue
+
+# The server is started through tsx rather than node: @suddenqueue/core is
+# published as TypeScript source, so there is no compiled entrypoint to run.
+# That is also why the install on this box keeps its dependencies rather than
+# using --omit=dev.
+ExecStart=/usr/bin/npm run start --workspace @suddenqueue/server
+
+EnvironmentFile=/srv/sudden-queue/.env
+Environment=NODE_ENV=production
+
+# Come back from a crash, but stop trying if it is crashing on startup --
+# a restart loop against a broken config only fills the disk with logs.
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=120
+
+# Nothing here needs to write outside its own directory or see the rest of
+# the filesystem.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/sudden-queue
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sudden-queue
+
+[Install]
+WantedBy=multi-user.target
