@@ -1,6 +1,6 @@
 [package]
 name = "sudden-queue"
-version = "0.1.1"
+version = "0.1.2"
 description = "Sudden Queue - matchmaking for Sudden Attack Zero Point"
 authors = ["you"]
 edition = "2021"
