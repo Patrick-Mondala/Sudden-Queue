@@ -14,6 +14,10 @@ Ships configured for *Sudden Attack Zero Point*, unofficially and by fans.
 Pointing it at a different game is environment variables, not a fork — see
 [Using it for another game](#using-it-for-another-game).
 
+Running it yourself? Start with [Making it yours](#making-it-yours) — a few
+values in the checkout belong to whoever published it, and one of them decides
+who can ship updates to your players.
+
 - **`apps/server`** — Fastify + Postgres. Every rule lives here.
 - **`apps/desktop`** — Tauri v2 shell around a React client.
 - **`packages/core`** — the constants and pure functions both sides share, so a
@@ -133,18 +137,64 @@ npm run grant -- --list
 The role is read from the database on every request, so it takes effect
 immediately; the client picks up the badge on its next `/me`.
 
+## Making it yours
+
+If you are running this rather than contributing to it, five things in the
+checkout belong to somebody else's deployment. Four are inconvenient. The first
+is not.
+
+### 1. Generate your own updater keypair
+
+```bash
+cd apps/desktop
+npx tauri signer generate -w ~/.tauri/<your-app>.key
+```
+
+Put the **public** half in `apps/desktop/src-tauri/tauri.conf.json` under
+`plugins.updater.pubkey`, replacing the one that ships.
+
+**Do not skip this.** That field currently holds the key of whoever published
+this repository. An app built with someone else's public key installs updates
+*they* sign and refuses every update *you* sign — so you could not ship a fix to
+your own users, and they could ship anything to them. Replacing it is the
+difference between running your own deployment and hosting theirs.
+
+Keep the private half out of the repository and **back it up**. If it is lost,
+every installed copy rejects every future update, permanently — there is no
+reissue. If it leaks, whoever has it can sign an update that every install
+accepts and runs.
+
+### 2. Point the updater at your releases
+
+In the same file, `plugins.updater.endpoints` ships as `CHANGE-ME`. Until it
+names the repository you publish to, installed copies check a 404 and silently
+stay on the version they have. The release script refuses to run while it says
+`CHANGE-ME`, so this cannot ship wrong by accident.
+
+### 3. Change the bundle identifier
+
+`identifier` in `tauri.conf.json` is `com.gentl.suddenqueue`. Two builds
+sharing one identifier collide: they fight over the same install location and
+the same single-instance lock, so a player with both installed can only run one
+at a time.
+
+### 4. Set a real database password
+
+`docker-compose.yml` and `.env.example` carry `suddenqueue_dev`, which is fine
+on your own machine and nowhere else. A hosted deployment needs a real password
+in `DATABASE_URL`, and a database that is not reachable from the internet.
+
+### 5. Your own Discord application and session secret
+
+Both covered under [Filling in `.env`](#filling-in-env). The session secret
+signs cookies for your deployment; generate a new one rather than reusing any
+value you found written down.
+
 ## Releasing the desktop app
 
-Two things must be true before a release means anything.
-
-**The signing key.** It lives at `~/.tauri/sudden-queue.key`, outside the repo
-and gitignored. **Back it up.** If it is lost, every installed copy will reject
-every future update, permanently — there is no reissue. If it leaks, whoever has
-it can sign an update that every install accepts and runs.
-
-**The endpoint.** `apps/desktop/src-tauri/tauri.conf.json` still points at
-`CHANGE-ME`. Until it names the repository you actually publish to, installed
-copies check a 404 and silently stay where they are.
+Assumes you have done [Making it yours](#making-it-yours) — your own signing
+key, and an endpoint that names your repository. Without both, a release either
+cannot be built or cannot be installed.
 
 ### By tag, in CI
 
@@ -165,7 +215,7 @@ Two settings on the repository:
 
 | Where | Name | Value |
 | --- | --- | --- |
-| Secret | `TAURI_SIGNING_PRIVATE_KEY` | the contents of `~/.tauri/sudden-queue.key` |
+| Secret | `TAURI_SIGNING_PRIVATE_KEY` | the contents of your private key file |
 | Variable | `VITE_API_URL` | the server the shipped client should talk to |
 
 Without the secret the installers still build, carry no signature, and every
@@ -178,7 +228,7 @@ Bump `version` in `tauri.conf.json` first:
 
 ```bash
 cd apps/desktop
-TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/sudden-queue.key)" npm run tauri build
+TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/<your-app>.key)" npm run tauri build
 npm run release:manifest -- --notes "What changed"
 ```
 
