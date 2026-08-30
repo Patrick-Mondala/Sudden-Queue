@@ -25,7 +25,15 @@ Nothing here needs root, so nothing here runs as root.
 ## 2. Node and Postgres
 
 ```bash
+# Node 22 from NodeSource; Ubuntu's own is older than this needs.
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+
+# Caddy is not in Ubuntu's repositories, so add theirs.
+sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key'   | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt'   | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+
+sudo apt-get update
 sudo apt-get install -y nodejs postgresql caddy git
 ```
 
