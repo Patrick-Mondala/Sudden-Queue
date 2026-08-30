@@ -11,6 +11,9 @@ permissions:
 
 jobs:
   build:
+    # Windows only, by choice rather than by omission: the game this was built
+    # for runs nowhere else. A build matrix is the change if that stops being
+    # true -- Tauri can only target the platform it builds on.
     runs-on: windows-latest
 
     steps:

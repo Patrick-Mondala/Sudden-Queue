@@ -25,8 +25,12 @@ who can ship updates to your players.
 
 ## Running it
 
-You need **Node 22+**, **Docker** (for Postgres), and — for the desktop shell —
-the **Rust toolchain** and **WebView2** (already present on Windows 11).
+The desktop app is **Windows only**, deliberately. The server runs anywhere
+Node does.
+
+To work on it you need **Node 22+**, **Docker** (for Postgres), and — for the
+desktop shell — the **Rust toolchain** and **WebView2** (already present on
+Windows 11).
 
 ```bash
 npm install
