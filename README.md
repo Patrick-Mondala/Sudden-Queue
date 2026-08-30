@@ -146,7 +146,35 @@ it can sign an update that every install accepts and runs.
 `CHANGE-ME`. Until it names the repository you actually publish to, installed
 copies check a 404 and silently stay where they are.
 
-Then, for each release — bump `version` in `tauri.conf.json` first:
+### By tag, in CI
+
+Once the repository exists and the two settings below are in place, a release
+is a tag:
+
+```bash
+# bump "version" in apps/desktop/src-tauri/tauri.conf.json first
+git tag v0.1.1 && git push --tags
+```
+
+The workflow refuses a tag that disagrees with that version, because the updater
+compares against the declared one — ship a mismatch and the update installs and
+then offers itself again, forever. It builds, signs, writes `latest.json` and
+opens a **draft** release, so nothing goes out until a person looks at it.
+
+Two settings on the repository:
+
+| Where | Name | Value |
+| --- | --- | --- |
+| Secret | `TAURI_SIGNING_PRIVATE_KEY` | the contents of `~/.tauri/sudden-queue.key` |
+| Variable | `VITE_API_URL` | the server the shipped client should talk to |
+
+Without the secret the installers still build, carry no signature, and every
+client refuses them. Add `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` too if you ever
+put a passphrase on the key.
+
+### By hand
+
+Bump `version` in `tauri.conf.json` first:
 
 ```bash
 cd apps/desktop

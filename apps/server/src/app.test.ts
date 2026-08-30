@@ -1,4 +1,4 @@
-import { INVITE_RATE_LIMIT, isOk } from "@suddenqueue/core";
+import { INVITE_RATE_LIMIT, WRITE_RATE_LIMIT, isOk } from "@suddenqueue/core";
 import { and, desc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -2963,5 +2963,150 @@ describe("telling a client what this deployment is", () => {
     // but nothing here may carry a person's rating.
     expect(body).not.toHaveProperty("rating");
     expect(body.tierFloors.every((f: number) => typeof f === "number")).toBe(true);
+  });
+});
+
+describe("when something breaks unexpectedly", () => {
+  /** A failure shaped like the ones Postgres actually raises. */
+  const dbFailure = () =>
+    Object.assign(new Error(
+      'duplicate key value violates unique constraint "users_discord_id_idx" DETAIL: Key (discord_id)=(1308910650) already exists.',
+    ), { code: "23505" });
+
+  /**
+   * Its own instance: routes cannot be added after ready(), and these two
+   * exist only to throw.
+   */
+  let broken: Awaited<ReturnType<typeof buildApp>>;
+
+  beforeAll(async () => {
+    broken = await buildApp({ db: handle.db, config: CONFIG, autoStart: false });
+    broken.server.get("/test/explode", async () => { throw dbFailure(); });
+    broken.server.get("/test/teapot", async () => {
+      throw Object.assign(new Error("I refuse to brew coffee"), { statusCode: 418 });
+    });
+    await broken.server.ready();
+  }, 60_000);
+
+  afterAll(async () => {
+    await broken?.server.close();
+  });
+
+  it("tells the client nothing about the database", async () => {
+    const res = await broken.server.inject({ method: "GET", url: "/test/explode" });
+
+    expect(res.statusCode).toBe(500);
+    const body = res.json();
+    // Constraint names, column names and key values are a map of the schema
+    // handed to anyone who can provoke a 500.
+    expect(body.message).not.toMatch(/constraint|discord_id|users_|DETAIL|duplicate key/i);
+    expect(JSON.stringify(body)).not.toContain("1308910650");
+    expect(body.error).toBe("INTERNAL");
+  });
+
+  it("still says something a person can act on", async () => {
+    const body = (await broken.server.inject({ method: "GET", url: "/test/explode" })).json();
+    expect(body.message).toMatch(/try again/i);
+  });
+
+  it("leaves a deliberate refusal alone", async () => {
+    // Below 500 the message was written for a person and says what to fix.
+    const res = await broken.server.inject({ method: "GET", url: "/test/teapot" });
+
+    expect(res.statusCode).toBe(418);
+    expect(res.json().message).toBe("I refuse to brew coffee");
+  });
+
+  it("does not touch the refusals routes send themselves", async () => {
+    // These return normally rather than throwing, so they never reach the
+    // handler at all -- worth pinning, since routing them through it would
+    // flatten every 409 into a generic sentence.
+    const res = await app.server.inject({ method: "GET", url: "/match/not-a-match" });
+    expect(res.statusCode).toBe(401);
+    expect(res.json().message).toBeTruthy();
+  });
+});
+
+describe("the ceiling on writes", () => {
+  it("stops a caller hammering a write route", async () => {
+    const user = await login();
+    const apply = () =>
+      app.server.inject({
+        method: "POST",
+        url: "/teams",
+        headers: authed(user.token),
+        payload: { tag: "AAA", name: "A Team", region: "na" },
+      });
+
+    let limited = null;
+    // Well past a human rate; a script reaches it immediately.
+    for (let i = 0; i < WRITE_RATE_LIMIT + 2; i += 1) {
+      const res = await apply();
+      if (res.statusCode === 429) { limited = res; break; }
+    }
+
+    expect(limited).not.toBeNull();
+    expect(limited!.json().error).toBe("RATE_LIMITED");
+  });
+
+  it("says how long to wait, in the body and the header", async () => {
+    const user = await login();
+    let limited = null;
+    for (let i = 0; i < WRITE_RATE_LIMIT + 2; i += 1) {
+      const res = await app.server.inject({
+        method: "POST",
+        url: "/teams",
+        headers: authed(user.token),
+        payload: { tag: "BBB", name: "B Team", region: "na" },
+      });
+      if (res.statusCode === 429) { limited = res; break; }
+    }
+
+    // A refusal with no "when" gets retried in a loop.
+    expect(Number(limited!.headers["retry-after"])).toBeGreaterThan(0);
+    expect(limited!.json().secondsRemaining).toBeGreaterThan(0);
+  });
+
+  it("counts each account separately", async () => {
+    const heavy = await login();
+    for (let i = 0; i < WRITE_RATE_LIMIT + 2; i += 1) {
+      await app.server.inject({
+        method: "POST",
+        url: "/teams",
+        headers: authed(heavy.token),
+        payload: { tag: "CCC", name: "C Team", region: "na" },
+      });
+    }
+
+    // Keyed on the account, not the address: everyone behind one router would
+    // otherwise share a budget.
+    const other = await login();
+    const res = await app.server.inject({
+      method: "POST",
+      url: "/teams",
+      headers: authed(other.token),
+      payload: { tag: "DDD", name: "D Team", region: "na" },
+    });
+    expect(res.statusCode).not.toBe(429);
+  });
+
+  it("leaves reads alone", async () => {
+    const user = await login();
+    for (let i = 0; i < WRITE_RATE_LIMIT + 2; i += 1) {
+      await app.server.inject({
+        method: "POST",
+        url: "/teams",
+        headers: authed(user.token),
+        payload: { tag: "EEE", name: "E Team", region: "na" },
+      });
+    }
+
+    // Being throttled must not lock someone out of looking at the app.
+    const res = await app.server.inject({
+      method: "GET",
+      url: "/teams",
+      headers: authed(user.token),
+    });
+    expect(res.statusCode).toBe(200);
   });
 });

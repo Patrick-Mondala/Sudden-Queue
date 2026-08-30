@@ -1,0 +1,54 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    # The server suite talks to a real Postgres rather than a mock, because the
+    # queries are the part most worth testing -- row locks, FILTER clauses and
+    # cascade behaviour are exactly what a fake would get wrong.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: suddenqueue
+          POSTGRES_PASSWORD: suddenqueue_dev
+          POSTGRES_DB: suddenqueue
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U suddenqueue -d suddenqueue"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run -w @suddenqueue/server db:migrate
+        env:
+          DATABASE_URL: postgresql://suddenqueue:suddenqueue_dev@localhost:5432/suddenqueue
+
+      # lint, typecheck, then every test. The same command used locally, so a
+      # green pull request means the same thing as a green checkout.
+      - run: npm run check
+        env:
+          DATABASE_URL: postgresql://suddenqueue:suddenqueue_dev@localhost:5432/suddenqueue
+          # Not a secret: the tests build their own config and never sign
+          # anything a person will hold. It only has to satisfy the length check.
+          SESSION_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef
+          DISCORD_CLIENT_ID: ci
+          DISCORD_CLIENT_SECRET: ci
+          DISCORD_REDIRECT_URI: http://127.0.0.1:3000/auth/discord/callback

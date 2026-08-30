@@ -1,0 +1,68 @@
+name: release
+
+# Cutting a release is `git tag v0.1.1 && git push --tags`. Everything below
+# is what was previously done by hand: build, sign, write the manifest, upload.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Rust is most of the build time and almost none of what changes between
+      # releases.
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - run: npm ci
+
+      - name: Refuse a tag that disagrees with the version
+        shell: bash
+        run: |
+          TAGGED="${GITHUB_REF_NAME#v}"
+          DECLARED=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          if [ "$TAGGED" != "$DECLARED" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match tauri.conf.json version $DECLARED."
+            echo "The updater compares against the declared version, so a mismatch"
+            echo "ships an update that installs and then offers itself again."
+            exit 1
+          fi
+
+      - name: Build and sign
+        working-directory: apps/desktop
+        run: npm run tauri build
+        env:
+          # The private half of the updater keypair. Without it the installers
+          # still build but carry no signature, and every client refuses them.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Where the shipped client will look for its server.
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+
+      - name: Write latest.json
+        working-directory: apps/desktop
+        run: npm run release:manifest -- --tag "${{ github.ref_name }}" --notes "${{ github.ref_name }}"
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+            apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe.sig
+            apps/desktop/src-tauri/target/release/bundle/nsis/latest.json

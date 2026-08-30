@@ -213,6 +213,13 @@ afterEach(cleanup);
 async function signedIn() {
   render(<App />);
   await screen.findByText(/Ready to queue/i);
+
+  // The shell subscribes to the bus from effects, which React runs after the
+  // commit that painted the text above. Emitting before they have attached
+  // sends the event nowhere, and the test then waits out its full timeout for
+  // something that was already dropped -- a failure that reads as slowness and
+  // is really a lost message.
+  await act(async () => {});
 }
 
 describe("mounting", () => {

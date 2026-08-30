@@ -1,6 +1,8 @@
 import {
   gameConfig,
   DEFAULT_RATING,
+  WRITE_RATE_LIMIT,
+  WRITE_RATE_WINDOW_SECONDS,
   INVITE_EXPIRATION_SECONDS,
   MAX_PARTY_SIZE,
   PARTY_DISCONNECT_GRACE_SECONDS,
@@ -16,7 +18,12 @@ import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import { eq, inArray, sql } from "drizzle-orm";
-import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import Fastify, {
+  type FastifyError,
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+} from "fastify";
 import { z } from "zod";
 
 import { AuthService } from "./auth/service.js";
@@ -36,6 +43,7 @@ import { ScrimService } from "./scrim/service.js";
 import { LadderService } from "./ladder/service.js";
 import { ChatService } from "./chat/service.js";
 import { ModerationService, MAX_SUSPENSION_HOURS, MIN_SUSPENSION_HOURS, SUSPENSION_REASON_MAX_LENGTH } from "./moderation/service.js";
+import { RateLimiter } from "./http/rate-limit.js";
 import { QueueRepository } from "./queue/repository.js";
 import { Notifier } from "./realtime/notifier.js";
 import { Population } from "./realtime/population.js";
@@ -161,6 +169,38 @@ export async function buildApp({
     done(err);
   });
 
+  /**
+   * The last word on anything that escaped a route.
+   *
+   * Fastify's default replies with the thrown error's own message, which for a
+   * database failure is a Postgres sentence naming constraints, columns, and
+   * sometimes a fragment of the query. That is a map of the schema handed to
+   * anyone who can provoke a 500.
+   *
+   * So the full error is logged, and the client is told only that something
+   * broke. Deliberate refusals are unaffected: those are `reply.code(...)`
+   * calls that return normally and never reach here. Anything that does reach
+   * here is a bug, and a bug is not something to explain to a stranger.
+   */
+  server.setErrorHandler((error: FastifyError, req, reply) => {
+    const status = error.statusCode ?? 500;
+
+    if (status >= 500) {
+      req.log.error({ err: error, url: req.url, method: req.method }, "unhandled route error");
+      return reply.code(500).send({
+        error: "INTERNAL",
+        message: "Something went wrong on our end. Try again in a moment.",
+      });
+    }
+
+    // Below 500 the message was written for a person: a malformed body, an
+    // unsupported content type. Those say what to fix, so they are kept.
+    return reply.code(status).send({
+      error: error.code ?? "BAD_REQUEST",
+      message: error.message,
+    });
+  });
+
   const notifier = new Notifier();
   const handoff = new LoginHandoff();
   const sessions = new SessionService(db);
@@ -282,6 +322,40 @@ export async function buildApp({
 
     req.user = result.data;
   }
+
+  /**
+   * A ceiling on writes, per account.
+   *
+   * Chat and invites police themselves at rates suited to what they cost; this
+   * covers the rest -- teams, applications, scrim listings and requests. It
+   * runs after authenticate, so the key is an account rather than an address:
+   * an address is shared by everyone behind a household router, and a limit
+   * that punishes a flatmate is worse than none.
+   */
+  const writes = new RateLimiter(WRITE_RATE_LIMIT, WRITE_RATE_WINDOW_SECONDS);
+
+  const writePruner = setInterval(() => writes.prune(), 5 * 60_000);
+  writePruner.unref?.();
+
+  async function throttleWrites(req: FastifyRequest, reply: FastifyReply): Promise<void> {
+    const user = req.user;
+    if (!user) return; // authenticate has already refused this request.
+
+    const verdict = writes.take(user.userId);
+    if (!verdict.ok) {
+      await reply
+        .code(429)
+        .header("retry-after", String(verdict.retryAfterSeconds))
+        .send({
+          error: "RATE_LIMITED",
+          message: `Slow down a moment — try again in ${verdict.retryAfterSeconds}s`,
+          secondsRemaining: verdict.retryAfterSeconds,
+        });
+    }
+  }
+
+  /** authenticate, then the write ceiling. Order matters: the key is the account. */
+  const authedWrite = [authenticate, throttleWrites];
 
   function requireUser(req: FastifyRequest): SessionUser {
     if (!req.user) throw new Error("route is missing the auth preHandler");
@@ -918,7 +992,7 @@ export async function buildApp({
     };
   });
 
-  server.post("/teams", { preHandler: authenticate }, async (req, reply) => {
+  server.post("/teams", { preHandler: authedWrite }, async (req, reply) => {
     const body = z
       .object({ tag: z.string(), name: z.string(), region: z.string() })
       .safeParse(req.body);
@@ -939,7 +1013,7 @@ export async function buildApp({
     return result.data;
   });
 
-  server.post("/teams/:id/apply", { preHandler: authenticate }, async (req, reply) => {
+  server.post("/teams/:id/apply", { preHandler: authedWrite }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const body = z
       .object({ note: z.string().max(TEAM_APPLICATION_NOTE_MAX_LENGTH).nullish() })
@@ -974,7 +1048,7 @@ export async function buildApp({
     return { ok: true };
   });
 
-  server.post("/team/applications/:id/decide", { preHandler: authenticate }, async (req, reply) => {
+  server.post("/team/applications/:id/decide", { preHandler: authedWrite }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const body = z.object({ accept: z.boolean() }).safeParse(req.body);
     if (!body.success) {
@@ -1001,7 +1075,7 @@ export async function buildApp({
     return result.data;
   });
 
-  server.patch("/team/applications-open", { preHandler: authenticate }, async (req, reply) => {
+  server.patch("/team/applications-open", { preHandler: authedWrite }, async (req, reply) => {
     const body = z.object({ open: z.boolean() }).safeParse(req.body);
     if (!body.success) {
       return reply.code(400).send({ error: "BAD_REQUEST", message: "open must be true or false" });
@@ -1024,7 +1098,7 @@ export async function buildApp({
     return { ok: true };
   });
 
-  server.post("/team/members/:userId/role", { preHandler: authenticate }, async (req, reply) => {
+  server.post("/team/members/:userId/role", { preHandler: authedWrite }, async (req, reply) => {
     const { userId } = req.params as { userId: string };
     const body = z.object({ role: z.enum(["officer", "member"]) }).safeParse(req.body);
     if (!body.success) {
@@ -1044,7 +1118,7 @@ export async function buildApp({
     return { ok: true };
   });
 
-  server.post("/team/members/:userId/starter", { preHandler: authenticate }, async (req, reply) => {
+  server.post("/team/members/:userId/starter", { preHandler: authedWrite }, async (req, reply) => {
     const { userId } = req.params as { userId: string };
     const body = z.object({ starting: z.boolean() }).safeParse(req.body);
     if (!body.success) {
@@ -1062,7 +1136,7 @@ export async function buildApp({
     return { ok: true };
   });
 
-  server.post("/team/captain", { preHandler: authenticate }, async (req, reply) => {
+  server.post("/team/captain", { preHandler: authedWrite }, async (req, reply) => {
     const body = z.object({ userId: z.string().uuid() }).safeParse(req.body);
     if (!body.success) {
       return reply.code(400).send({ error: "BAD_REQUEST", message: "userId is required" });
@@ -1079,7 +1153,7 @@ export async function buildApp({
     return { ok: true };
   });
 
-  server.delete("/team/members/:userId", { preHandler: authenticate }, async (req, reply) => {
+  server.delete("/team/members/:userId", { preHandler: authedWrite }, async (req, reply) => {
     const { userId } = req.params as { userId: string };
     const result = await team.removeMember(requireUser(req).userId, userId);
     if (isFail(result)) {
@@ -1093,7 +1167,7 @@ export async function buildApp({
     return { ok: true };
   });
 
-  server.post("/team/leave", { preHandler: authenticate }, async (req, reply) => {
+  server.post("/team/leave", { preHandler: authedWrite }, async (req, reply) => {
     const result = await team.leave(requireUser(req).userId);
     if (isFail(result)) {
       return reply
@@ -1105,7 +1179,7 @@ export async function buildApp({
     return result.data;
   });
 
-  server.delete("/team", { preHandler: authenticate }, async (req, reply) => {
+  server.delete("/team", { preHandler: authedWrite }, async (req, reply) => {
     const result = await team.disband(requireUser(req).userId);
     if (isFail(result)) {
       return reply
@@ -1203,7 +1277,7 @@ export async function buildApp({
     };
   });
 
-  server.post("/scrims", { preHandler: authenticate }, async (req, reply) => {
+  server.post("/scrims", { preHandler: authedWrite }, async (req, reply) => {
     const body = z
       .object({ region: z.string(), note: z.string().max(200).nullish() })
       .safeParse(req.body);
@@ -1225,7 +1299,7 @@ export async function buildApp({
     return result.data;
   });
 
-  server.delete("/scrims/mine", { preHandler: authenticate }, async (req, reply) => {
+  server.delete("/scrims/mine", { preHandler: authedWrite }, async (req, reply) => {
     const result = await scrim.removeListing(requireUser(req).userId);
     if (isFail(result)) {
       return reply
@@ -1235,7 +1309,7 @@ export async function buildApp({
     return { ok: true };
   });
 
-  server.post("/scrims/:id/request", { preHandler: authenticate }, async (req, reply) => {
+  server.post("/scrims/:id/request", { preHandler: authedWrite }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const result = await scrim.request(requireUser(req).userId, id, new Set(notifier.onlineUserIds()));
     if (isFail(result)) {
@@ -1256,7 +1330,7 @@ export async function buildApp({
     return result.data;
   });
 
-  server.post("/scrims/requests/:id/withdraw", { preHandler: authenticate }, async (req, reply) => {
+  server.post("/scrims/requests/:id/withdraw", { preHandler: authedWrite }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const result = await scrim.withdrawRequest(requireUser(req).userId, id);
     if (isFail(result)) {
@@ -1274,7 +1348,7 @@ export async function buildApp({
    * sitting in the PUG queue -- the request goes back to pending rather than
    * being quietly consumed.
    */
-  server.post("/scrims/requests/:id/decide", { preHandler: authenticate }, async (req, reply) => {
+  server.post("/scrims/requests/:id/decide", { preHandler: authedWrite }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const body = z.object({ accept: z.boolean() }).safeParse(req.body);
     if (!body.success) {
@@ -1332,7 +1406,7 @@ export async function buildApp({
     return { accepted: true, matchId: result.matchId };
   });
 
-  server.post("/scrims/requests/:id/lineup", { preHandler: authenticate }, async (req, reply) => {
+  server.post("/scrims/requests/:id/lineup", { preHandler: authedWrite }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const body = z.object({ userIds: z.array(z.string().uuid()) }).safeParse(req.body);
     if (!body.success) {
@@ -1916,6 +1990,7 @@ export async function buildApp({
     matchmaker.stop();
     sweeper.stop();
     population.stop();
+    clearInterval(writePruner);
     if (scrimSweep) clearInterval(scrimSweep);
     notifier.closeAll();
   });

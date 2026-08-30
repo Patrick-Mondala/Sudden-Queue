@@ -147,5 +147,16 @@ export const CHAT_MAX_STORED_MESSAGES = 100;
  */
 export const SCRIM_LINEUP_SECONDS = 30;
 
+/**
+ * The backstop on everything else that writes: teams, applications, scrim
+ * listings and requests.
+ *
+ * Generous by design. None of these is expensive and none is something a
+ * person does twice a second, so the limit is set where a human never reaches
+ * it and a script does immediately.
+ */
+export const WRITE_RATE_LIMIT = 60;
+export const WRITE_RATE_WINDOW_SECONDS = 60;
+
 export const CHAT_RATE_LIMIT = 5;
 export const CHAT_RATE_WINDOW_SECONDS = 5;
