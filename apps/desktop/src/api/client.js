@@ -217,6 +217,9 @@ export const api = {
 
   joinQueue: (regions) => request("/queue/join", { method: "POST", body: { regions } }),
   leaveQueue: () => request("/queue/leave", { method: "POST" }),
+  // Unauthenticated: the sign-in screen needs the deployment's name before
+  // anyone has signed in.
+  config: () => request("/config", { auth: false }),
   queueStats: () => request("/queue/stats", { auth: false }),
 
   getMatch: (matchId) => request(`/match/${matchId}`),

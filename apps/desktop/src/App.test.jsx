@@ -58,6 +58,7 @@ function visibleText() {
 const server = {
   me: vi.fn(),
   history: vi.fn(),
+  config: vi.fn(),
   queueStats: vi.fn(),
   getMatch: vi.fn(),
   onlinePlayers: vi.fn(),
@@ -183,6 +184,9 @@ beforeEach(() => {
   localStorage.clear();
   server.me.mockResolvedValue(PROFILE);
   server.history.mockResolvedValue([]);
+  // The real client asks the server what deployment it is talking to; tests
+  // let it fall back to the built-in defaults unless they say otherwise.
+  server.config.mockResolvedValue(null);
   server.queueStats.mockResolvedValue({ online: 1, inQueue: 0, inMatch: 0 });
   server.getMatch.mockResolvedValue(MATCH);
   server.accept.mockResolvedValue({});
@@ -1301,7 +1305,7 @@ describe("scrim lineups", () => {
     const modal = await screen.findByRole("dialog", { name: /Confirm your lineup/i });
     expect(within(modal).getByText(/Who is playing/i)).toBeTruthy();
     expect(within(modal).getByText(/Scrim vs BRV/i)).toBeTruthy();
-    expect(within(modal).getByRole("button", { name: /Confirm these five/i })).toBeTruthy();
+    expect(within(modal).getByRole("button", { name: /Confirm the lineup/i })).toBeTruthy();
   });
 
   it("will not let a sixth be added without dropping someone", async () => {
@@ -1335,7 +1339,7 @@ describe("scrim lineups", () => {
     // Swap a starter out for a substitute: starters are a default, not a rule.
     await userEvent.click(within(modal).getByText("Player5").closest("button"));
     await userEvent.click(within(modal).getByText("Player7").closest("button"));
-    await userEvent.click(within(modal).getByRole("button", { name: /Confirm these five/i }));
+    await userEvent.click(within(modal).getByRole("button", { name: /Confirm the lineup/i }));
 
     await waitFor(() =>
       expect(server.confirmLineup).toHaveBeenCalledWith("req-1", [
@@ -2058,5 +2062,75 @@ describe("updating the app", () => {
     // Restarting the app during an accept window loses the match.
     expect(await screen.findByText(/Match found/i)).toBeTruthy();
     await waitFor(() => expect(screen.queryByText(/Version 0\.2\.0 is available/i)).toBeNull());
+  });
+});
+
+describe("adapting to the deployment", () => {
+  const ROCKET = {
+    appName: "Rocket Queue",
+    gameName: "Rocket League",
+    teamSize: 3,
+    matchSize: 6,
+    maxPartySize: 3,
+    maxTeamSize: 6,
+    regions: [
+      { id: "oce", label: "OCE", name: "Oceania" },
+      { id: "eu", label: "EU", name: "Europe" },
+    ],
+    tiers: ["Bronze", "Silver", "Gold"],
+    tierFloors: [0, 1000, 2000],
+    defaultRating: 1000,
+    placementGames: 3,
+  };
+
+  it("wears the deployment's name, not the one it was built with", async () => {
+    server.config.mockResolvedValue(ROCKET);
+    await signedIn();
+
+    // The same binary can be pointed at anyone's server.
+    expect(await screen.findAllByText("Rocket Queue")).not.toHaveLength(0);
+  });
+
+  it("names the game on the sign-in screen before anyone signs in", async () => {
+    token = null;
+    server.config.mockResolvedValue(ROCKET);
+    render(<App />);
+
+    expect(await screen.findByText(/Rocket League/)).toBeTruthy();
+  });
+
+  it("offers the regions that deployment actually has", async () => {
+    server.config.mockResolvedValue(ROCKET);
+    await signedIn();
+
+    expect(await screen.findByTitle("Oceania")).toBeTruthy();
+    // The four it was built with are not this deployment's.
+    expect(screen.queryByTitle("North America")).toBeNull();
+  });
+
+  it("describes a match at the configured size", async () => {
+    server.config.mockResolvedValue(ROCKET);
+    await signedIn();
+
+    expect(await screen.findByText(/3v3/)).toBeTruthy();
+    expect(screen.queryByText(/5v5/)).toBeNull();
+  });
+
+  it("draws a party of the configured size", async () => {
+    server.config.mockResolvedValue(ROCKET);
+    await signedIn();
+
+    // Five slots for a three-a-side game would promise a party that could
+    // never be matched.
+    await waitFor(() => expect(screen.getByText(/Party ·/).textContent).toBe("Party · 1/3"));
+  });
+
+  it("keeps working when the server will not say what it is", async () => {
+    server.config.mockRejectedValue(new Error("unreachable"));
+    await signedIn();
+
+    // A first paint on stale defaults beats a blank window.
+    expect(await screen.findByText(/Ready to queue/i)).toBeTruthy();
+    expect(screen.getByText(/5v5/)).toBeTruthy();
   });
 });

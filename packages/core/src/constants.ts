@@ -1,13 +1,19 @@
 /**
- * Shared configuration for server and client.
+ * Server-side constants.
  *
- * Ported from the earlier system, retuned for 5v5 and for a coordinator
+ * Ported from the earlier system, retuned for team play and for a coordinator
  * that cannot reserve servers or observe results.
+ *
+ * Split by what a deployment may change. The values below describe the *tool* --
+ * how long an accept window runs, how fast the search widens -- and are tuning
+ * rather than game shape, so they stay compiled in. Anything describing a
+ * particular *game* lives in config.ts and comes from the environment.
  */
+import { gameConfig } from "./config.js";
 
-/** Match composition. The earlier system was 3v3; Sudden Queue targets 5v5. */
-export const TEAM_SIZE = 5;
-export const MATCH_SIZE = TEAM_SIZE * 2;
+/** Match composition. Configurable: see SQ_TEAM_SIZE. */
+export const TEAM_SIZE = gameConfig.teamSize;
+export const MATCH_SIZE = gameConfig.matchSize;
 
 /**
  * Roster limits for a registered team.
@@ -16,14 +22,21 @@ export const MATCH_SIZE = TEAM_SIZE * 2;
  * and a roster capped at exactly five would mean dropping someone to trial
  * anyone new.
  */
-export const MAX_TEAM_SIZE = 10;
+export const MAX_TEAM_SIZE = gameConfig.maxTeamSize;
 export const TEAM_TAG_MAX_LENGTH = 4;
 export const TEAM_NAME_MAX_LENGTH = 24;
 export const TEAM_APPLICATION_NOTE_MAX_LENGTH = 200;
-export const MAX_PARTY_SIZE = 5;
+export const MAX_PARTY_SIZE = gameConfig.maxPartySize;
 
-export const REGIONS = ["na", "sa", "eu", "asia"] as const;
-export type Region = (typeof REGIONS)[number];
+/**
+ * Queueable regions.
+ *
+ * A plain string array rather than a literal union now that a deployment picks
+ * them: the set is not known until the process starts, so the type cannot
+ * enumerate it. Routes validate against this list instead.
+ */
+export const REGIONS: readonly string[] = gameConfig.regions.map((r) => r.id);
+export type Region = string;
 
 export const QUEUE_TYPES = ["PUG", "SCRIM"] as const;
 export type QueueType = (typeof QUEUE_TYPES)[number];
@@ -32,7 +45,7 @@ export type QueueType = (typeof QUEUE_TYPES)[number];
  * Rating. The ladder centres on DEFAULT_RATING so placements have room to move
  * a player in both directions — see rating/tiers.ts for the threshold table.
  */
-export const DEFAULT_RATING = 1200;
+export const DEFAULT_RATING = gameConfig.defaultRating;
 
 /**
  * K-factor schedule. Placements are deliberately conservative: five games is

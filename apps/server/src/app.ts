@@ -1,4 +1,5 @@
 import {
+  gameConfig,
   DEFAULT_RATING,
   INVITE_EXPIRATION_SECONDS,
   MAX_PARTY_SIZE,
@@ -290,6 +291,19 @@ export async function buildApp({
   // ------------------------------------------------------------------ routes
 
   server.get("/health", async () => ({ ok: true }));
+
+  /**
+   * What this deployment is.
+   *
+   * Unauthenticated on purpose: the client needs the name to put on the
+   * sign-in screen before anyone has signed in. Nothing here is a secret --
+   * it is the shape of the game, which every player can see anyway.
+   *
+   * A shipped desktop binary cannot read the server's environment, so this is
+   * how it learns whether it is running a 5v5 or a 3v3, what the ranks are
+   * called, and which regions exist. The client compiles in none of it.
+   */
+  server.get("/config", async () => gameConfig);
 
   /**
    * Desktop login: hand back an id plus the URL to open in the user's browser.
@@ -742,8 +756,17 @@ export async function buildApp({
 
   // -------------------------------------------------------------------- queue
 
+  /**
+   * Regions are configured per deployment, so this validates against the list
+   * rather than compiling one in. z.enum needs a literal tuple, which a
+   * configured list can never be.
+   */
+  const regionSchema = z
+    .string()
+    .refine((r) => REGIONS.includes(r), { message: "Unknown region" });
+
   const joinBody = z.object({
-    regions: z.array(z.enum(REGIONS)).min(1, "Pick at least one region"),
+    regions: z.array(regionSchema).min(1, "Pick at least one region"),
   });
 
   server.post("/queue/join", { preHandler: authenticate }, async (req, reply) => {

@@ -2925,3 +2925,40 @@ describe("suspending an account", () => {
     expect(res.statusCode).toBe(403);
   });
 });
+
+describe("telling a client what this deployment is", () => {
+  it("serves the shape of the game without a session", async () => {
+    // The sign-in screen needs the name before anyone has signed in.
+    const res = await app.server.inject({ method: "GET", url: "/config" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      appName: expect.any(String),
+      gameName: expect.any(String),
+      teamSize: 5,
+      matchSize: 10,
+      maxPartySize: 5,
+    });
+  });
+
+  it("names the regions and ranks a client cannot compile in", async () => {
+    const body = (await app.server.inject({ method: "GET", url: "/config" })).json();
+
+    expect(body.regions[0]).toMatchObject({
+      id: expect.any(String),
+      label: expect.any(String),
+      name: expect.any(String),
+    });
+    // Index-aligned, which is the contract the client draws a ladder from.
+    expect(body.tiers).toHaveLength(body.tierFloors.length);
+  });
+
+  it("publishes no rating a player could read a ladder position from", async () => {
+    const body = (await app.server.inject({ method: "GET", url: "/config" })).json();
+
+    // The floors are public by necessity -- they are what rank names mean --
+    // but nothing here may carry a person's rating.
+    expect(body).not.toHaveProperty("rating");
+    expect(body.tierFloors.every((f: number) => typeof f === "number")).toBe(true);
+  });
+});

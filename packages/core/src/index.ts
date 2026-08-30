@@ -1,3 +1,4 @@
+export * from "./config.js";
 export * from "./constants.js";
 export * from "./penalties.js";
 export * from "./result.js";

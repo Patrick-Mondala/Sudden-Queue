@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useContext, createContext } from "react";
 import { Crosshair, Swords, Users, Trophy, User, MessageSquare, Send, X, Check, Shield, Star, Wifi, Timer, Copy, ChevronRight, LogOut, Bell, Filter, Plus, Minus, AlertTriangle, CircleDot, Lock, Unlock } from "lucide-react";
 import { signIn } from "./api/auth.js";
 import { api as server, bus as liveBus, getToken } from "./api/client.js";
@@ -41,12 +41,36 @@ const T = {
   mono: '"Cascadia Mono", "Consolas", ui-monospace, "SF Mono", Menlo, monospace',
 };
 
-const REGIONS = [
-  { id: "na", label: "NA", name: "North America" },
-  { id: "sa", label: "SA", name: "South America" },
-  { id: "eu", label: "EU", name: "Europe" },
-  { id: "asia", label: "ASIA", name: "Asia" },
-];
+/**
+ * What this deployment looks like, until the server says otherwise.
+ *
+ * The same binary can be pointed at anyone's server, so none of this is
+ * knowable at build time -- a deployment might run 3v3 with different regions
+ * and ranks called something else entirely. These are the values the first
+ * deployment uses, and they are what renders in the moment before /config
+ * answers, and if it never does.
+ */
+const DEFAULT_CONFIG = {
+  appName: "Sudden Queue",
+  gameName: "Sudden Attack Zero Point",
+  teamSize: 5,
+  matchSize: 10,
+  maxPartySize: 5,
+  maxTeamSize: 10,
+  regions: [
+    { id: "na", label: "NA", name: "North America" },
+    { id: "sa", label: "SA", name: "South America" },
+    { id: "eu", label: "EU", name: "Europe" },
+    { id: "asia", label: "ASIA", name: "Asia" },
+  ],
+  tiers: ["F-","F","F+","D-","D","D+","C-","C","C+","B-","B","B+","A-","A","A+","G-","G","G+","S-","S","S+"],
+  tierFloors: [620,675,730,785,840,895,950,1005,1060,1115,1170,1225,1280,1335,1390,1445,1500,1555,1610,1665,1720],
+  defaultRating: 1200,
+  placementGames: 5,
+};
+
+const ConfigContext = createContext(DEFAULT_CONFIG);
+const useConfig = () => useContext(ConfigContext);
 
 /* letter ranks, percentile buckets, F- .. S+ (17 tiers) */
 /**
@@ -54,8 +78,7 @@ const REGIONS = [
  * legitimately has — rank stays hidden until placements are done, and a crash
  * here takes the whole app down with it.
  */
-/** Ladder order, lowest first. Mirrors TIERS in @suddenqueue/core. */
-const TIER_ORDER = ["F-","F","F+","D-","D","D+","C-","C","C+","B-","B","B+","A-","A","A+","G-","G","G+","S-","S","S+"];
+
 const tierColor = (t) => {
   if (!t) return "#4E5966";
   if (t.startsWith("S")) return "#F2A93B";
@@ -283,9 +306,11 @@ const Tag = ({ children, color = T.muted, bg }) => (
 const Dot = ({ color = T.accent, pulse }) => (
   <span style={{ width: 7, height: 7, borderRadius: "50%", background: color, display: "inline-block", animation: pulse ? "sqPulse 1.6s infinite" : "none" }} />
 );
-const RegionPicker = ({ value, onChange, multi = true }) => (
+const RegionPicker = ({ value, onChange, multi = true }) => {
+  const { regions } = useConfig();
+  return (
   <div style={{ display: "flex", gap: 6 }}>
-    {REGIONS.map((r) => {
+    {regions.map((r) => {
       const on = multi ? value.includes(r.id) : value === r.id;
       return (
         <button key={r.id} onClick={() => multi ? onChange(on ? value.filter((v) => v !== r.id) : [...value, r.id]) : onChange(r.id)}
@@ -296,7 +321,8 @@ const RegionPicker = ({ value, onChange, multi = true }) => (
       );
     })}
   </div>
-);
+  );
+};
 /**
  * State that survives navigation and restarts.
  *
@@ -338,6 +364,7 @@ const useTick = (active) => { const [, s] = useState(0); useEffect(() => { if (!
    LOGIN
    ───────────────────────────────────────────────────────────── */
 function Login({ onSignedIn }) {
+  const config = useConfig();
   const [phase, setPhase] = useState("idle"); // idle | waiting
   const [error, setError] = useState(null);
   const abortRef = useRef(null);
@@ -378,8 +405,8 @@ function Login({ onSignedIn }) {
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 28 }}>
           <div style={{ width: 34, height: 34, borderRadius: 6, background: T.accent, display: "grid", placeItems: "center" }}><Crosshair size={20} color="#07110F" strokeWidth={2.5} /></div>
           <div>
-            <H size={18}>Sudden Queue</H>
-            <Eyebrow>Sudden Attack Zero Point · PUGs & scrims</Eyebrow>
+            <H size={18}>{config.appName}</H>
+            <Eyebrow>{config.gameName} · PUGs & scrims</Eyebrow>
           </div>
         </div>
         <Panel pad={20}>
@@ -423,7 +450,13 @@ function Login({ onSignedIn }) {
    PUG QUEUE
    ───────────────────────────────────────────────────────────── */
 function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, history, notify, onViewMatch, onView, onInvite, onSetName }) {
-  const [regions, setRegions] = usePersistentState("sq.pug.regions", ["na", "eu"]);
+  const config = useConfig();
+  // Defaults to every region this deployment has: a saved filter naming
+  // regions that no longer exist would leave nobody able to queue.
+  const [regions, setRegions] = usePersistentState(
+    "sq.pug.regions",
+    config.regions.map((r) => r.id),
+  );
   useTick(queue.state === "queued" || cooldownUntil > Date.now());
   const elapsed = queue.state === "queued" ? Math.floor((Date.now() - queue.since) / 1000) : 0;
   const cooling = cooldownUntil > Date.now();
@@ -475,7 +508,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
           {queue.state === "queued" && <div style={{ position: "absolute", inset: 0, background: `linear-gradient(90deg, transparent, ${T.accentDim}, transparent)`, backgroundSize: "200% 100%", animation: "sqSweep 2.4s linear infinite", pointerEvents: "none" }} />}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", position: "relative" }}>
             <div>
-              <Eyebrow style={{ marginBottom: 6 }}>PUG · 5v5 · rated</Eyebrow>
+              <Eyebrow style={{ marginBottom: 6 }}>PUG · {config.teamSize}v{config.teamSize} · rated</Eyebrow>
               <H size={26}>{queue.state === "queued" ? "Searching" : cooling ? "On cooldown" : "Ready to queue"}</H>
               <div style={{ color: T.muted, fontSize: 13, marginTop: 6 }}>
                 {queue.state === "queued"
@@ -501,12 +534,12 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
         {/* party */}
         <Panel>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <Eyebrow>Party · {party.length}/5</Eyebrow>
+            <Eyebrow>Party · {party.length}/{config.maxPartySize}</Eyebrow>
             <div style={{ display: "flex", gap: 6 }}>
               <Btn
                 size="sm"
                 onClick={onInvite}
-                disabled={party.length >= 5 || queue.state === "queued"}
+                disabled={party.length >= config.maxPartySize || queue.state === "queued"}
                 title={queue.state === "queued" ? "Leave the queue to change your party" : undefined}
               >
                 <Plus size={13} /> Invite
@@ -514,7 +547,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8 }}>
-            {Array.from({ length: 5 }).map((_, i) => {
+            {Array.from({ length: config.maxPartySize }).map((_, i) => {
               const p = party[i];
               return (
                 <div key={i} onClick={() => p && onView?.(p)} style={{ border: `1px dashed ${p ? T.line2 : T.line}`, borderStyle: p ? "solid" : "dashed", borderRadius: 5, padding: 10, minHeight: 92, background: p ? T.raised : "transparent", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, position: "relative", cursor: p && onView ? "pointer" : "default" }}>
@@ -876,6 +909,7 @@ function TeamsScreen({ me, notify, onView }) {
 
 /** The roster you are on, with whatever powers your role carries. */
 function MyTeamPanel({ me, state, busy, act, onView }) {
+  const config = useConfig();
   const [tab, setTab] = useState("roster");
   const [confirmDisband, setConfirmDisband] = useState(false);
   const team = state.team;
@@ -890,7 +924,7 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
           <div style={{ width: 44, height: 44, borderRadius: 6, background: T.raised, display: "grid", placeItems: "center", fontFamily: T.mono, fontSize: 13, color: T.text, border: `1px solid ${T.line2}`, flexShrink: 0 }}>{team.tag}</div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <H size={22}>{team.name}</H>
-            <Eyebrow>{team.region.toUpperCase()} · {team.members.length}/{10} players · {starters}/5 starting</Eyebrow>
+            <Eyebrow>{team.region.toUpperCase()} · {team.members.length}/{config.maxTeamSize} players · {starters}/{config.teamSize} starting</Eyebrow>
           </div>
           {canManage && (
             <Btn size="sm" disabled={busy} onClick={() => act(() => server.setApplicationsOpen(!team.applicationsOpen))}>
@@ -1769,6 +1803,7 @@ function UpdateBar({ update, onDone, notify }) {
  * banner on the play screen carries it from here.
  */
 function NamePrompt({ onSaved, onLater, notify }) {
+  const config = useConfig();
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -1805,7 +1840,7 @@ function NamePrompt({ onSaved, onLater, notify }) {
             onChange={(e) => setDraft(e.target.value.slice(0, IGN_MAX))}
             onKeyDown={(e) => { if (e.key === "Enter") save(); }}
             aria-label="In-game name"
-            placeholder="Your name in Sudden Attack"
+            placeholder={`Your name in ${config.gameName}`}
             style={{ width: "100%", boxSizing: "border-box", marginTop: 16, background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "9px 11px", color: T.text, fontFamily: T.mono, fontSize: 13.5 }}
           />
 
@@ -1825,12 +1860,13 @@ function NamePrompt({ onSaved, onLater, notify }) {
 /**
  * Your in-game name, which only you can set.
  *
- * Nothing verifies this against Sudden Attack -- it is how teammates find you
+ * Nothing verifies this against the game -- it is how teammates find you
  * once they are in the game, not an identity. Which is exactly why it has to be
  * easy to fix: a typo here means nine people looking for a name that does not
  * exist.
  */
 function InGameNameField({ value, onSaved, notify }) {
+  const config = useConfig();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value ?? "");
   const [busy, setBusy] = useState(false);
@@ -1882,7 +1918,7 @@ function InGameNameField({ value, onSaved, notify }) {
           if (e.key === "Escape") { setDraft(value ?? ""); setEditing(false); }
         }}
         aria-label="In-game name"
-        placeholder="Your name in Sudden Attack"
+        placeholder={`Your name in ${config.gameName}`}
         style={{ background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "6px 9px", color: T.text, fontFamily: T.mono, fontSize: 12.5, width: 190 }}
       />
       <Btn size="sm" kind="primary" disabled={!valid || busy} onClick={save}>Save</Btn>
@@ -2007,6 +2043,7 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
    MATCH FLOW: accept overlay → match screen
    ───────────────────────────────────────────────────────────── */
 function AcceptOverlay({ match, onAccepted, onFail }) {
+  const config = useConfig();
   const ACCEPT_S = 20;
   const [left, setLeft] = useState(ACCEPT_S);
   const [acceptedCount, setAcceptedCount] = useState(0);
@@ -2057,7 +2094,7 @@ function AcceptOverlay({ match, onAccepted, onFail }) {
   return (
     <div style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 50, animation: "sqIn .2s ease" }}>
       <div style={{ width: 520, textAlign: "center" }}>
-        <Eyebrow color={T.accent} style={{ marginBottom: 8 }}>{match.type} · {match.region.toUpperCase()} · 5v5</Eyebrow>
+        <Eyebrow color={T.accent} style={{ marginBottom: 8 }}>{match.type} · {match.region.toUpperCase()} · {config.teamSize}v{config.teamSize}</Eyebrow>
         <H size={34}>Match found</H>
         <div style={{ position: "relative", width: 140, height: 140, margin: "24px auto" }}>
           <svg width="140" height="140" viewBox="0 0 140 140" style={{ transform: "rotate(-90deg)" }}>
@@ -2279,6 +2316,7 @@ function MatchChat({ match, me, onView }) {
 }
 
 function MatchScreen({ match, me, onFinished, notify, onView }) {
+  const config = useConfig();
   const PARTY_S = 120;
   const [phase, setPhase] = useState("party"); // party → queue → live → reported → completed | dispute
   const [left, setLeft] = useState(PARTY_S);
@@ -2400,7 +2438,8 @@ function MatchScreen({ match, me, onFinished, notify, onView }) {
     }
     if (!tierBefore) return `Both captains agree. Placements complete — you are ${tierAfter}.`;
     if (tierBefore === tierAfter) return `Both captains agree. You are still ${tierAfter}.`;
-    return `Both captains agree. ${TIER_ORDER.indexOf(tierAfter) > TIER_ORDER.indexOf(tierBefore) ? "Promoted" : "Demoted"} to ${tierAfter}.`;
+    const order = config.tiers;
+    return `Both captains agree. ${order.indexOf(tierAfter) > order.indexOf(tierBefore) ? "Promoted" : "Demoted"} to ${tierAfter}.`;
   })();
 
   const banner = {
@@ -2516,6 +2555,7 @@ function AlertModal({ title, message, onClose }) {
  * answer and the window is thirty seconds.
  */
 function LineupModal({ pending, notify, onDone }) {
+  const config = useConfig();
   const [picked, setPicked] = useState(() =>
     pending.roster.filter((r) => r.isStarter).map((r) => r.userId),
   );
@@ -2529,7 +2569,7 @@ function LineupModal({ pending, notify, onDone }) {
     setPicked((all) =>
       all.includes(userId)
         ? all.filter((id) => id !== userId)
-        : all.length >= 5
+        : all.length >= config.teamSize
           ? all
           : [...all, userId],
     );
@@ -2568,7 +2608,7 @@ function LineupModal({ pending, notify, onDone }) {
           <div style={{ maxHeight: "42vh", overflow: "auto", marginBottom: 14 }}>
             {pending.roster.map((r) => {
               const on = picked.includes(r.userId);
-              const blocked = !on && picked.length >= 5;
+              const blocked = !on && picked.length >= config.teamSize;
               return (
                 <button
                   key={r.userId}
@@ -2600,7 +2640,7 @@ function LineupModal({ pending, notify, onDone }) {
             title={full ? undefined : `Pick ${5 - picked.length} more`}
             onClick={confirm}
           >
-            {full ? "Confirm these five" : `${picked.length}/5 picked`}
+            {full ? "Confirm the lineup" : `${picked.length}/${config.teamSize} picked`}
           </Btn>
           <div style={{ fontSize: 11.5, color: T.dim, marginTop: 10, lineHeight: 1.5 }}>
             Both captains confirm before anyone is asked to accept. If the clock runs out the scrim
@@ -2662,6 +2702,7 @@ function InviteToasts({ invites, onAccept, onDecline }) {
 }
 
 function InviteModal({ party, onClose, notify }) {
+  const config = useConfig();
   const [players, setPlayers] = useState(null);
   const [query, setQuery] = useState("");
   const [error, setError] = useState(null);
@@ -2689,7 +2730,7 @@ function InviteModal({ party, onClose, notify }) {
   }, [load]);
 
   const partyIds = new Set(party.map((p) => p.id));
-  const partyFull = party.length >= 5;
+  const partyFull = party.length >= config.maxPartySize;
 
   const matches = (players ?? []).filter((p) => {
     if (partyIds.has(p.id)) return false;
@@ -2727,7 +2768,7 @@ function InviteModal({ party, onClose, notify }) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <Eyebrow>Invite to party</Eyebrow>
               <div style={{ fontSize: 12, color: T.muted, marginTop: 4 }}>
-                {party.length}/5 in your party
+                {party.length}/{config.maxPartySize} in your party
                 {partyFull ? " — full" : ""}
               </div>
             </div>
@@ -2829,6 +2870,28 @@ function ChatDock({ me, partyId, open, setOpen, onView }) {
    APP SHELL
    ───────────────────────────────────────────────────────────── */
 export default function App() {
+  /**
+   * What this deployment is, asked for once on start.
+   *
+   * The binary is the same wherever it is pointed, so the shape of a match,
+   * the regions and the rank names are the server's to state. Until it
+   * answers -- or if it never does -- the defaults render, which is the
+   * difference between a first paint and a blank window.
+   */
+  const [config, setConfig] = useState(DEFAULT_CONFIG);
+
+  useEffect(() => {
+    let cancelled = false;
+    server
+      .config()
+      .then((c) => { if (!cancelled && c) setConfig({ ...DEFAULT_CONFIG, ...c }); })
+      .catch(() => {
+        // Unreachable server: the sign-in screen is about to say so anyway,
+        // and guessing wrong here is better than rendering nothing.
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   const [me, setMe] = useState(null);
   const [nav, setNav] = useState("play");
   // Null until the socket says otherwise: zeroes would read as an empty
@@ -3167,10 +3230,12 @@ export default function App() {
 
   if (!me)
     return (
-      <div className="sq" style={{ height: "100vh", width: "100vw", boxSizing: "border-box", fontFamily: T.body, color: T.text }}>
-        <style>{css}</style>
-        <Login onSignedIn={adoptServerSession} />
-      </div>
+      <ConfigContext.Provider value={config}>
+        <div className="sq" style={{ height: "100vh", width: "100vw", boxSizing: "border-box", fontFamily: T.body, color: T.text }}>
+          <style>{css}</style>
+          <Login onSignedIn={adoptServerSession} />
+        </div>
+      </ConfigContext.Provider>
     );
 
   const NAV = [["play", "PUG", Crosshair], ["scrims", "Scrims", Swords], ["teams", "Teams", Users], ["ladder", "Ladder", Trophy], ["profile", "Profile", User]];
@@ -3206,11 +3271,12 @@ export default function App() {
   else content = <ProfileScreen p={me} me={me} history={history} onBack={() => {}} onViewMatch={openMatch} onSaved={refreshProfile} notify={notify} />;
 
   return (
+    <ConfigContext.Provider value={config}>
     <div className="sq" style={{ height: "100vh", width: "100vw", boxSizing: "border-box", background: T.bg, color: T.text, fontFamily: T.body, fontSize: 13, display: "flex", flexDirection: "column", position: "relative", overflow: "hidden" }}>
       <style>{css}</style>
       {/* title bar */}
       <div style={{ height: 44, display: "flex", alignItems: "center", padding: "0 14px", borderBottom: `1px solid ${T.line}`, background: T.panel, gap: 14 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginRight: 8 }}><div style={{ width: 22, height: 22, borderRadius: 4, background: T.accent, display: "grid", placeItems: "center" }}><Crosshair size={14} color="#07110F" strokeWidth={2.5} /></div><span style={{ fontFamily: T.display, fontWeight: 700, fontSize: 14, textTransform: "uppercase", letterSpacing: "0.02em" }}>Sudden Queue</span></div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginRight: 8 }}><div style={{ width: 22, height: 22, borderRadius: 4, background: T.accent, display: "grid", placeItems: "center" }}><Crosshair size={14} color="#07110F" strokeWidth={2.5} /></div><span style={{ fontFamily: T.display, fontWeight: 700, fontSize: 14, textTransform: "uppercase", letterSpacing: "0.02em" }}>{config.appName}</span></div>
         {/* population strip */}
         <div style={{ display: "flex", gap: 14, marginLeft: 6 }}>
           {/* Server counts, already inclusive of you. */}
@@ -3281,5 +3347,6 @@ export default function App() {
         {toasts.map((t) => <div key={t.id} style={{ background: T.raised, border: `1px solid ${T.line2}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 4, padding: "8px 12px", fontSize: 12.5, animation: "sqRise .2s ease", boxShadow: "0 6px 20px rgba(0,0,0,.35)", display: "flex", gap: 8, alignItems: "center" }}><Bell size={12} color={T.accent} />{t.text}</div>)}
       </div>
     </div>
+    </ConfigContext.Provider>
   );
 }

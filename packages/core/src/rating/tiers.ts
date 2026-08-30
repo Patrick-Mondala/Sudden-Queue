@@ -15,28 +15,22 @@
  * data, this file changes and nothing needs migrating.
  */
 
-export const TIERS = [
-  "F-", "F", "F+",
-  "D-", "D", "D+",
-  "C-", "C", "C+",
-  "B-", "B", "B+",
-  "A-", "A", "A+",
-  "G-", "G", "G+",
-  "S-", "S", "S+",
-] as const;
+import { gameConfig } from "../config.js";
 
-export type Tier = (typeof TIERS)[number];
+export const TIERS: readonly string[] = gameConfig.tiers;
+
+/**
+ * A rank name.
+ *
+ * Not a literal union any more: the names come from configuration, so they are
+ * not known at compile time. Little is lost -- every payload already carried
+ * this as a nullable string, and it is the floors table rather than the type
+ * that guarantees a rating maps to exactly one rank.
+ */
+export type Tier = string;
 
 /** Rating at which each tier begins. Index-aligned with TIERS. */
-export const TIER_FLOORS: readonly number[] = [
-  620, 675, 730,
-  785, 840, 895,
-  950, 1005, 1060,
-  1115, 1170, 1225,
-  1280, 1335, 1390,
-  1445, 1500, 1555,
-  1610, 1665, 1720,
-];
+export const TIER_FLOORS: readonly number[] = gameConfig.tierFloors;
 
 /** Broad bands, for copy and colour grouping. */
 export const TIER_BANDS = {

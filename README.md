@@ -10,8 +10,8 @@ Nothing here talks to a game client or its servers, which is the point: it needs
 no cooperation from the publisher and no API to integrate with. Results are
 self-reported by both captains, and rating only moves when they agree.
 
-Currently configured for *Sudden Attack Zero Point*, unofficially and by fans.
-Running it for another game today means editing a handful of constants — see
+Ships configured for *Sudden Attack Zero Point*, unofficially and by fans.
+Pointing it at a different game is environment variables, not a fork — see
 [Using it for another game](#using-it-for-another-game).
 
 - **`apps/server`** — Fastify + Postgres. Every rule lives here.
@@ -166,29 +166,37 @@ project — a certificate costs money and buys only the absence of that dialog.
 
 ## Using it for another game
 
-Nothing game-specific reaches the database schema or the type system, so this is
-a smaller job than it sounds — but it is not yet a config file, and that is the
-honest state of it. What is currently hard-coded, all in
-`packages/core/src/constants.ts`:
+Everything that describes a *game* rather than the tool is read from the
+environment at startup. `.env.example` lists each one; the defaults are a 5v5
+shooter, so an unconfigured checkout still runs.
 
-| Constant | Assumes |
-| --- | --- |
-| `TEAM_SIZE`, `MATCH_SIZE`, `MAX_PARTY_SIZE` | five a side, ten a match |
-| `REGIONS` | `na`, `sa`, `eu`, `asia` |
-| `QUEUE_TYPES` | `PUG` and `SCRIM` as the two modes |
-| `DEFAULT_RATING` and the tier table | a 1200 start, 55 points per tier |
+```bash
+SQ_APP_NAME="Rocket Queue"
+SQ_GAME_NAME="Rocket League"
+SQ_TEAM_SIZE=3
+SQ_REGIONS=oce:Oceania,eu:Europe
+SQ_TIERS=Bronze,Silver,Gold,Platinum
+SQ_TIER_FLOORS=0,900,1200,1500
+```
 
-The timing constants beside them — accept windows, cooldowns, rate limits — are
-tuned rather than game-specific, and most deployments will want them as they
-are.
+That is a whole deployment: 3v3, two regions, four ranks with different names.
+Match size is always twice the team size and is never set separately.
 
-The rest is already game-agnostic: Discord sign-in, parties, the matchmaker,
-Elo, teams, scrims, the ladder, chat, disputes and moderation neither know nor
-care which game is being played. A player's in-game name is stored as exactly
-that, unverified, because no game here can be asked to confirm it.
+Values are validated at startup and a bad one stops the process rather than
+producing a match of the wrong size later. Ranks and their floors are
+index-aligned, so the counts must match and the floors must increase — a rating
+that mapped to two ranks would stop the ladder being an order.
 
-Making those constants runtime configuration is the next structural piece of
-work. Until it lands, a fork and a few edited numbers is the supported path.
+**The client compiles none of it in.** A shipped desktop binary cannot read your
+server's environment, so it asks `GET /config` on startup and renders whatever
+it is told — your name, your regions, your rank names, your team size. The same
+installer works against any deployment. If the server cannot be reached it falls
+back to the built-in defaults, because a first paint on stale values beats a
+blank window.
+
+What is *not* configurable is deliberate: accept windows, cooldowns, rate limits
+and the matchmaking ramp are tuning rather than game shape, and most deployments
+should leave them alone. They live in `packages/core/src/constants.ts`.
 
 ## Deploying the server
 
