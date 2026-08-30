@@ -215,7 +215,13 @@ export async function buildApp({
    * The floor is whatever `latest.json` names, so publishing a release is what
    * raises it -- there is no separate setting to forget.
    */
-  const releases = createReleaseFloor(config.SQ_RELEASES_DIR);
+  const releases = createReleaseFloor(config.SQ_RELEASES_DIR, {
+    // Said out loud, because the symptom of a bad publish is that nothing
+    // happens: the floor stays where it was and the release nobody can install
+    // is also the release nobody is being refused for. A silent no-op is the
+    // right behaviour and the wrong thing to leave undiagnosable.
+    onProblem: (problem) => server.log.warn({ problem }, "not raising the client version floor"),
+  });
 
   /**
    * What answers regardless of version.

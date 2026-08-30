@@ -112,3 +112,4 @@ jobs:
             apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
             apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe.sig
             apps/desktop/src-tauri/target/release/bundle/nsis/latest.json
+            apps/desktop/src-tauri/target/release/bundle/nsis/SHA256SUMS

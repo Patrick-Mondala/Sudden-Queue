@@ -389,15 +389,29 @@ is copying two files into the `releases/` directory beside `compose.prod.yaml`:
 ```bash
 # on the server, from the GitHub release
 cd /srv/sudden-queue/releases
-sudo curl -LO https://github.com/<you>/<repo>/releases/download/v0.1.2/Sudden.Queue_0.1.2_x64-setup.exe
-sudo curl -LO https://github.com/<you>/<repo>/releases/download/v0.1.2/latest.json
+BASE=https://github.com/<you>/<repo>/releases/download/v0.1.2
+sudo curl -LO $BASE/Sudden.Queue_0.1.2_x64-setup.exe
+sudo curl -LO $BASE/SHA256SUMS
+sha256sum -c SHA256SUMS          # Sudden.Queue_0.1.2_x64-setup.exe: OK
+sudo curl -LO $BASE/latest.json
 ```
 
-**The installer first, `latest.json` second.** The order is not cosmetic. The
+**The installer first, `latest.json` last.** The order is not cosmetic. The
 server reads `latest.json` to decide which client versions it will still serve,
 so the moment that file lands, every older copy is refused — and if the
 installer it names is not there yet, everyone is locked out of an app that
 cannot download the version it is being told to install.
+
+That is also what `SHA256SUMS` is for. The server hashes the installer and
+compares it before it will believe the manifest, so a half-copied file raises no
+floor and shuts nobody out; it logs `not raising the client version floor` and
+keeps serving the version it was already serving. The `sha256sum -c` above is
+the same check, run by you, before the manifest makes it matter.
+
+It is an integrity check rather than an authenticity one — anyone who can write
+to this directory can rewrite both files. What makes that not matter is the
+minisign signature the updater verifies before it runs an installer. This
+catches the truncated copy and the wrong order.
 
 Nothing needs restarting. The server notices the new manifest within a few
 seconds.

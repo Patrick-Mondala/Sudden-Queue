@@ -2,14 +2,16 @@
  * Builds the `latest.json` the updater fetches.
  *
  * `tauri build` signs the installers but does not write the manifest that
- * points at them -- in a GitHub Actions release that gap is filled by
- * tauri-action. Releasing by hand, this fills it instead, so the version, the
- * signature and the download url cannot drift apart.
+ * points at them, so this fills the gap and the version, the signature and the
+ * download url cannot drift apart. CI runs the same script rather than a second
+ * implementation of it.
  *
  *   node scripts/release-manifest.mjs --notes "What changed"
  *
- * Then upload the installer, its .sig, and latest.json to the release.
+ * Writes latest.json and SHA256SUMS beside the installer. All four files go to
+ * the release; the installer, latest.json and SHA256SUMS go to the server.
  */
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -98,14 +100,34 @@ const manifest = {
 const out = join(bundles, "latest.json");
 writeFileSync(out, `${JSON.stringify(manifest, null, 2)}\n`);
 
+/**
+ * The installer's checksum, in the format `sha256sum -c` reads.
+ *
+ * Not for the players: the updater verifies a minisign signature over what it
+ * downloads, which is a stronger statement than a hash and one an attacker
+ * cannot forge. This is for the step in between -- the copy onto the server --
+ * where the failure is a truncated file or a manifest that arrived before its
+ * installer, and where the consequence is that every client is locked out of
+ * an app that cannot fetch the version it is being told to install.
+ *
+ * The server reads this before it will believe latest.json, so a release that
+ * has not landed properly raises no floor and shuts nobody out.
+ */
+const sums = join(bundles, "SHA256SUMS");
+writeFileSync(sums, `${createHash("sha256").update(readFileSync(join(bundles, installer))).digest("hex")}  ${asset}\n`);
+
 console.log(`latest.json written to ${out}`);
-console.log(`\nUpload all three to the ${tag} release:`);
+console.log(`SHA256SUMS written to ${sums}`);
+console.log(`\nUpload all four to the ${tag} release:`);
 console.log(`  ${join(bundles, installer)}`);
 console.log(`  ${join(bundles, signature)}`);
 console.log(`  ${out}`);
+console.log(`  ${sums}`);
 console.log(
-  `\nThen copy the installer as ${asset}, and latest.json beside it, into the\n` +
-    "releases directory on the server. Until they are there, this manifest\n" +
-    `describes a download that 404s -- and ${new URL(".", manifestUrl).href} is\n` +
-    "what every installed copy checks before it will open.",
+  `\nThen copy three of them -- the installer as ${asset}, latest.json and\n` +
+    "SHA256SUMS -- into the releases directory on the server, installer first.\n" +
+    "The server checks the installer against SHA256SUMS before it believes the\n" +
+    "manifest, so a half-finished copy raises no version floor and locks nobody\n" +
+    `out. ${new URL(".", manifestUrl).href} is what every installed copy checks\n` +
+    "before it will open.",
 );

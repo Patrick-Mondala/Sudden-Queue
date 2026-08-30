@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -3121,7 +3122,24 @@ describe("refusing clients older than the release", () => {
 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), "sq-gated-"));
-    writeFileSync(join(dir, "latest.json"), JSON.stringify({ version: "0.2.0" }));
+
+    // A published release the server will believe: the manifest, the installer
+    // it names, and the checksum that vouches for it. Without all three the
+    // floor deliberately does not rise.
+    const installer = "Sudden.Queue_0.2.0_x64-setup.exe";
+    const body = "pretend this is an exe";
+    writeFileSync(join(dir, installer), body);
+    writeFileSync(
+      join(dir, "SHA256SUMS"),
+      `${createHash("sha256").update(body).digest("hex")}  ${installer}\n`,
+    );
+    writeFileSync(
+      join(dir, "latest.json"),
+      JSON.stringify({
+        version: "0.2.0",
+        platforms: { "windows-x86_64": { url: `https://example.test/download/${installer}` } },
+      }),
+    );
 
     gated = await buildApp({
       db: handle.db,

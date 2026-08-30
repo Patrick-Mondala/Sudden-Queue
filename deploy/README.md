@@ -46,18 +46,32 @@ current version out of.
 
 ```bash
 cd /srv/sudden-queue/releases
-sudo curl -LO https://github.com/<you>/<repo>/releases/download/v0.1.2/Sudden.Queue_0.1.2_x64-setup.exe
-sudo curl -LO https://github.com/<you>/<repo>/releases/download/v0.1.2/latest.json
+BASE=https://github.com/<you>/<repo>/releases/download/v0.1.2
+sudo curl -LO $BASE/Sudden.Queue_0.1.2_x64-setup.exe
+sudo curl -LO $BASE/SHA256SUMS
+sha256sum -c SHA256SUMS                            # ...setup.exe: OK
+sudo curl -LO $BASE/latest.json
 curl -s https://your.host/download/latest.json     # the version you just published
 ```
 
-**Installer first, `latest.json` second**, and not the other way round.
+**Installer first, `latest.json` last**, and not the other way round.
 `latest.json` is what the server reads to decide which clients it will still
 serve, so the moment it lands every older copy is refused. If the installer it
 names is not there yet, every player is locked out of an app that cannot
 download the version it is being told to install.
 
-Nothing restarts. The server picks up the new manifest within a few seconds.
+The server checks `SHA256SUMS` itself before believing the manifest, so getting
+this wrong fails safe rather than loudly: the floor stays where it was and the
+log says `not raising the client version floor` with the reason. Worth a look
+after publishing:
+
+```bash
+sudo docker compose -f compose.prod.yaml logs --tail 20 server | grep -i floor
+```
+
+Nothing restarts. The server picks up the new manifest within a few seconds --
+including the installer arriving late, which is why a bad publish recovers on
+its own once the missing file is in place.
 
 Old installers can stay where they are. Nothing points at them once
 `latest.json` moves on, and keeping them means a link somebody saved still
