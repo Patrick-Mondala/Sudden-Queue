@@ -1,0 +1,44 @@
+# Puts a published release in front of players, without being asked.
+#
+#   sudo cp deploy/sudden-queue-publish.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now sudden-queue-publish.timer
+#
+# Paired with sudden-queue-publish.timer, which is what actually runs it.
+# Installed once; after that a tag is the whole release.
+#
+# Adjust WorkingDirectory if you did not follow deploy/README.md.
+
+[Unit]
+Description=Publish the latest Sudden Queue release to this deployment
+Documentation=https://github.com/Patrick-Mondala/Sudden-Queue
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/sudden-queue
+
+# Root, because it writes into the directory Caddy serves and the compose
+# stack owns that as root. The script fetches over https and writes three
+# files; it takes no input from anywhere but the repository's own releases.
+ExecStart=/srv/sudden-queue/deploy/publish-release.sh
+
+# A failed run is not an emergency and must not become one. The next timer
+# tick tries again, and the failure modes it is most likely to hit -- GitHub
+# briefly unreachable, a release still being uploaded -- resolve themselves.
+# Nothing is changed on the way to failing, so retrying is free.
+SuccessExitStatus=0
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/sudden-queue/releases
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sudden-queue-publish

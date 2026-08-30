@@ -365,7 +365,12 @@ git tag v0.1.2 && git push --tags
 The workflow refuses a tag that disagrees with that version, because the updater
 compares against the declared one — ship a mismatch and the update installs and
 then offers itself again, forever. It builds, signs, writes `latest.json` and
-opens a **draft** release, so nothing goes out until a person looks at it.
+publishes the release.
+
+**A tag is the whole release.** The deployment's publish timer picks it up
+within a minute or so and puts it in front of players; nobody touches the
+server. Which makes pushing the tag the decision, and a deliberately blunt one:
+shortly afterwards every older client is refused. Push tags you mean.
 
 Two settings on the repository:
 
@@ -383,16 +388,22 @@ client cannot end up talking to one host and updating from another.
 ### Publishing it
 
 CI builds and signs; the GitHub release is where the artifacts are kept. What
-players actually download comes from your server, so the last step of a release
-is copying two files into the `releases/` directory beside `compose.prod.yaml`:
+players download comes from your server, and getting it there is automatic: a
+systemd timer on the deployment runs `deploy/publish-release.sh` about once a
+minute, and it publishes any release this deployment has not got yet.
+[deploy/README.md](deploy/README.md) has the one-time install, and where the
+brakes are.
+
+The same script by hand, for a particular version or to watch it happen:
 
 ```bash
 # on the server
 cd /srv/sudden-queue
 sudo deploy/publish-release.sh            # the latest published release
+sudo deploy/publish-release.sh v0.1.3     # or a particular one
 ```
 
-That fetches the installer, `SHA256SUMS` and `latest.json` from the GitHub
+It fetches the installer, `SHA256SUMS` and `latest.json` from the GitHub
 release, verifies the checksum in a staging directory, and moves them into
 `releases/` — the manifest last.
 

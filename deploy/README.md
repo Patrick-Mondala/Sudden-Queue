@@ -40,9 +40,27 @@ gunzip -c /var/backups/sudden-queue/suddenqueue-<stamp>.sql.gz \
 
 ## Publishing a client release
 
-CI builds and signs it; this is what puts it in front of players. Both files go
-in `releases/`, which Caddy serves at `/download` and the server reads the
-current version out of.
+Set up once, and never again — a tag is the whole release after this:
+
+```bash
+sudo cp deploy/sudden-queue-publish.service /etc/systemd/system/
+sudo cp deploy/sudden-queue-publish.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sudden-queue-publish.timer
+```
+
+The timer looks for a release this deployment has not published yet, about once
+a minute, and publishes it. So `git push origin v0.1.3` builds, signs, publishes
+the GitHub release, and puts it in front of players without anyone touching this
+box.
+
+```bash
+systemctl list-timers sudden-queue-publish        # when it next runs
+journalctl -u sudden-queue-publish -n 30          # what it did
+```
+
+The same thing by hand, which is what the timer runs and what to reach for when
+you want a particular version or want to watch it happen:
 
 ```bash
 cd /srv/sudden-queue
@@ -80,20 +98,29 @@ Nothing restarts. The server picks up a new manifest within a few seconds --
 including an installer that arrives late, which is why a bad publish recovers on
 its own once the missing file is in place.
 
-### Without watching it
+### Holding one back
 
-The script is safe to run unattended, so a timer publishes releases on its own:
+Nothing between a pushed tag and every player being asked to update. That is the
+point, and it is worth knowing where the brakes are before you need them.
+
+The tag is the decision. Don't push one you are not ready to ship — build from a
+branch, or leave the version bump uncommitted, and nothing happens.
+
+To stop a release that is already going out, stop the timer rather than racing
+it:
 
 ```bash
-sudo crontab -e
-#   */10 * * * *  cd /srv/sudden-queue && deploy/publish-release.sh >> /var/log/sudden-queue-publish.log 2>&1
+sudo systemctl stop sudden-queue-publish.timer
 ```
 
-Think before doing that. It only ever picks up releases that have been published
-on GitHub rather than left as drafts, so nothing goes out that nobody looked at
-— but publishing is a cutover, and a timer means the cutover happens whenever
-the timer next fires rather than when you are watching. On a deployment with
-players in it, that is a decision worth making on purpose.
+To go back to a version already published, publish the older tag by hand. The
+floor follows `latest.json`, so it comes down as readily as it went up — but
+anyone who already updated is on the newer client and will now be refused, so
+this is a way out of a broken release rather than a way to change your mind.
+
+```bash
+sudo deploy/publish-release.sh v0.1.2
+```
 
 Old installers can stay where they are. Nothing points at them once
 `latest.json` moves on, and keeping them means a link somebody saved still

@@ -1,0 +1,28 @@
+# How often the deployment looks for a release it has not published yet.
+#
+#   sudo systemctl enable --now sudden-queue-publish.timer
+#   systemctl list-timers sudden-queue-publish
+#
+# A minute is not a compromise between fast and cheap. A run with nothing to
+# do fetches one small file and stops -- the version is compared before the
+# installer is downloaded -- so the idle cost is a request a minute, and the
+# busy cost happens once per release.
+
+[Unit]
+Description=Look for a new Sudden Queue release
+Documentation=https://github.com/Patrick-Mondala/Sudden-Queue
+
+[Timer]
+# Catch up shortly after a reboot as well: a release published while the box
+# was down is still a release nobody has been given.
+OnBootSec=2min
+OnUnitActiveSec=1min
+
+# Without this every deployment running this file would ask GitHub on the same
+# second of the same minute. It matters at one server and costs nothing to fix
+# now rather than after it is somebody else's problem too.
+RandomizedDelaySec=30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

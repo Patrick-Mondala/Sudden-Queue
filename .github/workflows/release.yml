@@ -104,10 +104,21 @@ jobs:
           --notes "${{ github.ref_name }}"
           --endpoint "${{ vars.VITE_API_URL }}/download/latest.json"
 
+      # Published rather than drafted. The draft existed so that a person looked
+      # at a release before it went out, but the person had already looked: they
+      # decided to tag. What the draft actually bought was a second manual step
+      # at the end of an automated pipeline, which is the step most likely to be
+      # forgotten and the one hardest to notice was forgotten.
+      #
+      # The deployment picks this up on its own within a minute or so, so from
+      # here the tag is the whole release. That makes the tag the decision --
+      # push one and every older client is refused shortly afterwards. It is
+      # meant to be that blunt; it is also why nothing else in this workflow is
+      # allowed to be sloppy about what it builds.
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
-          draft: true
+          draft: false
           files: |
             apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
             apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe.sig
