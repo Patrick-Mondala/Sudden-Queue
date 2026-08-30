@@ -24,6 +24,13 @@ async function updater() {
  * what went wrong -- a silent "you are up to date" would be a lie.
  */
 export async function checkForUpdate() {
+  // A development build is not a released one. It has no published version to
+  // be behind, and gating it on the deployment's manifest would mean the app
+  // could not be worked on while that host is unreachable -- or, for a
+  // deployment that has not published yet, at all: the endpoint answers 404,
+  // and the plugin raises that rather than calling it "no update".
+  if (import.meta.env?.DEV) return null;
+
   const mod = await updater();
   if (!mod) return null;
 

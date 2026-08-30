@@ -54,9 +54,40 @@ jobs:
             exit 1
           fi
 
+      # The client is built for one deployment: VITE_API_URL is where it calls,
+      # and the updater endpoint is where it looks for its own next version.
+      # Both are derived from the same variable here rather than set twice,
+      # because a client that talks to one host and updates from another is a
+      # client that can be told it is current by a deployment that is not
+      # serving it.
+      - name: Refuse a build with nowhere to talk to
+        shell: bash
+        run: |
+          if [ -z "${{ vars.VITE_API_URL }}" ]; then
+            echo "The repository variable VITE_API_URL is not set."
+            echo "It is compiled into the installer, so a build without it ships a"
+            echo "client pointed at localhost and an updater pointed at nothing."
+            exit 1
+          fi
+
+      - name: Point the updater at this deployment
+        shell: bash
+        working-directory: apps/desktop
+        run: |
+          cat > updater.endpoint.json <<'EOF'
+          {
+            "plugins": {
+              "updater": {
+                "endpoints": ["${{ vars.VITE_API_URL }}/download/latest.json"]
+              }
+            }
+          }
+          EOF
+          cat updater.endpoint.json
+
       - name: Build and sign
         working-directory: apps/desktop
-        run: npm run tauri build
+        run: npm run tauri build -- --config updater.endpoint.json
         env:
           # The private half of the updater keypair. Without it the installers
           # still build but carry no signature, and every client refuses them.
@@ -67,7 +98,11 @@ jobs:
 
       - name: Write latest.json
         working-directory: apps/desktop
-        run: npm run release:manifest -- --tag "${{ github.ref_name }}" --notes "${{ github.ref_name }}"
+        run: >
+          npm run release:manifest --
+          --tag "${{ github.ref_name }}"
+          --notes "${{ github.ref_name }}"
+          --endpoint "${{ vars.VITE_API_URL }}/download/latest.json"
 
       - name: Publish the release
         uses: softprops/action-gh-release@v2

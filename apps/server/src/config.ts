@@ -52,6 +52,16 @@ const schema = z.object({
   DISCORD_CLIENT_ID: z.string().min(1),
   DISCORD_CLIENT_SECRET: z.string().min(1),
   DISCORD_REDIRECT_URI: z.string().url(),
+
+  /**
+   * Where the published release lives, if this deployment publishes one.
+   *
+   * The directory Caddy serves downloads from. The server reads only
+   * `latest.json` out of it, to learn which client version is current and
+   * refuse the ones below it. Unset means this deployment enforces no floor,
+   * which is right for development and for anyone serving updates elsewhere.
+   */
+  SQ_RELEASES_DIR: z.string().min(1).optional(),
 });
 
 export type Config = z.infer<typeof schema>;

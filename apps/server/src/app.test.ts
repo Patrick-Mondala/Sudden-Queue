@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { INVITE_RATE_LIMIT, WRITE_RATE_LIMIT, isOk } from "@suddenqueue/core";
 import { and, desc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -3107,6 +3111,93 @@ describe("the ceiling on writes", () => {
       url: "/teams",
       headers: authed(user.token),
     });
+    expect(res.statusCode).toBe(200);
+  });
+});
+
+describe("refusing clients older than the release", () => {
+  let dir: string;
+  let gated: App;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), "sq-gated-"));
+    writeFileSync(join(dir, "latest.json"), JSON.stringify({ version: "0.2.0" }));
+
+    gated = await buildApp({
+      db: handle.db,
+      config: { ...CONFIG, SQ_RELEASES_DIR: dir },
+      autoStart: false,
+    });
+    await gated.server.ready();
+  }, 30_000);
+
+  afterAll(async () => {
+    await gated?.server.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const get = (url: string, headers: Record<string, string> = {}) =>
+    gated.server.inject({ method: "GET", url, headers });
+
+  it("refuses a client that does not say what version it is", async () => {
+    const user = await login();
+
+    // Every version released before the header existed is in this case, which
+    // is exactly the population a floor is for.
+    const res = await get("/me", authed(user.token));
+
+    expect(res.statusCode).toBe(426);
+    expect(res.json().error).toBe("CLIENT_TOO_OLD");
+  });
+
+  it("refuses a client below the floor", async () => {
+    const user = await login();
+
+    const res = await get("/me", { ...authed(user.token), "x-client-version": "0.1.1" });
+
+    expect(res.statusCode).toBe(426);
+    expect(res.json().message).toContain("0.2.0");
+  });
+
+  it("serves the floor itself and anything above it", async () => {
+    const user = await login();
+
+    for (const version of ["0.2.0", "0.3.1"]) {
+      const res = await get("/me", { ...authed(user.token), "x-client-version": version });
+      expect(res.statusCode).toBe(200);
+    }
+  });
+
+  it("takes the version from the query string, for the websocket", async () => {
+    const user = await login();
+
+    // Nothing lets script set headers on a WebSocket handshake, so that one
+    // request says its version in the URL instead.
+    const res = await get("/me?v=0.2.0", authed(user.token));
+
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("answers health and config whatever the client is", async () => {
+    // A monitor is not a client, and a refused client still has to render.
+    expect((await get("/health")).statusCode).toBe(200);
+    expect((await get("/config")).statusCode).toBe(200);
+  });
+
+  it("lets the browser through sign-in", async () => {
+    // The user's browser follows these, and a browser has no version to send.
+    // Gating them would break the callback and look like a Discord problem.
+    expect((await get("/auth/discord/start")).statusCode).not.toBe(426);
+    expect((await get("/auth/discord/callback")).statusCode).not.toBe(426);
+  });
+
+  it("enforces nothing when the deployment publishes nothing", async () => {
+    const user = await login();
+
+    // The shared app has no releases directory: development, and anyone
+    // serving their updates elsewhere.
+    const res = await app.server.inject({ method: "GET", url: "/me", headers: authed(user.token) });
+
     expect(res.statusCode).toBe(200);
   });
 });

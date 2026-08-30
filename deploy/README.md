@@ -38,6 +38,31 @@ gunzip -c /var/backups/sudden-queue/suddenqueue-<stamp>.sql.gz \
   | sudo docker compose -f /srv/sudden-queue/compose.prod.yaml exec -T postgres psql -U suddenqueue -d suddenqueue
 ```
 
+## Publishing a client release
+
+CI builds and signs it; this is what puts it in front of players. Both files go
+in `releases/`, which Caddy serves at `/download` and the server reads the
+current version out of.
+
+```bash
+cd /srv/sudden-queue/releases
+sudo curl -LO https://github.com/<you>/<repo>/releases/download/v0.1.2/Sudden.Queue_0.1.2_x64-setup.exe
+sudo curl -LO https://github.com/<you>/<repo>/releases/download/v0.1.2/latest.json
+curl -s https://your.host/download/latest.json     # the version you just published
+```
+
+**Installer first, `latest.json` second**, and not the other way round.
+`latest.json` is what the server reads to decide which clients it will still
+serve, so the moment it lands every older copy is refused. If the installer it
+names is not there yet, every player is locked out of an app that cannot
+download the version it is being told to install.
+
+Nothing restarts. The server picks up the new manifest within a few seconds.
+
+Old installers can stay where they are. Nothing points at them once
+`latest.json` moves on, and keeping them means a link somebody saved still
+works.
+
 ## Day to day
 
 ```bash

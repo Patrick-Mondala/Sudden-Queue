@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useContext, createContext } from "react";
 import { Crosshair, Swords, Users, Trophy, User, MessageSquare, Send, X, Check, Shield, Star, Wifi, Timer, Copy, ChevronRight, LogOut, Bell, Filter, Plus, Minus, AlertTriangle, CircleDot, Lock, Unlock } from "lucide-react";
 import { signIn } from "./api/auth.js";
-import { api as server, bus as liveBus, getToken } from "./api/client.js";
+import { api as server, bus as liveBus, getToken, CLIENT_VERSION } from "./api/client.js";
 import { checkForUpdate, installUpdate } from "./api/updates.js";
 import { t, tn, errorText, currentLocale, onLocaleChange } from "./i18n/index.js";
 
@@ -1754,46 +1754,127 @@ function LadderScreen({ me, onView, notify }) {
 }
 
 /**
- * A new version is out.
+ * A new version is out, and there is no way past it.
  *
- * A bar rather than a modal: an update is never more urgent than what someone
- * is already doing, and one that steals focus mid-queue would be uninstalled
- * for it. Restarting is the user's call and nothing happens until they make
- * it.
+ * Updates are required rather than offered. Two clients disagreeing about a
+ * rule is worse than a restart is inconvenient: the server is the only thing
+ * that decides a match, but an old client can misread what it is told, show a
+ * rank that no longer means what it says, or keep calling a route that has
+ * moved. A version that can be declined is one that stays in the field.
+ *
+ * It covers the window, starts on its own and has no dismiss. That it can be
+ * this blunt is a consequence of when it runs: the check happens once at
+ * launch and this renders ahead of the sign-in screen, so there is never a
+ * queue, an accept window or a match underneath it to interrupt.
+ *
+ * Not knowing counts as not current. A check that cannot be made leaves the
+ * gate up and retries, rather than letting the app open on a version nothing
+ * has vouched for -- otherwise "required" would mean "required unless you can
+ * arrange for the check to fail", which is a lower bar than it sounds: an
+ * offline machine clears it, and so does one line in a hosts file.
+ *
+ * The cost is a real dependency, and it should be understood before this is
+ * shipped: the app is now unusable while the update endpoint is unreachable,
+ * even though matches are served by an entirely different host. A GitHub
+ * outage stops play on a server that is up. That is the trade this design
+ * makes, and it is only defensible because there is nothing worth reaching
+ * here offline -- every screen behind the gate needs the server anyway.
  */
-function UpdateBar({ update, onDone, notify }) {
+function UpdateGate({ check, onRetry }) {
   const [progress, setProgress] = useState(null);
-  const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState(null);
+  // StrictMode runs effects twice in development. Downloading and running an
+  // installer twice is not a harmless repeat, so the start is guarded rather
+  // than left to be idempotent.
+  const started = useRef(false);
 
-  const run = async () => {
-    setInstalling(true);
+  const update = check.update ?? null;
+
+  const install = useCallback(async () => {
+    if (!update) return;
+    setInstallError(null);
+    setProgress(null);
     try {
       // Normally never returns -- the relaunch replaces this process.
       await installUpdate(update, setProgress);
     } catch (err) {
-      notify?.(errorText(err, "The update could not be installed"));
-      setInstalling(false);
-      setProgress(null);
+      setInstallError(errorText(err, "The update could not be installed"));
     }
-  };
+  }, [update]);
+
+  useEffect(() => {
+    if (!update || started.current) return;
+    started.current = true;
+    void install();
+  }, [update, install]);
 
   const pct = progress === null ? null : Math.round(progress * 100);
+  const stalled = check.phase === "failed" || check.phase === "rejected" || installError !== null;
+  const required = check.phase === "found" || check.phase === "rejected";
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 14px", background: T.accentDim, borderBottom: `1px solid ${T.accent}` }}>
-      <Dot color={T.accent} pulse />
-      <span style={{ fontSize: 12.5, color: T.text }}>
-        {installing
-          ? `Downloading ${update.version}${pct === null ? "" : ` — ${pct}%`}`
-          : `Version ${update.version} is available.`}
-      </span>
-      {!installing && (
-        <>
-          <Btn size="sm" kind="primary" onClick={run}>{t("Update and restart")}</Btn>
-          <Btn size="sm" kind="quiet" onClick={onDone}>{t("Later")}</Btn>
-        </>
-      )}
-      <div style={{ flex: 1 }} />
+    <div style={{ height: "100%", display: "grid", placeItems: "center", background: T.bg, padding: 24, boxSizing: "border-box" }}>
+      <div style={{ width: 430, maxWidth: "100%", background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, padding: "22px 24px", boxSizing: "border-box" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 13 }}>
+          <Dot color={stalled ? T.danger : T.accent} pulse={!stalled} />
+          <span style={{ fontFamily: T.display, fontWeight: 700, fontSize: 14, textTransform: "uppercase", letterSpacing: "0.02em" }}>
+            {required ? t("Update required") : t("Checking for updates")}
+          </span>
+        </div>
+
+        {check.phase === "checking" && (
+          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: T.muted }}>
+            {t("Making sure this copy is current.")}
+          </p>
+        )}
+
+        {check.phase === "failed" && (
+          <>
+            <p style={{ margin: "0 0 10px", fontSize: 13, lineHeight: 1.5, color: T.text }}>
+              {t("Cannot reach the update service, so there is no way to tell whether this copy is current. It will keep trying.")}
+            </p>
+            <p style={{ margin: "0 0 16px", fontSize: 12.5, lineHeight: 1.5, color: T.danger }}>{check.error}</p>
+            <Btn kind="primary" onClick={onRetry}>{t("Try again")}</Btn>
+          </>
+        )}
+
+        {check.phase === "rejected" && (
+          <>
+            <p style={{ margin: "0 0 16px", fontSize: 13, lineHeight: 1.5, color: T.text }}>
+              {check.minimum
+                ? t("The server is serving version {minimum} and will not accept version {current}. There is nothing to do here but update.", { minimum: check.minimum, current: CLIENT_VERSION ?? "unknown" })
+                : t("The server will not accept this version. There is nothing to do here but update.")}
+            </p>
+            <Btn kind="primary" onClick={onRetry}>{t("Check for update")}</Btn>
+          </>
+        )}
+
+        {check.phase === "found" && (
+          <>
+            <p style={{ margin: "0 0 18px", fontSize: 13, lineHeight: 1.5, color: T.text }}>
+              {t("Version {version} has to be installed before you can play. The app restarts itself when it is done.", { version: update.version })}
+            </p>
+
+            {installError ? (
+              <>
+                <p style={{ margin: "0 0 14px", fontSize: 12.5, lineHeight: 1.5, color: T.danger }}>{installError}</p>
+                <Btn kind="primary" onClick={install}>{t("Try again")}</Btn>
+              </>
+            ) : (
+              <>
+                <div style={{ height: 6, borderRadius: 3, background: T.raised, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: pct === null ? "100%" : `${pct}%`, background: T.accent, opacity: pct === null ? 0.4 : 1, transition: "width 160ms linear" }} />
+                </div>
+                <div style={{ marginTop: 9, fontFamily: T.mono, fontSize: 11.5, color: T.muted }}>
+                  {pct === null
+                    ? t("Downloading {version}…", { version: update.version })
+                    : t("Downloading {version} — {pct}%", { version: update.version, pct })}
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -2938,21 +3019,70 @@ export default function App() {
   // next opened, not for ever -- the banner is the gentle version, this is the
   // one that gets seen.
   const [namePutOff, setNamePutOff] = useState(false);
-  const [update, setUpdate] = useState(null);
+  // "checking" until the answer is known, then "clear" to open the app,
+  // "found" to install, or "failed" to keep trying. Everything but "clear"
+  // holds the gate up.
+  const [updateCheck, setUpdateCheck] = useState({ phase: "checking" });
+  const [recheck, setRecheck] = useState(0);
 
-  // Once a launch. Restarting is how anyone gets a new version anyway, so a
-  // running copy re-checking on a timer would only interrupt to say something
-  // the next start would have said anyway.
+  // Once a launch, and it has to stay that way now that the answer blocks the
+  // app: a copy that re-checked on a timer would raise the gate over whatever
+  // was on screen, which for a running client means a queue or a live match.
+  // Restarting is how anyone gets a new version anyway, so a timer could only
+  // interrupt to say what the next start would have said.
+  //
+  // The retry below is not that timer. It runs only while the answer is still
+  // unknown, and stops for good the moment one arrives.
   useEffect(() => {
     let cancelled = false;
-    checkForUpdate()
-      .then((found) => { if (!cancelled) setUpdate(found); })
-      .catch(() => {
-        // A failed check is not worth a word: nothing is broken, and the app
-        // works perfectly well on the version it has.
-      });
-    return () => { cancelled = true; };
+    let timer = null;
+    let attempt = 0;
+
+    const ask = async () => {
+      try {
+        const found = await checkForUpdate();
+        if (cancelled) return;
+        setUpdateCheck(found ? { phase: "found", update: found } : { phase: "clear" });
+      } catch (err) {
+        if (cancelled) return;
+        attempt += 1;
+        setUpdateCheck({ phase: "failed", error: errorText(err, "Could not reach the update service") });
+        // Backing off rather than hammering: the usual cause is a network that
+        // is not there yet, and a laptop opening its lid should not spend its
+        // first minute making a request a second.
+        timer = setTimeout(ask, Math.min(30_000, 2_000 * 2 ** (attempt - 1)));
+      }
+    };
+
+    void ask();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [recheck]);
+
+  // The button on the gate, for someone who has just fixed their connection
+  // and would rather not wait out the backoff.
+  const retryUpdateCheck = useCallback(() => {
+    setUpdateCheck({ phase: "checking" });
+    setRecheck((n) => n + 1);
   }, []);
+
+  // The server's half of the same rule, which can arrive in answer to any call
+  // and so is listened for outside the signed-in shell. It is not a check that
+  // could be retried into success: the deployment serves a newer version than
+  // this one, and will keep saying so until this copy is replaced.
+  //
+  // An install already under way is left alone. It is doing the only thing
+  // that resolves this, and replacing a progress bar with an explanation of
+  // why the progress bar is needed would be a step backwards.
+  useEffect(
+    () =>
+      liveBus.on((e) => {
+        if (e?.type !== "client.tooOld") return;
+        setUpdateCheck((current) =>
+          current.phase === "found" ? current : { phase: "rejected", minimum: e.minimum ?? null },
+        );
+      }),
+    [],
+  );
   const notify = useCallback((text) => { const id = Date.now() + Math.random(); setToasts((list) => [...list, { id, text }]); setTimeout(() => setToasts((list) => list.filter((x) => x.id !== id)), 3800); }, []);
 
   /**
@@ -3248,6 +3378,19 @@ export default function App() {
   }, [pendingMatch]);
 
 
+  // Ahead of the sign-in screen on purpose. An update that can be walked
+  // around by not signing in is not required, and there is nothing worth
+  // reaching on an old version anyway.
+  if (updateCheck.phase !== "clear")
+    return (
+      <ConfigContext.Provider value={config}>
+        <div className="sq" style={{ height: "100vh", width: "100vw", boxSizing: "border-box", fontFamily: T.body, color: T.text }}>
+          <style>{css}</style>
+          <UpdateGate check={updateCheck} onRetry={retryUpdateCheck} />
+        </div>
+      </ConfigContext.Provider>
+    );
+
   if (!me)
     return (
       <ConfigContext.Provider value={config}>
@@ -3310,10 +3453,6 @@ export default function App() {
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 12 }}><Avatar p={me} size={24} /><PlayerName name={me.discordName} isGameMaster={me.isGameMaster} style={{ fontWeight: 600 }} /><Tier tier={me.tier} size={12} /></div>
         <button onClick={() => setMe(null)} title={t("Sign out")} style={{ background: "transparent", border: "none", color: T.dim, padding: 4 }}><LogOut size={14} /></button>
       </div>
-
-      {update && !match && !pendingMatch && (
-        <UpdateBar update={update} notify={notify} onDone={() => setUpdate(null)} />
-      )}
 
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
         {/* nav rail */}

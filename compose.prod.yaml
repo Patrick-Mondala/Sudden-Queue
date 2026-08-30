@@ -55,6 +55,14 @@ services:
       SQ_TIER_FLOORS: ${SQ_TIER_FLOORS:-}
       SQ_DEFAULT_RATING: ${SQ_DEFAULT_RATING:-}
       SQ_PLACEMENT_GAMES: ${SQ_PLACEMENT_GAMES:-}
+      # The same directory Caddy serves downloads from. The server reads only
+      # latest.json out of it, to learn which client version is current and
+      # refuse the ones below it. Publishing a release is what raises the
+      # floor; there is no second setting to remember.
+      SQ_RELEASES_DIR: /srv/releases
+    volumes:
+      # Read-only, and for one file. The server has no business writing here.
+      - ./releases:/srv/releases:ro
     # Also no `ports:`. Caddy reaches it over the internal network; the only
     # things open to the world are 80 and 443.
     healthcheck:
@@ -78,6 +86,9 @@ services:
       SQ_HOSTNAME: ${SQ_HOSTNAME:?set SQ_HOSTNAME in .env}
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # The published installer and its latest.json, served at /download.
+      # Read-only: nothing in this stack writes a release, they are copied in.
+      - ./releases:/srv/releases:ro
       - caddy-data:/data      # certificates; losing this means re-issuing them
       - caddy-config:/config
 

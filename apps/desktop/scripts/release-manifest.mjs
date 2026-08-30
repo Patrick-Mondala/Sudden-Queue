@@ -34,17 +34,25 @@ const notes = arg("notes") ?? `Sudden Queue ${version}`;
  * Derived from the configured endpoint so there is one place to be wrong
  * rather than two.
  */
-const endpoint = conf.plugins?.updater?.endpoints?.[0] ?? "";
-const repo = endpoint.match(/github\.com\/([^/]+)\/([^/]+)\//);
-if (!repo) {
-  console.error(`Cannot read owner/repo from the updater endpoint:\n  ${endpoint || "(none set)"}`);
+const endpoint = arg("endpoint") ?? conf.plugins?.updater?.endpoints?.[0] ?? "";
+
+let manifestUrl;
+try {
+  manifestUrl = new URL(endpoint);
+} catch {
+  console.error(
+    `The updater endpoint is not a url:\n  ${endpoint || "(none set)"}\n\n` +
+      "It is where installed copies look for latest.json, and the installer url\n" +
+      "is resolved against it. Set it in tauri.conf.json, or pass --endpoint.",
+  );
   process.exit(1);
 }
-const [, owner, name] = repo;
-if (owner === "CHANGE-ME") {
+
+if (endpoint.includes("CHANGE-ME")) {
   console.error(
-    "The updater endpoint still says CHANGE-ME. Point it at the repository you\n" +
-      "publish to before cutting a release, or installed copies will check a 404.",
+    "The updater endpoint still says CHANGE-ME. Point it at the deployment you\n" +
+      "publish from before cutting a release, or installed copies will check a 404\n" +
+      "and refuse to open, because not knowing counts as not current.",
   );
   process.exit(1);
 }
@@ -67,8 +75,10 @@ if (!installer || !signature) {
   process.exit(1);
 }
 
-// GitHub rewrites spaces in asset names to periods on upload, so the url has to
-// carry the rewritten name rather than the one on disk.
+// GitHub rewrites spaces in asset names to periods on upload. The build store
+// is still a GitHub release even though the download is served from the
+// deployment, so the file arrives on the server under the rewritten name --
+// which makes that, not the name on disk here, the one to publish.
 const asset = installer.replaceAll(" ", ".");
 
 const manifest = {
@@ -78,7 +88,9 @@ const manifest = {
   platforms: {
     "windows-x86_64": {
       signature: readFileSync(join(bundles, signature), "utf8").trim(),
-      url: `https://github.com/${owner}/${name}/releases/download/${tag}/${asset}`,
+      // Resolved against the manifest's own url: the installer is served from
+      // beside latest.json, so there is no second host to get wrong.
+      url: new URL(asset, manifestUrl).href,
     },
   },
 };
@@ -91,3 +103,9 @@ console.log(`\nUpload all three to the ${tag} release:`);
 console.log(`  ${join(bundles, installer)}`);
 console.log(`  ${join(bundles, signature)}`);
 console.log(`  ${out}`);
+console.log(
+  `\nThen copy the installer as ${asset}, and latest.json beside it, into the\n` +
+    "releases directory on the server. Until they are there, this manifest\n" +
+    `describes a download that 404s -- and ${new URL(".", manifestUrl).href} is\n` +
+    "what every installed copy checks before it will open.",
+);

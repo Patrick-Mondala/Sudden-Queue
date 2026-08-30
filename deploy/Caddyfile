@@ -4,6 +4,25 @@
 # here. Caddy obtains and renews the certificate itself.
 
 {$SQ_HOSTNAME} {
+	# The published client, served from this deployment rather than from a
+	# release host somewhere else.
+	#
+	# That is not only tidier: the app refuses to open until it has been told
+	# whether it is current, so whatever answers that question is something
+	# every player needs reachable before they can play. Served from here, it
+	# is up exactly when the rest of the deployment is, and one outage cannot
+	# take down play on a server that is otherwise fine.
+	#
+	#   /download/latest.json                     what the updater fetches
+	#   /download/Sudden.Queue_x.y.z_x64-setup.exe  what a person downloads
+	handle_path /download/* {
+		root * /srv/releases
+		# The manifest is the one file here that changes meaning in place: a
+		# cached copy is a player told they are current when they are not.
+		header /latest.json Cache-Control "no-cache"
+		file_server
+	}
+
 	# The server holds a WebSocket per signed-in player. Caddy proxies those
 	# without special configuration; flush_interval -1 stops it buffering the
 	# push events, which would otherwise arrive in batches.

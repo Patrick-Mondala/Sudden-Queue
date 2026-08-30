@@ -112,6 +112,7 @@ vi.mock("./api/client.js", () => ({
   api: server,
   bus: liveBus,
   getToken: () => token,
+  CLIENT_VERSION: "0.1.1",
 }));
 
 vi.mock("./api/auth.js", () => ({ signIn: vi.fn() }));
@@ -1984,92 +1985,166 @@ describe("updating the app", () => {
     ...over,
   });
 
-  it("says so when a new version is out", async () => {
-    updates.checkForUpdate.mockResolvedValue(available());
-    await signedIn();
+  /** Never resolves: installing normally ends in a relaunch, not a return. */
+  const neverReturns = () => new Promise(() => {});
 
-    expect(await screen.findByText(/Version 0\.2\.0 is available/i)).toBeTruthy();
+  it("takes over the app when a new version is out", async () => {
+    updates.checkForUpdate.mockResolvedValue(available());
+    updates.installUpdate.mockReturnValue(neverReturns());
+    render(<App />);
+
+    expect(await screen.findByText(/Update required/i)).toBeTruthy();
+    expect(await screen.findByText(/Version 0\.2\.0 has to be installed/i)).toBeTruthy();
   });
 
-  it("says nothing when there is nothing to install", async () => {
-    await signedIn();
-
-    expect(screen.queryByText(/is available/i)).toBeNull();
-    expect(screen.queryByRole("button", { name: /Update and restart/i })).toBeNull();
-  });
-
-  it("installs only when asked", async () => {
+  it("installs without being asked", async () => {
     updates.checkForUpdate.mockResolvedValue(available());
-    // Never resolves: installing normally ends in a relaunch, not a return.
-    updates.installUpdate.mockReturnValue(new Promise(() => {}));
-    await signedIn();
+    updates.installUpdate.mockReturnValue(neverReturns());
+    render(<App />);
 
-    expect(updates.installUpdate).not.toHaveBeenCalled();
-    await userEvent.click(await screen.findByRole("button", { name: /Update and restart/i }));
-
+    await screen.findByText(/Update required/i);
     await waitFor(() => expect(updates.installUpdate).toHaveBeenCalled());
+  });
+
+  it("starts the install once, not once per effect pass", async () => {
+    updates.checkForUpdate.mockResolvedValue(available());
+    updates.installUpdate.mockReturnValue(neverReturns());
+    render(<App />);
+
+    await screen.findByText(/Update required/i);
+    await act(async () => {});
+
+    // Downloading and running an installer twice is not a harmless repeat.
+    expect(updates.installUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("cannot be dismissed or walked around", async () => {
+    updates.checkForUpdate.mockResolvedValue(available());
+    updates.installUpdate.mockReturnValue(neverReturns());
+    render(<App />);
+
+    await screen.findByText(/Update required/i);
+
+    expect(screen.queryByRole("button", { name: /^Later$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Skip/i })).toBeNull();
+    // Not even the sign-in screen: an update avoidable by staying signed out
+    // is not required.
+    expect(screen.queryByText(/Continue with Discord/i)).toBeNull();
+    expect(screen.queryByText(/Ready to queue/i)).toBeNull();
   });
 
   it("shows how far along the download is", async () => {
     updates.checkForUpdate.mockResolvedValue(available());
     updates.installUpdate.mockImplementation((_update, onProgress) => {
       onProgress(0.42);
-      return new Promise(() => {});
+      return neverReturns();
     });
-    await signedIn();
-
-    await userEvent.click(await screen.findByRole("button", { name: /Update and restart/i }));
+    render(<App />);
 
     expect(await screen.findByText(/Downloading 0\.2\.0 — 42%/i)).toBeTruthy();
   });
 
-  it("can be put off", async () => {
-    updates.checkForUpdate.mockResolvedValue(available());
+  it("says nothing when there is nothing to install", async () => {
     await signedIn();
 
-    await userEvent.click(await screen.findByRole("button", { name: /^Later$/i }));
-
-    await waitFor(() => expect(screen.queryByText(/Version 0\.2\.0 is available/i)).toBeNull());
+    expect(screen.queryByText(/Update required/i)).toBeNull();
     expect(updates.installUpdate).not.toHaveBeenCalled();
   });
 
-  it("stays quiet when the check itself fails", async () => {
-    updates.checkForUpdate.mockRejectedValue(new Error("network is down"));
-    await signedIn();
+  it("blocks while the answer is still unknown", async () => {
+    // Never resolves: the check is in flight.
+    updates.checkForUpdate.mockReturnValue(neverReturns());
+    render(<App />);
 
-    // Nothing is broken and the app works on the version it has, so a failed
-    // check is not worth a word.
-    expect(screen.queryByText(/network is down/i)).toBeNull();
-    expect(await screen.findByText(/Ready to queue/i)).toBeTruthy();
+    expect(await screen.findByText(/Checking for updates/i)).toBeTruthy();
+    expect(screen.queryByText(/Continue with Discord/i)).toBeNull();
   });
 
-  it("says so when the install fails, rather than hanging on the progress", async () => {
+  it("blocks when the check cannot be made at all", async () => {
+    updates.checkForUpdate.mockRejectedValue(new Error("network is down"));
+    render(<App />);
+
+    // Not knowing counts as not current. Opening here would make the update
+    // required only of people who cannot arrange for the check to fail.
+    expect(await screen.findByText(/Cannot reach the update service/i)).toBeTruthy();
+    expect(await screen.findByText(/network is down/i)).toBeTruthy();
+    expect(screen.queryByText(/Continue with Discord/i)).toBeNull();
+    expect(screen.queryByText(/Ready to queue/i)).toBeNull();
+  });
+
+  it("keeps checking on its own while it is stuck", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      updates.checkForUpdate.mockRejectedValue(new Error("network is down"));
+      render(<App />);
+
+      await screen.findByText(/Cannot reach the update service/i);
+      expect(updates.checkForUpdate).toHaveBeenCalledTimes(1);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(2_500); });
+
+      expect(updates.checkForUpdate).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("opens the app once a retried check comes back clear", async () => {
+    updates.checkForUpdate.mockRejectedValueOnce(new Error("network is down"));
+    render(<App />);
+
+    await screen.findByText(/Cannot reach the update service/i);
+    await userEvent.click(screen.getByRole("button", { name: /Try again/i }));
+
+    expect(await screen.findByText(/Ready to queue/i)).toBeTruthy();
+    // The button, not the backoff, which has not come round yet.
+    expect(updates.checkForUpdate).toHaveBeenCalledTimes(2);
+  });
+
+  it("blocks when the server refuses this version, wherever the call was made", async () => {
+    await signedIn();
+    expect(screen.getByText(/Ready to queue/i)).toBeTruthy();
+
+    // The server's half of the rule: it arrives in answer to an ordinary call,
+    // not from the updater, and it is not a check that can be retried into
+    // success.
+    emit({ type: "client.tooOld", minimum: "0.2.0" });
+
+    expect(await screen.findByText(/Update required/i)).toBeTruthy();
+    expect(await screen.findByText(/serving version 0\.2\.0/i)).toBeTruthy();
+    expect(screen.queryByText(/Ready to queue/i)).toBeNull();
+  });
+
+  it("leaves an install already under way alone when the server refuses", async () => {
+    updates.checkForUpdate.mockResolvedValue(available());
+    updates.installUpdate.mockImplementation((_update, onProgress) => {
+      onProgress(0.5);
+      return neverReturns();
+    });
+    render(<App />);
+
+    await screen.findByText(/Downloading 0\.2\.0 — 50%/i);
+    emit({ type: "client.tooOld", minimum: "0.2.0" });
+
+    // Replacing a progress bar with an explanation of why the progress bar is
+    // needed would be a step backwards.
+    expect(await screen.findByText(/Downloading 0\.2\.0 — 50%/i)).toBeTruthy();
+  });
+
+  it("offers a retry when the install fails, rather than hanging on the progress", async () => {
     updates.checkForUpdate.mockResolvedValue(available());
     updates.installUpdate.mockRejectedValue(new Error("Signature did not verify"));
-    await signedIn();
-
-    await userEvent.click(await screen.findByRole("button", { name: /Update and restart/i }));
+    render(<App />);
 
     expect(await screen.findByText(/Signature did not verify/i)).toBeTruthy();
-    // Back to an offer, not stuck mid-download.
-    expect(await screen.findByRole("button", { name: /Update and restart/i })).toBeTruthy();
-  });
 
-  it("gets out of the way of a match that has been found", async () => {
-    updates.checkForUpdate.mockResolvedValue(available());
-    await signedIn();
-    expect(await screen.findByText(/Version 0\.2\.0 is available/i)).toBeTruthy();
+    // Still gated -- a failed install is not a way through.
+    expect(screen.queryByText(/Continue with Discord/i)).toBeNull();
 
-    emit({
-      type: "match.found",
-      matchId: MATCH.id,
-      acceptDeadline: new Date(Date.now() + 20_000).toISOString(),
-      match: MATCH,
-    });
+    updates.installUpdate.mockReturnValue(neverReturns());
+    await userEvent.click(await screen.findByRole("button", { name: /Try again/i }));
 
-    // Restarting the app during an accept window loses the match.
-    expect(await screen.findByText(/Match found/i)).toBeTruthy();
-    await waitFor(() => expect(screen.queryByText(/Version 0\.2\.0 is available/i)).toBeNull());
+    await waitFor(() => expect(updates.installUpdate).toHaveBeenCalledTimes(2));
   });
 });
 

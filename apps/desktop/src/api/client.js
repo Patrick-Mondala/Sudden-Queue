@@ -18,6 +18,20 @@ const DEFAULT_BASE = "http://127.0.0.1:3000";
 /** Where the server lives. Overridable for a hosted deployment. */
 export const BASE_URL = import.meta.env?.VITE_API_URL ?? DEFAULT_BASE;
 
+/**
+ * What this build calls itself, sent with every request.
+ *
+ * Defined by the build from `tauri.conf.json`, so it is the version of the
+ * installer this copy came from rather than a number maintained beside it. A
+ * deployment that publishes releases refuses anything below the one it serves,
+ * and a client that cannot say what it is counts as below.
+ *
+ * Null only when something has built this without the define -- which is not a
+ * version, and is treated as one that fails the floor rather than one that
+ * passes it.
+ */
+export const CLIENT_VERSION = import.meta.env?.VITE_APP_VERSION ?? null;
+
 const TOKEN_KEY = "sq_session_token";
 
 export function getToken() {
@@ -50,6 +64,7 @@ export class ApiError extends Error {
 async function request(path, { method = "GET", body, auth = true } = {}) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (CLIENT_VERSION) headers["X-Client-Version"] = CLIENT_VERSION;
 
   const token = auth ? getToken() : null;
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -79,6 +94,14 @@ async function request(path, { method = "GET", body, auth = true } = {}) {
   const payload = text ? safeParse(text) : null;
 
   if (!response.ok) {
+    // The one refusal no screen can work around and no retry can clear: the
+    // server serves a newer version than this one. Announced on the bus as
+    // well as thrown, because it can arrive in answer to any call and only one
+    // part of the app can do anything about it -- a caller that merely showed
+    // the message would leave someone reading "out of date" on a screen that
+    // still looks usable.
+    if (response.status === 426) announceVersionRefusal(payload?.minimum ?? null);
+
     throw new ApiError(
       response.status,
       payload?.error ?? "HTTP_ERROR",
@@ -280,6 +303,10 @@ export class RealtimeBus {
     const url = new URL(this.baseUrl.replace(/^http/, "ws"));
     url.pathname = "/ws";
     url.searchParams.set("token", token);
+    // In the URL rather than a header: nothing lets script set headers on a
+    // WebSocket handshake, so this is the only request that has to say its
+    // version another way.
+    if (CLIENT_VERSION) url.searchParams.set("v", CLIENT_VERSION);
 
     this._setStatus("connecting");
     const socket = new WebSocket(url.toString());
@@ -372,3 +399,15 @@ export class RealtimeBus {
 }
 
 export const bus = new RealtimeBus();
+
+/**
+ * Says on the bus that the server has refused this version.
+ *
+ * A function rather than a call to `bus` inside `request`, because the calls
+ * are written above the bus that carries the news and a const cannot be used
+ * before it exists. Hoisting makes this legal where referencing `bus` directly
+ * would not be.
+ */
+function announceVersionRefusal(minimum) {
+  bus.emit({ type: "client.tooOld", minimum });
+}

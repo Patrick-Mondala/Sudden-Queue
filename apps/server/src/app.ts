@@ -11,6 +11,7 @@ import {
   REGIONS,
   isFail,
   isPlaced,
+  meetsMinimum,
   placementGamesRemaining,
   tierForRating,
 } from "@suddenqueue/core";
@@ -45,6 +46,7 @@ import { ChatService } from "./chat/service.js";
 import { ModerationService, MAX_SUSPENSION_HOURS, MIN_SUSPENSION_HOURS, SUSPENSION_REASON_MAX_LENGTH } from "./moderation/service.js";
 import { RateLimiter } from "./http/rate-limit.js";
 import { QueueRepository } from "./queue/repository.js";
+import { createReleaseFloor } from "./releases.js";
 import { Notifier } from "./realtime/notifier.js";
 import { Population } from "./realtime/population.js";
 
@@ -198,6 +200,66 @@ export async function buildApp({
     return reply.code(status).send({
       error: error.code ?? "BAD_REQUEST",
       message: error.message,
+    });
+  });
+
+  /**
+   * Refuse clients older than the version this deployment serves.
+   *
+   * The client already refuses to open on an old version, but that is the
+   * client's own promise to keep, and a promise kept only by the software it
+   * constrains is not enforcement: a binary that never restarts, or one whose
+   * update endpoint has been pointed at nothing, never sees the gate. This is
+   * the half that does not depend on the client cooperating.
+   *
+   * The floor is whatever `latest.json` names, so publishing a release is what
+   * raises it -- there is no separate setting to forget.
+   */
+  const releases = createReleaseFloor(config.SQ_RELEASES_DIR);
+
+  /**
+   * What answers regardless of version.
+   *
+   * `/health` because a monitor is not a client. `/config` because a refused
+   * client still has to render, and what it renders is this deployment's name.
+   * The two Discord routes because the browser follows them during sign-in,
+   * and a browser is not a client either -- gating those would break the
+   * callback and the failure would look like a Discord problem.
+   */
+  const VERSION_EXEMPT = new Set([
+    "/health",
+    "/config",
+    "/auth/discord/start",
+    "/auth/discord/callback",
+  ]);
+
+  server.addHook("onRequest", async (req, reply) => {
+    // Registered after CORS on purpose, so the refusal carries the headers a
+    // browser needs in order to be allowed to read it.
+    if (req.method === "OPTIONS") return;
+
+    const minimum = releases.current();
+    if (!minimum) return;
+
+    if (VERSION_EXEMPT.has(req.url.split("?")[0])) return;
+
+    // A header for ordinary requests, the query string for the websocket:
+    // nothing lets script set headers on a WebSocket handshake, so the one
+    // request that cannot carry the header says it in the URL instead.
+    const header = req.headers["x-client-version"];
+    const sent =
+      (Array.isArray(header) ? header[0] : header) ??
+      (req.query as Record<string, string> | undefined)?.v;
+
+    if (meetsMinimum(sent, minimum)) return;
+
+    return reply.code(426).send({
+      error: "CLIENT_TOO_OLD",
+      message: `This copy of the app is out of date. Version ${minimum} is required to play.`,
+      // Named separately as well as in the sentence: the client puts it on
+      // screen, and parsing it back out of prose would break the first time
+      // this message is translated.
+      minimum,
     });
   });
 

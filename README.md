@@ -146,9 +146,16 @@ disagree with itself.
 ### 3. Bring it up
 
 ```bash
+sudo mkdir -p releases
 sudo docker compose -f compose.prod.yaml up -d --build
 sudo docker compose -f compose.prod.yaml --profile migrate run --rm migrate
 ```
+
+`releases/` is where the published installer and its `latest.json` go. It is
+mounted read-only into both Caddy, which serves it at `/download`, and the
+server, which reads the version out of it. Empty is fine and is what it looks
+like until your first release — a deployment that has published nothing enforces
+no version floor.
 
 Two commands rather than one because migrations are a deliberate step, here for
 the same reason they are in development: a process that migrates when it boots
@@ -297,13 +304,27 @@ accepts and runs.
 
 ### 2. Point the updater at your releases
 
-In the same file, `plugins.updater.endpoints` names the repository this checkout
-was published from. Point it at yours, and note that leaving it is worse than
-emptying it: installed copies would poll someone else's releases, and
-`release:manifest` reads the same field to work out where your assets will live,
-so its `latest.json` would send your players to installers you did not build.
-The only version of this mistake the script catches by itself is the literal
-`CHANGE-ME` placeholder, which it refuses to run on.
+In the same file, `plugins.updater.endpoints` names the deployment this checkout
+was published from — `https://suddenqueue.com/download/latest.json`. Point it at
+yours.
+
+Updates are served by your own server rather than from a release host: the app
+refuses to open until it has been told whether it is current, so whatever
+answers that question is something every player needs reachable before they can
+play. Served from the same deployment as the matches, it is up exactly when the
+rest of it is, and no third party's outage can stop play on a server that is
+fine.
+
+Leaving the endpoint as it ships is worse than emptying it. Installed copies
+would ask someone else's deployment whether they are current, and
+`release:manifest` resolves the installer url against the same value, so your
+`latest.json` would send your players to a download you do not control. The only
+version of this mistake the script catches by itself is the literal `CHANGE-ME`
+placeholder, which it refuses to run on.
+
+In CI you do not set this twice: the release workflow writes the endpoint from
+`VITE_API_URL`, so the host a client talks to and the host it updates from
+cannot drift apart.
 
 ### 3. Change the bundle identifier
 
@@ -355,7 +376,67 @@ Two settings on the repository:
 
 Without the secret the installers still build, carry no signature, and every
 client refuses them. Add `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` too if you ever
-put a passphrase on the key.
+put a passphrase on the key. `VITE_API_URL` does double duty: the workflow
+refuses to build without it, and derives the updater endpoint from it, so the
+client cannot end up talking to one host and updating from another.
+
+### Publishing it
+
+CI builds and signs; the GitHub release is where the artifacts are kept. What
+players actually download comes from your server, so the last step of a release
+is copying two files into the `releases/` directory beside `compose.prod.yaml`:
+
+```bash
+# on the server, from the GitHub release
+cd /srv/sudden-queue/releases
+sudo curl -LO https://github.com/<you>/<repo>/releases/download/v0.1.2/Sudden.Queue_0.1.2_x64-setup.exe
+sudo curl -LO https://github.com/<you>/<repo>/releases/download/v0.1.2/latest.json
+```
+
+**The installer first, `latest.json` second.** The order is not cosmetic. The
+server reads `latest.json` to decide which client versions it will still serve,
+so the moment that file lands, every older copy is refused — and if the
+installer it names is not there yet, everyone is locked out of an app that
+cannot download the version it is being told to install.
+
+Nothing needs restarting. The server notices the new manifest within a few
+seconds.
+
+### Updates are not optional
+
+There is no "Later". The client checks once at launch, ahead of the sign-in
+screen, and will not open until it is current. A check it cannot make counts as
+not current too: it blocks and keeps retrying rather than opening on a version
+nothing has vouched for, because "required unless you can arrange for the check
+to fail" is a bar an offline machine clears.
+
+That is the client keeping a promise about itself, which is not enforcement — a
+binary that never restarts never sees the gate. So the server keeps the same
+rule independently: every request carries `X-Client-Version`, and anything below
+the version in `latest.json` is refused with `426`. Not sending a version at all
+is refused as well, which is what every copy built before this existed does.
+
+The floor is the published version rather than a setting of its own, so there is
+nothing to remember to raise and nothing to disagree with. The consequence is
+the one in the step above: publishing is a cutover, and it locks out everyone
+who has not restarted yet. Publish when you are around to notice if it was
+wrong.
+
+Two exemptions on the server, both deliberate. `/health` and `/config` answer
+any version, so a monitor keeps working and a refused client can still render
+enough to say why. The Discord sign-in routes answer too, because the user's
+browser follows those and a browser has no version to send.
+
+One on the client: a development build does not check at all. It has no
+published version to be behind, and a deployment that has not released yet
+answers the endpoint with a 404 — which the updater raises as an error, not as
+"nothing to install", so `npm run desktop` would otherwise sit against the gate
+forever.
+
+The order this imposes is worth saying once more, because getting it wrong locks
+everyone out rather than merely inconveniencing them: publish before anyone
+installs. A copy of a version whose `latest.json` is not on the server yet
+cannot open, and cannot fetch the thing that would fix it.
 
 ### By hand
 
