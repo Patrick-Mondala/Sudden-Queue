@@ -14,7 +14,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: false,
-    include: ["src/**/*.test.jsx"],
+    // .js as well as .jsx: not everything under test renders.
+    include: ["src/**/*.test.jsx", "src/**/*.test.js"],
     restoreMocks: true,
     // Above the testing-library async timeout, so a failing query reports what
     // it could not find instead of the test being cut off first.

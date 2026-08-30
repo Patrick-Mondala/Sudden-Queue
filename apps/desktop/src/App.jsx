@@ -3,6 +3,7 @@ import { Crosshair, Swords, Users, Trophy, User, MessageSquare, Send, X, Check, 
 import { signIn } from "./api/auth.js";
 import { api as server, bus as liveBus, getToken } from "./api/client.js";
 import { checkForUpdate, installUpdate } from "./api/updates.js";
+import { t, tn, errorText, currentLocale, onLocaleChange } from "./i18n/index.js";
 
 /**
  * Pulls the window forward when a match is found.
@@ -79,14 +80,14 @@ const useConfig = () => useContext(ConfigContext);
  * here takes the whole app down with it.
  */
 
-const tierColor = (t) => {
-  if (!t) return "#4E5966";
-  if (t.startsWith("S")) return "#F2A93B";
-  if (t.startsWith("G")) return "#FF5C8A";
-  if (t.startsWith("A")) return "#C77DFF";
-  if (t.startsWith("B")) return "#2FC8BF";
-  if (t.startsWith("C")) return "#5DBE7B";
-  if (t.startsWith("D")) return "#9AA5B1";
+const tierColor = (tier) => {
+  if (!tier) return "#4E5966";
+  if (tier.startsWith("S")) return "#F2A93B";
+  if (tier.startsWith("G")) return "#FF5C8A";
+  if (tier.startsWith("A")) return "#C77DFF";
+  if (tier.startsWith("B")) return "#2FC8BF";
+  if (tier.startsWith("C")) return "#5DBE7B";
+  if (tier.startsWith("D")) return "#9AA5B1";
   return "#7C8794";
 };
 /** Win percentage, or a dash when nobody has played yet. */
@@ -274,7 +275,7 @@ const Avatar = ({ p, size = 32, ring }) => {
 const PlayerName = ({ name, isGameMaster, style, suffix }) => (
   <span style={{ whiteSpace: "nowrap", ...style }}>
     {isGameMaster && (
-      <span style={{ fontFamily: T.display, fontWeight: 800, fontSize: "0.85em", letterSpacing: "0.04em", color: T.captain, marginRight: 5 }}>GM</span>
+      <span style={{ fontFamily: T.display, fontWeight: 800, fontSize: "0.85em", letterSpacing: "0.04em", color: T.captain, marginRight: 5 }}>{t("GM")}</span>
     )}
     {name}
     {suffix}
@@ -384,10 +385,10 @@ function Login({ onSignedIn }) {
         err?.code === "NETWORK"
           ? err.message
           : err?.code === "LOGIN_TIMEOUT"
-          ? "Sign-in timed out. Try again."
+          ? t("Sign-in timed out. Try again.")
           : err?.code === "BANNED"
-          ? "This account is suspended."
-          : err?.message || "Sign-in failed.",
+          ? t("This account is suspended.")
+          : err?.message || t("Sign-in failed."),
       );
     } finally {
       abortRef.current = null;
@@ -410,7 +411,7 @@ function Login({ onSignedIn }) {
           </div>
         </div>
         <Panel pad={20}>
-          <Eyebrow style={{ marginBottom: 12 }}>Sign in</Eyebrow>
+          <Eyebrow style={{ marginBottom: 12 }}>{t("Sign in")}</Eyebrow>
 
           {phase === "waiting" ? (
             <>
@@ -418,10 +419,10 @@ function Login({ onSignedIn }) {
                 <Dot pulse />
                 <div style={{ fontSize: 13, lineHeight: 1.45 }}>
                   <div style={{ fontWeight: 600 }}>Waiting for Discord…</div>
-                  <div style={{ color: T.muted, fontSize: 12 }}>Finish signing in in your browser, then come back.</div>
+                  <div style={{ color: T.muted, fontSize: 12 }}>{t("Finish signing in in your browser, then come back.")}</div>
                 </div>
               </div>
-              <Btn style={{ width: "100%", justifyContent: "center" }} onClick={cancel}>Cancel</Btn>
+              <Btn style={{ width: "100%", justifyContent: "center" }} onClick={cancel}>{t("Cancel")}</Btn>
             </>
           ) : (
             <Btn
@@ -439,7 +440,7 @@ function Login({ onSignedIn }) {
             </div>
           )}
 
-          <div style={{ fontSize: 12, color: T.dim, lineHeight: 1.5 }}>Discord is the only sign-in. Your rank, record and match history follow the account.</div>
+          <div style={{ fontSize: 12, color: T.dim, lineHeight: 1.5 }}>{t("Discord is the only sign-in. Your rank, record and match history follow the account.")}</div>
         </Panel>
       </div>
     </div>
@@ -474,7 +475,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
       await server.joinQueue(regions);
       setQueue({ state: "queued", since: Date.now(), regions });
     } catch (err) {
-      notify(err?.message ?? "Could not join the queue");
+      notify(errorText(err, "Could not join the queue"));
     }
   };
 
@@ -482,7 +483,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
     try {
       await server.leaveQueue();
     } catch (err) {
-      notify(err?.message ?? "Could not leave the queue");
+      notify(errorText(err, "Could not leave the queue"));
     }
     setQueue({ state: "idle" });
   };
@@ -496,9 +497,9 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <AlertTriangle size={15} color={T.captain} />
               <div style={{ flex: 1, fontSize: 12.5, color: T.muted, lineHeight: 1.4 }}>
-                Your team will be looking for your <strong style={{ color: T.text }}>in-game name</strong>, and you have not set one.
+                Your team will be looking for your <strong style={{ color: T.text }}>{t("in-game name")}</strong>, and you have not set one.
               </div>
-              <Btn size="sm" onClick={onSetName}>Set it</Btn>
+              <Btn size="sm" onClick={onSetName}>{t("Set it")}</Btn>
             </div>
           </Panel>
         )}
@@ -509,13 +510,13 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", position: "relative" }}>
             <div>
               <Eyebrow style={{ marginBottom: 6 }}>PUG · {config.teamSize}v{config.teamSize} · rated</Eyebrow>
-              <H size={26}>{queue.state === "queued" ? "Searching" : cooling ? "On cooldown" : "Ready to queue"}</H>
+              <H size={26}>{queue.state === "queued" ? "Searching" : cooling ? "On cooldown" : t("Ready to queue")}</H>
               <div style={{ color: T.muted, fontSize: 13, marginTop: 6 }}>
                 {queue.state === "queued"
                   ? <span>Search radius <span style={{ fontFamily: T.mono, color: T.text }}>±{radius}</span> · widens with time</span>
                   : cooling
                   ? <span>You left a match short. The queue reopens in <span style={{ fontFamily: T.mono, color: T.danger }}>{fmt(coolLeft)}</span></span>
-                  : <span>Pick regions, then queue. Any region you select can pop first.</span>}
+                  : <span>{t("Pick regions, then queue. Any region you select can pop first.")}</span>}
               </div>
             </div>
             <div style={{ textAlign: "right" }}>
@@ -540,7 +541,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
                 size="sm"
                 onClick={onInvite}
                 disabled={party.length >= config.maxPartySize || queue.state === "queued"}
-                title={queue.state === "queued" ? "Leave the queue to change your party" : undefined}
+                title={queue.state === "queued" ? t("Leave the queue to change your party") : undefined}
               >
                 <Plus size={13} /> Invite
               </Btn>
@@ -555,9 +556,9 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
                     <Avatar p={p} size={34} ring={i === 0 ? T.captain : null} />
                     <div style={{ fontSize: 12, fontWeight: 600, maxWidth: "100%", textAlign: "center", whiteSpace: "nowrap" }}><PlayerName name={p.discordName} isGameMaster={p.isGameMaster} /></div>
                     <Rank tier={p.tier} placementsRemaining={p.placementsRemaining} size={11} />
-                    {i > 0 && queue.state !== "queued" && <button onClick={(e) => { e.stopPropagation(); kick(p.id); }} title="Remove" style={{ position: "absolute", top: 4, right: 4, background: "transparent", border: "none", color: T.dim, padding: 2 }}><X size={12} /></button>}
+                    {i > 0 && queue.state !== "queued" && <button onClick={(e) => { e.stopPropagation(); kick(p.id); }} title={t("Remove")} style={{ position: "absolute", top: 4, right: 4, background: "transparent", border: "none", color: T.dim, padding: 2 }}><X size={12} /></button>}
                     {i === 0 && <span style={{ position: "absolute", top: 4, left: 6 }}><Star size={11} color={T.captain} fill={T.captain} /></span>}
-                  </> : <div style={{ color: T.dim, fontSize: 12, margin: "auto" }}>Open slot</div>}
+                  </> : <div style={{ color: T.dim, fontSize: 12, margin: "auto" }}>{t("Open slot")}</div>}
                 </div>
               );
             })}
@@ -566,7 +567,7 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
 
         {/* recent matches */}
         <Panel style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-          <Eyebrow style={{ marginBottom: 10 }}>Recent matches</Eyebrow>
+          <Eyebrow style={{ marginBottom: 10 }}>{t("Recent matches")}</Eyebrow>
           <div style={{ overflow: "auto", flex: 1 }}>
             {history.map((m) => (
               <div key={m.id} className="row-hover" onClick={() => (m.team1 || m.openable) && onViewMatch(m)} style={{ display: "grid", gridTemplateColumns: "60px 60px 1fr 90px 60px", alignItems: "center", gap: 10, padding: "8px 8px", borderRadius: 4, fontSize: 13, cursor: m.team1 || m.openable ? "pointer" : "default" }}>
@@ -592,11 +593,11 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
             </div>
             <div style={{ textAlign: "right" }}>
               <Tier tier={me.tier} size={22} />
-              <div style={{ fontFamily: T.mono, fontSize: 11, color: T.muted }}>{me.tier ? `Rank ${me.tier}` : me.placementsRemaining > 0 ? `${me.placementsRemaining} placement${me.placementsRemaining === 1 ? "" : "s"} left` : "Unranked"}</div>
+              <div style={{ fontFamily: T.mono, fontSize: 11, color: T.muted }}>{me.tier ? `Rank ${me.tier}` : me.placementsRemaining > 0 ? tn("{count} placement left", "{count} placements left", me.placementsRemaining) : t("Unranked")}</div>
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 14 }}>
-            {[["Record", `${me.wins}–${me.losses}`], ["Win rate", winRate(me.wins, me.losses)], ["Disputes", me.disputes]].map(([k, v]) => (
+            {[[t("Record"), `${me.wins}–${me.losses}`], [t("Win rate"), winRate(me.wins, me.losses)], [t("Disputes"), me.disputes]].map(([k, v]) => (
               <div key={k} style={{ background: T.raised, borderRadius: 4, padding: "8px 10px" }}>
                 <Eyebrow style={{ fontSize: 9.5 }}>{k}</Eyebrow>
                 <div style={{ fontFamily: T.mono, fontSize: 15, fontWeight: 600, marginTop: 2 }}>{v}</div>
@@ -605,13 +606,13 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
           </div>
         </Panel>
         <Panel>
-          <Eyebrow style={{ marginBottom: 10 }}>How a PUG works</Eyebrow>
+          <Eyebrow style={{ marginBottom: 10 }}>{t("How a PUG works")}</Eyebrow>
           {[
-            ["Queue", "Solo or with a party of up to 5. Pick every region you're willing to play."],
-            ["Accept", "When 10 players are found you get 20 seconds to accept. Missing it puts you on cooldown."],
-            ["Party up", "The match screen shows both rosters. Add the highlighted captain in-game and join their party."],
-            ["Queue together", "Both captains hit Casual queue on the same countdown. Empty queues mean you land in the same lobby."],
-            ["Report", "Captains report the result. Disagreements go to dispute and are resolved by a mod."],
+            [t("Queue"), t("Solo or with a party of up to {max}. Pick every region you're willing to play.", { max: config.maxPartySize })],
+            [t("Accept"), t("When {n} players are found you get 20 seconds to accept. Missing it puts you on cooldown.", { n: config.matchSize })],
+            [t("Party up"), t("The match screen shows both rosters. Add the highlighted captain in-game and join their party.")],
+            [t("Queue together"), t("Both captains hit Casual queue on the same countdown. Empty queues mean you land in the same lobby.")],
+            [t("Report"), t("Captains report the result. Disagreements go to dispute and are resolved by a mod.")],
           ].map(([k, v]) => (
             <div key={k} style={{ display: "grid", gridTemplateColumns: "84px 1fr", gap: 8, padding: "7px 0", borderTop: `1px solid ${T.line}`, fontSize: 12.5 }}>
               <span style={{ fontWeight: 700 }}>{k}</span><span style={{ color: T.muted, lineHeight: 1.45 }}>{v}</span>
@@ -634,8 +635,8 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
  */
 /** Refusals that are about the team rather than the request. */
 const SCRIM_BLOCKERS = {
-  CAPTAIN_OFFLINE: "Your captain is offline",
-  NOT_ENOUGH_ONLINE: "Not enough of your team is online",
+  CAPTAIN_OFFLINE: t("Your captain is offline"),
+  NOT_ENOUGH_ONLINE: t("Not enough of your team is online"),
 };
 
 function ScrimsScreen({ notify }) {
@@ -653,7 +654,7 @@ function ScrimsScreen({ notify }) {
       setState(board);
       setMyTeam(mine);
     } catch (err) {
-      notify(err?.message ?? "Could not load scrims");
+      notify(errorText(err, "Could not load scrims"));
       setState({ listings: [], myListing: null, incoming: [] });
       setMyTeam({ team: null, role: null });
     }
@@ -679,7 +680,7 @@ function ScrimsScreen({ notify }) {
       // toast.
       const title = SCRIM_BLOCKERS[err?.code];
       if (title) setBlocked({ title, message: err.message });
-      else notify(err?.message ?? "That did not work");
+      else notify(errorText(err, "That did not work"));
     } finally {
       setBusy(false);
     }
@@ -692,8 +693,8 @@ function ScrimsScreen({ notify }) {
   if (!myTeam.team) {
     return (
       <ComingSoon
-        eyebrow="Scrims"
-        title="Scrims are for teams"
+        eyebrow={t("Scrims")}
+        title={t("Scrims are for teams")}
         body="Register a team or join one, and its captain and officers can list it here for practice matches — unrated, but the same accept and report flow as a PUG."
       />
     );
@@ -712,7 +713,7 @@ function ScrimsScreen({ notify }) {
 
       <Panel pad={0} style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderBottom: `1px solid ${T.line}` }}>
-          <Eyebrow style={{ flex: 1 }}>Teams looking to scrim</Eyebrow>
+          <Eyebrow style={{ flex: 1 }}>{t("Teams looking to scrim")}</Eyebrow>
           <RegionPicker value={regions} onChange={setRegions} />
         </div>
 
@@ -739,7 +740,7 @@ function ScrimsScreen({ notify }) {
                     size="sm"
                     kind="primary"
                     disabled={busy || !canManage || tooSmall}
-                    title={!canManage ? "Only the captain and officers arrange scrims" : tooSmall ? "You need five players" : undefined}
+                    title={!canManage ? t("Only the captain and officers arrange scrims") : tooSmall ? t("You need five players") : undefined}
                     onClick={() => act(() => server.requestScrim(l.id), `Asked ${l.name} for a scrim`)}
                     style={{ minWidth: 92, justifyContent: "center" }}
                   >
@@ -754,7 +755,7 @@ function ScrimsScreen({ notify }) {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
         <Panel>
-          <Eyebrow style={{ marginBottom: 10 }}>Your listing</Eyebrow>
+          <Eyebrow style={{ marginBottom: 10 }}>{t("Your listing")}</Eyebrow>
           {!canManage ? (
             <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>
               Only the captain and officers can list {myTeam.team.name} for scrims.
@@ -769,7 +770,7 @@ function ScrimsScreen({ notify }) {
                 Listed in {state.myListing.region.toUpperCase()}
                 {state.myListing.note ? ` — ${state.myListing.note}` : ""}.
               </div>
-              <Btn kind="danger" style={{ width: "100%", justifyContent: "center" }} disabled={busy} onClick={() => act(() => server.removeListing(), "Listing removed")}>
+              <Btn kind="danger" style={{ width: "100%", justifyContent: "center" }} disabled={busy} onClick={() => act(() => server.removeListing(), t("Listing removed"))}>
                 Remove listing
               </Btn>
             </>
@@ -779,8 +780,8 @@ function ScrimsScreen({ notify }) {
               <input
                 value={note}
                 onChange={(e) => setNote(e.target.value.slice(0, 200))}
-                placeholder="Note — format, times, voice"
-                aria-label="Listing note"
+                placeholder={t("Note — format, times, voice")}
+                aria-label={t("Listing note")}
                 style={{ background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13 }}
               />
               <Btn
@@ -790,7 +791,7 @@ function ScrimsScreen({ notify }) {
                 onClick={() => act(async () => {
                   await server.postListing(postRegion[0], note.trim() || null);
                   setNote("");
-                }, "Your team is listed")}
+                }, t("Your team is listed"))}
               >
                 Post to scrim list
               </Btn>
@@ -859,7 +860,7 @@ function TeamsScreen({ me, notify, onView }) {
       setState(mine);
       setDirectory(list.teams ?? []);
     } catch (err) {
-      notify(err?.message ?? "Could not load teams");
+      notify(errorText(err, "Could not load teams"));
       setState({ team: null, role: null, applications: [], myApplication: null });
       setDirectory([]);
     }
@@ -883,7 +884,7 @@ function TeamsScreen({ me, notify, onView }) {
       await load();
       if (after) notify(after);
     } catch (err) {
-      notify(err?.message ?? "That did not work");
+      notify(errorText(err, "That did not work"));
     } finally {
       setBusy(false);
     }
@@ -897,7 +898,7 @@ function TeamsScreen({ me, notify, onView }) {
     <MyTeamPanel me={me} state={state} busy={busy} act={act} onView={onView} />
   ) : (
     <TeamDirectory
-      teams={(directory ?? []).filter((t) => regions.includes(t.region))}
+      teams={(directory ?? []).filter((team) => regions.includes(team.region))}
       regions={regions}
       setRegions={setRegions}
       myApplication={state.myApplication}
@@ -933,15 +934,15 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
             </Btn>
           )}
           {!isCaptain && (
-            <Btn size="sm" disabled={busy} onClick={() => act(() => server.leaveTeam(), "You left the team")}>Leave</Btn>
+            <Btn size="sm" disabled={busy} onClick={() => act(() => server.leaveTeam(), "You left the team")}>{t("Leave")}</Btn>
           )}
           {isCaptain && !confirmDisband && (
-            <Btn size="sm" kind="danger" disabled={busy} onClick={() => setConfirmDisband(true)}>Disband</Btn>
+            <Btn size="sm" kind="danger" disabled={busy} onClick={() => setConfirmDisband(true)}>{t("Disband")}</Btn>
           )}
           {isCaptain && confirmDisband && (
             <div style={{ display: "flex", gap: 6 }}>
-              <Btn size="sm" kind="danger" disabled={busy} onClick={() => act(() => server.disbandTeam(), `${team.name} disbanded`)}>Confirm</Btn>
-              <Btn size="sm" disabled={busy} onClick={() => setConfirmDisband(false)}>Cancel</Btn>
+              <Btn size="sm" kind="danger" disabled={busy} onClick={() => act(() => server.disbandTeam(), `${team.name} disbanded`)}>{t("Confirm")}</Btn>
+              <Btn size="sm" disabled={busy} onClick={() => setConfirmDisband(false)}>{t("Cancel")}</Btn>
             </div>
           )}
         </div>
@@ -972,12 +973,12 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
                       <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{m.inGameName ?? m.discordName}</div>
                     </div>
                   </div>
-                  <Tag color={m.isStarter ? T.ok : T.dim}>{m.isStarter ? "Starter" : "Sub"}</Tag>
+                  <Tag color={m.isStarter ? T.ok : T.dim}>{m.isStarter ? t("Starter") : t("Sub")}</Tag>
                   <Tag color={m.role === "captain" ? T.captain : m.role === "officer" ? T.accent : T.muted}>{m.role}</Tag>
                   <Rank tier={m.tier} placementsRemaining={m.placementsRemaining} size={11} />
                   {isCaptain && (
                     <button
-                      title={m.isStarter ? "Move to the bench" : "Move into the starting five"}
+                      title={m.isStarter ? t("Move to the bench") : t("Move into the starting five")}
                       disabled={busy}
                       onClick={() => act(() => server.setStarter(m.userId, !m.isStarter))}
                       style={{ width: 26, height: 26, display: "grid", placeItems: "center", background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, color: m.isStarter ? T.ok : T.dim, flexShrink: 0 }}
@@ -987,7 +988,7 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
                   )}
                   {isCaptain && m.userId !== me.id && (
                     <button
-                      title={m.role === "officer" ? "Demote to member" : "Make officer"}
+                      title={m.role === "officer" ? t("Demote to member") : t("Make officer")}
                       disabled={busy}
                       onClick={() => act(() => server.setTeamRole(m.userId, m.role === "officer" ? "member" : "officer"))}
                       style={{ width: 26, height: 26, display: "grid", placeItems: "center", background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, color: m.role === "officer" ? T.accent : T.muted, flexShrink: 0 }}
@@ -997,7 +998,7 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
                   )}
                   {isCaptain && m.userId !== me.id && (
                     <button
-                      title="Hand over the team"
+                      title={t("Hand over the team")}
                       disabled={busy}
                       onClick={() => act(() => server.transferCaptaincy(m.userId), `${m.discordName} now captains ${team.name}`)}
                       style={{ width: 26, height: 26, display: "grid", placeItems: "center", background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, color: T.captain, flexShrink: 0 }}
@@ -1007,7 +1008,7 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
                   )}
                   {canManage && m.userId !== me.id && m.role !== "captain" && (
                     <button
-                      title="Remove from team"
+                      title={t("Remove from team")}
                       disabled={busy}
                       onClick={() => act(() => server.removeTeamMember(m.userId), `${m.discordName} removed`)}
                       style={{ width: 26, height: 26, display: "grid", placeItems: "center", background: T.dangerDim, border: `1px solid ${T.danger}`, borderRadius: 4, color: T.danger, flexShrink: 0 }}
@@ -1018,10 +1019,10 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
                 </div>
               ))
             : !canManage ? (
-              <div style={{ color: T.muted, fontSize: 12.5, padding: 20, textAlign: "center" }}>Only the captain and officers review applications.</div>
+              <div style={{ color: T.muted, fontSize: 12.5, padding: 20, textAlign: "center" }}>{t("Only the captain and officers review applications.")}</div>
             ) : state.applications.length === 0 ? (
               <div style={{ color: T.dim, fontSize: 12.5, padding: 20, textAlign: "center", lineHeight: 1.5 }}>
-                {team.applicationsOpen ? "Nobody has applied yet." : "Applications are closed."}
+                {team.applicationsOpen ? t("Nobody has applied yet.") : t("Applications are closed.")}
               </div>
             ) : (
               state.applications.map((a) => (
@@ -1033,8 +1034,8 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
                       <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{a.inGameName ?? a.discordName}</div>
                     </div>
                     <Rank tier={a.tier} placementsRemaining={a.placementsRemaining} size={11} />
-                    <Btn size="sm" kind="primary" disabled={busy} onClick={() => act(() => server.decideApplication(a.id, true), `${a.discordName} joined ${team.name}`)}>Accept</Btn>
-                    <Btn size="sm" disabled={busy} onClick={() => act(() => server.decideApplication(a.id, false), "Application denied")}>Deny</Btn>
+                    <Btn size="sm" kind="primary" disabled={busy} onClick={() => act(() => server.decideApplication(a.id, true), `${a.discordName} joined ${team.name}`)}>{t("Accept")}</Btn>
+                    <Btn size="sm" disabled={busy} onClick={() => act(() => server.decideApplication(a.id, false), "Application denied")}>{t("Deny")}</Btn>
                   </div>
                   {a.note && <div style={{ fontSize: 12, color: T.muted, lineHeight: 1.45, paddingLeft: 38 }}>{a.note}</div>}
                 </div>
@@ -1057,7 +1058,7 @@ function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act })
     <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: 16, height: "100%", minHeight: 0 }}>
       <Panel pad={0} style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderBottom: `1px solid ${T.line}` }}>
-          <Eyebrow style={{ flex: 1 }}>Teams</Eyebrow>
+          <Eyebrow style={{ flex: 1 }}>{t("Teams")}</Eyebrow>
           <RegionPicker value={regions} onChange={setRegions} />
         </div>
 
@@ -1067,26 +1068,26 @@ function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act })
               No teams in these regions yet. Register the first one.
             </div>
           ) : (
-            teams.map((t) => (
-              <div key={t.id} className="row-hover" style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 8px", borderRadius: 4 }}>
-                <div style={{ width: 32, height: 32, borderRadius: 4, background: T.raised, display: "grid", placeItems: "center", fontFamily: T.mono, fontSize: 10.5, color: T.muted, border: `1px solid ${T.line2}`, flexShrink: 0 }}>{t.tag}</div>
+            teams.map((team) => (
+              <div key={team.id} className="row-hover" style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 8px", borderRadius: 4 }}>
+                <div style={{ width: 32, height: 32, borderRadius: 4, background: T.raised, display: "grid", placeItems: "center", fontFamily: T.mono, fontSize: 10.5, color: T.muted, border: `1px solid ${T.line2}`, flexShrink: 0 }}>{team.tag}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>{t.name}</div>
-                  <div style={{ fontSize: 11, color: T.muted, whiteSpace: "nowrap" }}>{t.region.toUpperCase()} · {t.memberCount} player{t.memberCount === 1 ? "" : "s"}</div>
+                  <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>{team.name}</div>
+                  <div style={{ fontSize: 11, color: T.muted, whiteSpace: "nowrap" }}>{team.region.toUpperCase()} · {tn("{count} player", "{count} players", team.memberCount)}</div>
                 </div>
-                <Tier tier={t.tier} size={12} />
-                <Tag color={t.applicationsOpen ? T.ok : T.dim}>{t.applicationsOpen ? "Open" : "Closed"}</Tag>
-                {myApplication?.teamId === t.id ? (
+                <Tier tier={team.tier} size={12} />
+                <Tag color={team.applicationsOpen ? T.ok : T.dim}>{team.applicationsOpen ? t("Open") : t("Closed")}</Tag>
+                {myApplication?.teamId === team.id ? (
                   <Btn size="sm" disabled={busy} onClick={() => act(() => server.withdrawApplication(), "Application withdrawn")} style={{ minWidth: 88, justifyContent: "center" }}>
                     <Dot pulse /> Withdraw
                   </Btn>
                 ) : (
                   <Btn
                     size="sm"
-                    kind={t.applicationsOpen ? "primary" : "ghost"}
-                    disabled={busy || !t.applicationsOpen || !!myApplication || t.memberCount >= 10}
-                    title={myApplication ? "Withdraw your other application first" : undefined}
-                    onClick={() => act(() => server.applyToTeam(t.id, null), `Applied to ${t.name}`)}
+                    kind={team.applicationsOpen ? "primary" : "ghost"}
+                    disabled={busy || !team.applicationsOpen || !!myApplication || team.memberCount >= 10}
+                    title={myApplication ? t("Withdraw your other application first") : undefined}
+                    onClick={() => act(() => server.applyToTeam(team.id, null), `Applied to ${team.name}`)}
                     style={{ minWidth: 88, justifyContent: "center" }}
                   >
                     Apply
@@ -1100,7 +1101,7 @@ function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act })
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
         <Panel>
-          <Eyebrow style={{ marginBottom: 10 }}>Start a team</Eyebrow>
+          <Eyebrow style={{ marginBottom: 10 }}>{t("Start a team")}</Eyebrow>
           {!creating ? (
             <>
               <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5, marginBottom: 12 }}>
@@ -1112,8 +1113,8 @@ function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act })
             </>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <input value={tag} onChange={(e) => setTag(e.target.value.toUpperCase().slice(0, 4))} placeholder="Tag (max 4)" aria-label="Team tag" style={{ background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13, fontFamily: T.mono }} />
-              <input value={name} onChange={(e) => setName(e.target.value.slice(0, 24))} placeholder="Team name" aria-label="Team name" style={{ background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13 }} />
+              <input value={tag} onChange={(e) => setTag(e.target.value.toUpperCase().slice(0, 4))} placeholder={t("Tag (max 4)")} aria-label={t("Team tag")} style={{ background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13, fontFamily: T.mono }} />
+              <input value={name} onChange={(e) => setName(e.target.value.slice(0, 24))} placeholder={t("Team name")} aria-label={t("Team name")} style={{ background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13 }} />
               <RegionPicker value={region} onChange={(v) => setRegion(v.slice(-1))} multi={false} />
               <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                 <Btn
@@ -1126,19 +1127,19 @@ function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act })
                       setCreating(false);
                       setTag("");
                       setName("");
-                    }, "Team registered")
+                    }, t("Team registered"))
                   }
                 >
                   Register
                 </Btn>
-                <Btn onClick={() => setCreating(false)}>Cancel</Btn>
+                <Btn onClick={() => setCreating(false)}>{t("Cancel")}</Btn>
               </div>
             </div>
           )}
         </Panel>
 
         <Panel>
-          <Eyebrow style={{ marginBottom: 8 }}>How teams work</Eyebrow>
+          <Eyebrow style={{ marginBottom: 8 }}>{t("How teams work")}</Eyebrow>
           <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.55 }}>
             One team per player. Any number of officers. Captains and officers review applications
             and manage the roster. You can only have one application out at a time.
@@ -1224,7 +1225,7 @@ function PlayersPanel({ me, notify }) {
       const res = await server.suspensions();
       setSuspended(res.users ?? []);
     } catch (err) {
-      notify(err?.message ?? "Could not load suspensions");
+      notify(errorText(err, "Could not load suspensions"));
     }
   }, [notify]);
 
@@ -1242,7 +1243,7 @@ function PlayersPanel({ me, notify }) {
         const res = await server.findPlayers(q);
         if (!cancelled) setResults(res.users ?? []);
       } catch (err) {
-        if (!cancelled) notify(err?.message ?? "Search failed");
+        if (!cancelled) notify(errorText(err, "Search failed"));
       }
     }, 250);
 
@@ -1292,7 +1293,7 @@ function PlayersPanel({ me, notify }) {
       setReason("");
       await refresh(target.userId);
     } catch (err) {
-      notify(err?.message ?? "Could not suspend");
+      notify(errorText(err, "Could not suspend"));
     } finally {
       setBusy(false);
     }
@@ -1307,7 +1308,7 @@ function PlayersPanel({ me, notify }) {
       setReason("");
       await refresh(target.userId);
     } catch (err) {
-      notify(err?.message ?? "Could not reinstate");
+      notify(errorText(err, "Could not reinstate"));
     } finally {
       setBusy(false);
     }
@@ -1338,12 +1339,12 @@ function PlayersPanel({ me, notify }) {
     <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 16, height: "100%", minHeight: 0 }}>
       <Panel pad={0} style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
         <div style={{ padding: "14px 16px", borderBottom: `1px solid ${T.line}` }}>
-          <Eyebrow>{results ? "Search" : "Currently suspended"}</Eyebrow>
+          <Eyebrow>{results ? t("Search") : t("Currently suspended")}</Eyebrow>
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Discord name, in-game name, or Discord ID"
-            aria-label="Find a player"
+            placeholder={t("Discord name, in-game name, or Discord ID")}
+            aria-label={t("Find a player")}
             style={{ width: "100%", boxSizing: "border-box", marginTop: 8, background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 12.5 }}
           />
         </div>
@@ -1351,7 +1352,7 @@ function PlayersPanel({ me, notify }) {
         <div style={{ flex: 1, overflow: "auto", padding: 8 }}>
           {listed.length === 0 ? (
             <div style={{ color: T.dim, fontSize: 12.5, padding: 20, textAlign: "center", lineHeight: 1.5 }}>
-              {results ? "Nobody by that name." : "Nobody is suspended."}
+              {results ? t("Nobody by that name.") : t("Nobody is suspended.")}
             </div>
           ) : listed.map(row)}
         </div>
@@ -1386,12 +1387,12 @@ function PlayersPanel({ me, notify }) {
             )}
 
             <div style={{ marginTop: 16 }}>
-              <Eyebrow style={{ marginBottom: 8 }}>{serving ? "Note (optional)" : "Reason"}</Eyebrow>
+              <Eyebrow style={{ marginBottom: 8 }}>{serving ? t("Note (optional)") : t("Reason")}</Eyebrow>
               <input
                 value={reason}
                 onChange={(e) => setReason(e.target.value.slice(0, 500))}
-                placeholder={serving ? "Why it is being lifted" : "What they did — they are shown this"}
-                aria-label={serving ? "Note" : "Reason"}
+                placeholder={serving ? t("Why it is being lifted") : t("What they did — they are shown this")}
+                aria-label={serving ? t("Note") : t("Reason")}
                 style={{ width: "100%", boxSizing: "border-box", background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13 }}
               />
             </div>
@@ -1422,7 +1423,7 @@ function PlayersPanel({ me, notify }) {
                   Suspend
                 </Btn>
                 {target.userId === me.id && (
-                  <div style={{ fontSize: 11.5, color: T.dim, marginTop: 8 }}>You cannot suspend yourself.</div>
+                  <div style={{ fontSize: 11.5, color: T.dim, marginTop: 8 }}>{t("You cannot suspend yourself.")}</div>
                 )}
               </>
             )}
@@ -1430,7 +1431,7 @@ function PlayersPanel({ me, notify }) {
 
           <Panel pad={0} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
             <div style={{ padding: "12px 16px", borderBottom: `1px solid ${T.line}` }}>
-              <Eyebrow>Record</Eyebrow>
+              <Eyebrow>{t("Record")}</Eyebrow>
             </div>
             <div style={{ flex: 1, overflow: "auto", padding: 8 }}>
               {history.length === 0 ? (
@@ -1474,7 +1475,7 @@ function ModerationScreen({ me, notify, onView }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12, height: "100%", minHeight: 0 }}>
       <div style={{ display: "flex", gap: 6 }}>
-        {[["disputes", "Disputes"], ["players", "Players"]].map(([id, label]) => (
+        {[["disputes", "Disputes"], ["players", t("Players")]].map(([id, label]) => (
           <button
             key={id}
             onClick={() => setTab(id)}
@@ -1505,7 +1506,7 @@ function DisputesScreen({ me, notify, onView }) {
     try {
       setDisputes(await server.disputes());
     } catch (err) {
-      notify(err?.message ?? "Could not load disputes");
+      notify(errorText(err, "Could not load disputes"));
       setDisputes([]);
     }
   }, [notify]);
@@ -1521,7 +1522,7 @@ function DisputesScreen({ me, notify, onView }) {
     server
       .getMatch(openId)
       .then((m) => { if (!cancelled) setDetail(adaptMatch(m)); })
-      .catch((err) => { if (!cancelled) notify(err?.message ?? "Could not load that match"); });
+      .catch((err) => { if (!cancelled) notify(errorText(err, "Could not load that match")); });
 
     return () => { cancelled = true; };
   }, [openId, notify]);
@@ -1533,13 +1534,13 @@ function DisputesScreen({ me, notify, onView }) {
     setBusy(true);
     try {
       await server.resolveDispute(openId, winner, note.trim());
-      notify(`Ruled for ${winner === "TEAM1" ? "Team 1" : "Team 2"}`);
+      notify(`Ruled for ${winner === "TEAM1" ? "Team 1" : t("Team 2")}`);
       setOpenId(null);
       setWinner(null);
       setNote("");
       await load();
     } catch (err) {
-      notify(err?.message ?? "Could not record that ruling");
+      notify(errorText(err, "Could not record that ruling"));
     } finally {
       setBusy(false);
     }
@@ -1553,9 +1554,9 @@ function DisputesScreen({ me, notify, onView }) {
     <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 16, height: "100%", minHeight: 0 }}>
       <Panel pad={0} style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
         <div style={{ padding: "14px 16px", borderBottom: `1px solid ${T.line}` }}>
-          <Eyebrow>Open disputes</Eyebrow>
+          <Eyebrow>{t("Open disputes")}</Eyebrow>
           <div style={{ fontSize: 11.5, color: T.muted, marginTop: 4 }}>
-            {disputes.length === 0 ? "Nothing waiting" : `${disputes.length} waiting`}
+            {disputes.length === 0 ? t("Nothing waiting") : `${disputes.length} waiting`}
           </div>
         </div>
 
@@ -1592,7 +1593,7 @@ function DisputesScreen({ me, notify, onView }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
           <Panel pad={20}>
             <Eyebrow style={{ marginBottom: 6 }}>{open.type} · {open.region.toUpperCase()} · played {ago(Date.parse(open.playedAt))}</Eyebrow>
-            <H size={22}>Two captains disagree</H>
+            <H size={22}>{t("Two captains disagree")}</H>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 16 }}>
               {[1, 2].map((team) => {
                 const claim = open.reports.find((r) => r.reportingTeam === team);
@@ -1616,20 +1617,20 @@ function DisputesScreen({ me, notify, onView }) {
 
           {detail && (
             <Panel pad={20} style={{ flexShrink: 0, maxHeight: "40%", overflow: "auto" }}>
-              <Roster team={detail.team1} captainId={detail.captain1} me={me} side={1} label="Team 1" phase="completed" onView={onView} tier={detail.team1Tier} />
+              <Roster team={detail.team1} captainId={detail.captain1} me={me} side={1} label={t("Team 1")} phase="completed" onView={onView} tier={detail.team1Tier} />
               <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "18px 0" }}>
                 <div style={{ flex: 1, height: 1, background: T.line }} />
-                <span style={{ fontFamily: T.display, fontWeight: 800, fontSize: 16, color: T.dim, letterSpacing: "0.1em" }}>VS</span>
+                <span style={{ fontFamily: T.display, fontWeight: 800, fontSize: 16, color: T.dim, letterSpacing: "0.1em" }}>{t("VS")}</span>
                 <div style={{ flex: 1, height: 1, background: T.line }} />
               </div>
-              <Roster team={detail.team2} captainId={detail.captain2} me={me} side={2} label="Team 2" phase="completed" onView={onView} tier={detail.team2Tier} />
+              <Roster team={detail.team2} captainId={detail.captain2} me={me} side={2} label={t("Team 2")} phase="completed" onView={onView} tier={detail.team2Tier} />
             </Panel>
           )}
 
           <Panel pad={20}>
-            <Eyebrow style={{ marginBottom: 10 }}>Ruling</Eyebrow>
+            <Eyebrow style={{ marginBottom: 10 }}>{t("Ruling")}</Eyebrow>
             <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
-              {[["TEAM1", "Team 1 won"], ["TEAM2", "Team 2 won"]].map(([value, label]) => (
+              {[["TEAM1", "Team 1 won"], ["TEAM2", t("Team 2 won")]].map(([value, label]) => (
                 <Btn
                   key={value}
                   kind={winner === value ? "primary" : "ghost"}
@@ -1643,8 +1644,8 @@ function DisputesScreen({ me, notify, onView }) {
             <textarea
               value={note}
               onChange={(e) => setNote(e.target.value.slice(0, 500))}
-              placeholder="What decided it — screenshots, who admitted what, anything the next GM should know"
-              aria-label="Ruling note"
+              placeholder={t("What decided it — screenshots, who admitted what, anything the next GM should know")}
+              aria-label={t("Ruling note")}
               rows={3}
               style={{ width: "100%", background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13, fontFamily: T.body, resize: "none", boxSizing: "border-box" }}
             />
@@ -1652,7 +1653,7 @@ function DisputesScreen({ me, notify, onView }) {
               kind="primary"
               style={{ width: "100%", justifyContent: "center", marginTop: 10 }}
               disabled={busy || !winner || note.trim().length === 0}
-              title={!winner ? "Pick a winner" : note.trim().length === 0 ? "A ruling needs a reason" : undefined}
+              title={!winner ? t("Pick a winner") : note.trim().length === 0 ? t("A ruling needs a reason") : undefined}
               onClick={rule}
             >
               Settle this match
@@ -1676,7 +1677,7 @@ function LadderScreen({ me, onView, notify }) {
       .then((res) => { if (!cancelled) setState(res); })
       .catch((err) => {
         if (cancelled) return;
-        notify(err?.message ?? "Could not load the ladder");
+        notify(errorText(err, "Could not load the ladder"));
         setState({ rows: [], total: 0, myPosition: null });
       });
 
@@ -1692,9 +1693,9 @@ function LadderScreen({ me, onView, notify }) {
   return (
     <Panel pad={0} style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 12, padding: "14px 16px", borderBottom: `1px solid ${T.line}` }}>
-        <Eyebrow style={{ flex: 1 }}>Ladder</Eyebrow>
+        <Eyebrow style={{ flex: 1 }}>{t("Ladder")}</Eyebrow>
         <span style={{ fontSize: 11.5, color: T.muted }}>
-          {state.total} placed player{state.total === 1 ? "" : "s"}
+          {tn("{count} placed player", "{count} placed players", state.total)}
           {state.myPosition ? ` · you are #${state.myPosition}` : ""}
         </span>
       </div>
@@ -1737,11 +1738,11 @@ function LadderScreen({ me, onView, notify }) {
 
       {state.total > LADDER_PAGE && (
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", borderTop: `1px solid ${T.line}` }}>
-          <Btn size="sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - LADDER_PAGE))}>Previous</Btn>
+          <Btn size="sm" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - LADDER_PAGE))}>{t("Previous")}</Btn>
           <span style={{ flex: 1, textAlign: "center", fontFamily: T.mono, fontSize: 11.5, color: T.muted }}>
             {offset + 1}–{pageEnd} of {state.total}
           </span>
-          <Btn size="sm" disabled={pageEnd >= state.total} onClick={() => setOffset(offset + LADDER_PAGE)}>Next</Btn>
+          <Btn size="sm" disabled={pageEnd >= state.total} onClick={() => setOffset(offset + LADDER_PAGE)}>{t("Next")}</Btn>
         </div>
       )}
     </Panel>
@@ -1766,7 +1767,7 @@ function UpdateBar({ update, onDone, notify }) {
       // Normally never returns -- the relaunch replaces this process.
       await installUpdate(update, setProgress);
     } catch (err) {
-      notify?.(err?.message ?? "The update could not be installed");
+      notify?.(errorText(err, "The update could not be installed"));
       setInstalling(false);
       setProgress(null);
     }
@@ -1784,8 +1785,8 @@ function UpdateBar({ update, onDone, notify }) {
       </span>
       {!installing && (
         <>
-          <Btn size="sm" kind="primary" onClick={run}>Update and restart</Btn>
-          <Btn size="sm" kind="quiet" onClick={onDone}>Later</Btn>
+          <Btn size="sm" kind="primary" onClick={run}>{t("Update and restart")}</Btn>
+          <Btn size="sm" kind="quiet" onClick={onDone}>{t("Later")}</Btn>
         </>
       )}
       <div style={{ flex: 1 }} />
@@ -1817,7 +1818,7 @@ function NamePrompt({ onSaved, onLater, notify }) {
       await server.setInGameName(trimmed);
       await onSaved?.();
     } catch (err) {
-      notify?.(err?.message ?? "Could not save that name");
+      notify?.(errorText(err, "Could not save that name"));
     } finally {
       setBusy(false);
     }
@@ -1825,10 +1826,10 @@ function NamePrompt({ onSaved, onLater, notify }) {
 
   return (
     <div style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 76, animation: "sqIn .2s ease" }}>
-      <div role="dialog" aria-label="Set your in-game name" style={{ width: 400, maxWidth: "90vw" }}>
+      <div role="dialog" aria-label={t("Set your in-game name")} style={{ width: 400, maxWidth: "90vw" }}>
         <Panel pad={20}>
-          <Eyebrow style={{ marginBottom: 6 }}>One thing first</Eyebrow>
-          <H size={21}>What are you called in-game?</H>
+          <Eyebrow style={{ marginBottom: 6 }}>{t("One thing first")}</Eyebrow>
+          <H size={21}>{t("What are you called in-game?")}</H>
           <div style={{ fontSize: 13, color: T.muted, marginTop: 8, lineHeight: 1.5 }}>
             This is the name your team looks for once a match starts. It is not
             checked against the game, so type it exactly as it appears there.
@@ -1839,14 +1840,14 @@ function NamePrompt({ onSaved, onLater, notify }) {
             value={draft}
             onChange={(e) => setDraft(e.target.value.slice(0, IGN_MAX))}
             onKeyDown={(e) => { if (e.key === "Enter") save(); }}
-            aria-label="In-game name"
+            aria-label={t("In-game name")}
             placeholder={`Your name in ${config.gameName}`}
             style={{ width: "100%", boxSizing: "border-box", marginTop: 16, background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "9px 11px", color: T.text, fontFamily: T.mono, fontSize: 13.5 }}
           />
 
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14 }}>
-            <Btn kind="primary" disabled={!valid || busy} onClick={save} style={{ flex: 1, justifyContent: "center" }}>Save it</Btn>
-            <Btn kind="quiet" disabled={busy} onClick={onLater}>Later</Btn>
+            <Btn kind="primary" disabled={!valid || busy} onClick={save} style={{ flex: 1, justifyContent: "center" }}>{t("Save it")}</Btn>
+            <Btn kind="quiet" disabled={busy} onClick={onLater}>{t("Later")}</Btn>
           </div>
           <div style={{ fontSize: 11.5, color: T.dim, marginTop: 8 }}>
             {IGN_MIN}–{IGN_MAX} characters. You can change it any time on your profile.
@@ -1884,7 +1885,7 @@ function InGameNameField({ value, onSaved, notify }) {
       await onSaved?.();
       setEditing(false);
     } catch (err) {
-      notify?.(err?.message ?? "Could not save that name");
+      notify?.(errorText(err, "Could not save that name"));
     } finally {
       setBusy(false);
     }
@@ -1894,14 +1895,14 @@ function InGameNameField({ value, onSaved, notify }) {
     return (
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
         <span style={{ fontFamily: T.mono, fontSize: 12, color: value ? T.muted : T.captain }}>
-          {value ?? "No in-game name set"}
+          {value ?? t("No in-game name set")}
         </span>
         <button
           onClick={() => setEditing(true)}
-          aria-label="Change your in-game name"
+          aria-label={t("Change your in-game name")}
           style={{ background: "transparent", border: "none", color: T.accent, fontSize: 11.5, fontWeight: 600, padding: "2px 4px" }}
         >
-          {value ? "Change" : "Set it"}
+          {value ? t("Change") : t("Set it")}
         </button>
       </div>
     );
@@ -1917,12 +1918,12 @@ function InGameNameField({ value, onSaved, notify }) {
           if (e.key === "Enter") save();
           if (e.key === "Escape") { setDraft(value ?? ""); setEditing(false); }
         }}
-        aria-label="In-game name"
+        aria-label={t("In-game name")}
         placeholder={`Your name in ${config.gameName}`}
         style={{ background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "6px 9px", color: T.text, fontFamily: T.mono, fontSize: 12.5, width: 190 }}
       />
-      <Btn size="sm" kind="primary" disabled={!valid || busy} onClick={save}>Save</Btn>
-      <Btn size="sm" kind="quiet" disabled={busy} onClick={() => { setDraft(value ?? ""); setEditing(false); }}>Cancel</Btn>
+      <Btn size="sm" kind="primary" disabled={!valid || busy} onClick={save}>{t("Save")}</Btn>
+      <Btn size="sm" kind="quiet" disabled={busy} onClick={() => { setDraft(value ?? ""); setEditing(false); }}>{t("Cancel")}</Btn>
       {!valid && draft.length > 0 && (
         <span style={{ fontSize: 11, color: T.dim }}>{IGN_MIN}–{IGN_MAX} characters</span>
       )}
@@ -1968,7 +1969,7 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
             <Avatar p={view} size={64} />
             <div style={{ flex: 1 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}><H size={26}><PlayerName name={view.discordName ?? "Player"} isGameMaster={view.isGameMaster} /></H>{isMe && <Tag color={T.accent}>You</Tag>}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}><H size={26}><PlayerName name={view.discordName ?? t("Player")} isGameMaster={view.isGameMaster} /></H>{isMe && <Tag color={T.accent}>{t("You")}</Tag>}</div>
               {isMe ? (
                 <InGameNameField value={view.inGameName ?? null} onSaved={onSaved} notify={notify} />
               ) : (
@@ -1983,13 +1984,13 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginTop: 20 }}>
-            {[["Rank", view.tier ?? (view.placementsRemaining > 0 ? `${view.placementsRemaining} to go` : "—")], ["Peak", view.peakTier ?? "—"], ["Matches", view.gamesPlayed ?? total], ["Record", `${view.wins ?? 0}–${view.losses ?? 0}`], ["Win rate", winRate(view.wins ?? 0, view.losses ?? 0)]].map(([k, v]) => (
+            {[[t("Rank"), view.tier ?? (view.placementsRemaining > 0 ? `${view.placementsRemaining} to go` : "—")], [t("Peak"), view.peakTier ?? "—"], [t("Matches"), view.gamesPlayed ?? total], [t("Record"), `${view.wins ?? 0}–${view.losses ?? 0}`], [t("Win rate"), winRate(view.wins ?? 0, view.losses ?? 0)]].map(([k, v]) => (
               <div key={k} style={{ background: T.raised, borderRadius: 4, padding: "10px 12px" }}><Eyebrow style={{ fontSize: 9.5 }}>{k}</Eyebrow><div style={{ fontFamily: T.mono, fontSize: 18, fontWeight: 600, marginTop: 4 }}>{v}</div></div>
             ))}
           </div>
         </Panel>
         <Panel style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-          <Eyebrow style={{ marginBottom: 10 }}>Match history</Eyebrow>
+          <Eyebrow style={{ marginBottom: 10 }}>{t("Match history")}</Eyebrow>
           {!isMe && (
             <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>
               Another player's match history isn't available yet.
@@ -2008,9 +2009,9 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <Panel>
-          <Eyebrow style={{ marginBottom: 8 }}>Reliability</Eyebrow>
+          <Eyebrow style={{ marginBottom: 8 }}>{t("Reliability")}</Eyebrow>
           {full ? (
-            [["Disputes", full.disputesInvolved, full.disputesInvolved ? T.captain : T.ok], ["Missed accepts", full.missedAccepts, full.missedAccepts ? T.captain : T.ok], ["Longest streak", full.longestWinStreak, T.muted]].map(([k, v, c]) => (
+            [[t("Disputes"), full.disputesInvolved, full.disputesInvolved ? T.captain : T.ok], [t("Missed accepts"), full.missedAccepts, full.missedAccepts ? T.captain : T.ok], [t("Longest streak"), full.longestWinStreak, T.muted]].map(([k, v, c]) => (
               <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "7px 0", borderTop: `1px solid ${T.line}`, fontSize: 13 }}>
                 <span style={{ color: T.muted }}>{k}</span>
                 <span style={{ fontFamily: T.mono, color: c, fontWeight: 600 }}>{v}</span>
@@ -2022,7 +2023,7 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
         </Panel>
         {full?.team && (
           <Panel>
-            <Eyebrow style={{ marginBottom: 6 }}>Team</Eyebrow>
+            <Eyebrow style={{ marginBottom: 6 }}>{t("Team")}</Eyebrow>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <div style={{ width: 30, height: 30, borderRadius: 4, background: T.raised, display: "grid", placeItems: "center", fontFamily: T.mono, fontSize: 10, color: T.muted, border: `1px solid ${T.line2}` }}>{full.team.tag}</div>
               <div style={{ minWidth: 0 }}>
@@ -2033,7 +2034,7 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
           </Panel>
         )}
         {!isMe && <Btn onClick={onBack} style={{ justifyContent: "center" }}>← Back</Btn>}
-        <Panel><Eyebrow style={{ marginBottom: 6 }}>Public profile</Eyebrow><div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>This same record is visible on the public profile page. Only matchmaker data is shown — no in-game stats.</div></Panel>
+        <Panel><Eyebrow style={{ marginBottom: 6 }}>{t("Public profile")}</Eyebrow><div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>{t("This same record is visible on the public profile page. Only matchmaker data is shown — no in-game stats.")}</div></Panel>
       </div>
     </div>
   );
@@ -2095,14 +2096,14 @@ function AcceptOverlay({ match, onAccepted, onFail }) {
     <div style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 50, animation: "sqIn .2s ease" }}>
       <div style={{ width: 520, textAlign: "center" }}>
         <Eyebrow color={T.accent} style={{ marginBottom: 8 }}>{match.type} · {match.region.toUpperCase()} · {config.teamSize}v{config.teamSize}</Eyebrow>
-        <H size={34}>Match found</H>
+        <H size={34}>{t("Match found")}</H>
         <div style={{ position: "relative", width: 140, height: 140, margin: "24px auto" }}>
           <svg width="140" height="140" viewBox="0 0 140 140" style={{ transform: "rotate(-90deg)" }}>
             <circle cx="70" cy="70" r={R} stroke={T.line2} strokeWidth="6" fill="none" />
             <circle cx="70" cy="70" r={R} stroke={left <= 5 ? T.danger : T.accent} strokeWidth="6" fill="none" strokeDasharray={C} strokeDashoffset={C * (1 - pct)} strokeLinecap="round" style={{ transition: "stroke-dashoffset 1s linear, stroke .3s" }} />
           </svg>
           <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center" }}>
-            <div><div style={{ fontFamily: T.mono, fontSize: 40, fontWeight: 600, lineHeight: 1, color: left <= 5 ? T.danger : T.text }}>{Math.max(0, left)}</div><Eyebrow style={{ marginTop: 4 }}>seconds</Eyebrow></div>
+            <div><div style={{ fontFamily: T.mono, fontSize: 40, fontWeight: 600, lineHeight: 1, color: left <= 5 ? T.danger : T.text }}>{Math.max(0, left)}</div><Eyebrow style={{ marginTop: 4 }}>{t("seconds")}</Eyebrow></div>
           </div>
         </div>
         <div style={{ display: "flex", justifyContent: "center", gap: 6, marginBottom: 20 }}>
@@ -2113,10 +2114,10 @@ function AcceptOverlay({ match, onAccepted, onFail }) {
         {!mine ? (
           <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
             <Btn kind="primary" style={{ padding: "12px 34px", fontSize: 15 }} onClick={async () => { setMine(true); try { await server.accept(match.id); } catch { setMine(false); } }}><Check size={16} strokeWidth={3} /> Accept</Btn>
-            <Btn kind="ghost" style={{ padding: "12px 20px" }} onClick={async () => { try { await server.decline(match.id); } catch { /* the sweeper cancels it regardless */ } done.current = true; onFail(); }}>Decline</Btn>
+            <Btn kind="ghost" style={{ padding: "12px 20px" }} onClick={async () => { try { await server.decline(match.id); } catch { /* the sweeper cancels it regardless */ } done.current = true; onFail(); }}>{t("Decline")}</Btn>
           </div>
         ) : <div style={{ color: T.accent, fontSize: 13, display: "inline-flex", gap: 8, alignItems: "center" }}><Dot pulse /> Waiting for others…</div>}
-        <div style={{ marginTop: 18, fontSize: 12, color: T.dim }}>Not accepting in time puts you on a queue cooldown. Everyone else goes back to the front of the queue.</div>
+        <div style={{ marginTop: 18, fontSize: 12, color: T.dim }}>{t("Not accepting in time puts you on a queue cooldown. Everyone else goes back to the front of the queue.")}</div>
       </div>
     </div>
   );
@@ -2135,12 +2136,12 @@ function Roster({ team, captainId, me, side, label, phase, onView, tier }) {
           const cap = p.id === captainId; const isMe = p.id === me.id;
           return (
             <div key={p.id} onClick={() => onView?.(p)} style={{ background: cap ? T.captainDim : T.raised, border: `1px solid ${cap ? T.captain : isMe ? T.accent : T.line}`, borderRadius: 6, padding: "12px 8px 10px", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, position: "relative", animation: "sqRise .35s ease both", cursor: onView ? "pointer" : "default" }}>
-              {cap && <div style={{ position: "absolute", top: -9, left: "50%", transform: "translateX(-50%)", background: T.captain, color: "#160E00", fontFamily: T.mono, fontSize: 9.5, letterSpacing: "0.1em", padding: "2px 7px", borderRadius: 3, fontWeight: 700 }}>CAPTAIN</div>}
+              {cap && <div style={{ position: "absolute", top: -9, left: "50%", transform: "translateX(-50%)", background: T.captain, color: "#160E00", fontFamily: T.mono, fontSize: 9.5, letterSpacing: "0.1em", padding: "2px 7px", borderRadius: 3, fontWeight: 700 }}>{t("CAPTAIN")}</div>}
               <Avatar p={p} size={40} ring={cap ? T.captain : isMe ? T.accent : null} />
               <div style={{ fontFamily: T.mono, fontSize: 11.5, fontWeight: 600, letterSpacing: "0.02em", textAlign: "center", maxWidth: "100%", whiteSpace: "nowrap" }}>{p.inGameName}</div>
               <div style={{ fontSize: 11, color: T.muted, textAlign: "center", maxWidth: "100%" }}><PlayerName name={p.discordName} isGameMaster={p.isGameMaster} suffix={isMe ? " (you)" : ""} /></div>
               <Rank tier={p.tier} placementsRemaining={p.placementsRemaining} size={11} />
-              {cap && phase === "party" && isMySide && !isMe && <button onClick={(e) => { e.stopPropagation(); navigator.clipboard?.writeText(p.inGameName); }} title="Copy your captain's in-game name" style={{ marginTop: 2, background: "transparent", border: `1px solid ${T.captain}`, color: T.captain, borderRadius: 3, fontSize: 10.5, padding: "3px 8px", display: "inline-flex", gap: 4, alignItems: "center", fontFamily: T.mono }}><Copy size={10} /> copy name</button>}
+              {cap && phase === "party" && isMySide && !isMe && <button onClick={(e) => { e.stopPropagation(); navigator.clipboard?.writeText(p.inGameName); }} title={t("Copy your captain's in-game name")} style={{ marginTop: 2, background: "transparent", border: `1px solid ${T.captain}`, color: T.captain, borderRadius: 3, fontSize: 10.5, padding: "3px 8px", display: "inline-flex", gap: 4, alignItems: "center", fontFamily: T.mono }}><Copy size={10} /> copy name</button>}
             </div>
           );
         })}
@@ -2151,7 +2152,7 @@ function Roster({ team, captainId, me, side, label, phase, onView, tier }) {
 
 function MatchHistoryModal({ m, me, onClose, onView }) {
   const onTeam1 = m.team1.some((p) => p.id === me.id);
-  const resultLabel = m.result === "win" ? "Victory" : m.result === "loss" ? "Defeat" : m.state === "in dispute" ? "In dispute" : "Match";
+  const resultLabel = m.result === "win" ? "Victory" : m.result === "loss" ? "Defeat" : m.state === "in dispute" ? t("In dispute") : t("Match");
   const resultColor = m.result === "win" ? T.ok : m.result === "loss" ? T.danger : T.captain;
   return (
     <div style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 70, animation: "sqIn .2s ease" }} onClick={onClose}>
@@ -2164,9 +2165,9 @@ function MatchHistoryModal({ m, me, onClose, onView }) {
             </div>
             <button onClick={onClose} style={{ background: "transparent", border: "none", color: T.muted, padding: 4 }}><X size={18} /></button>
           </div>
-          <Roster team={m.team1} captainId={m.captain1} me={me} side={1} label={onTeam1 ? "Your team" : "Team 1"} phase="completed" onView={onView} tier={m.team1Tier} />
-          <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "22px 0" }}><div style={{ flex: 1, height: 1, background: T.line }} /><span style={{ fontFamily: T.display, fontWeight: 800, fontSize: 18, color: T.dim, letterSpacing: "0.1em" }}>VS</span><div style={{ flex: 1, height: 1, background: T.line }} /></div>
-          <Roster team={m.team2} captainId={m.captain2} me={me} side={2} label={onTeam1 ? "Opponents" : "Your team"} phase="completed" onView={onView} tier={m.team2Tier} />
+          <Roster team={m.team1} captainId={m.captain1} me={me} side={1} label={onTeam1 ? t("Your team") : "Team 1"} phase="completed" onView={onView} tier={m.team1Tier} />
+          <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "22px 0" }}><div style={{ flex: 1, height: 1, background: T.line }} /><span style={{ fontFamily: T.display, fontWeight: 800, fontSize: 18, color: T.dim, letterSpacing: "0.1em" }}>{t("VS")}</span><div style={{ flex: 1, height: 1, background: T.line }} /></div>
+          <Roster team={m.team2} captainId={m.captain2} me={me} side={2} label={onTeam1 ? t("Opponents") : "Your team"} phase="completed" onView={onView} tier={m.team2Tier} />
         </Panel>
       </div>
     </div>
@@ -2297,7 +2298,7 @@ function MatchChat({ match, me, onView }) {
   return (
     <Panel pad={0} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 220 }}>
       <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${T.line}` }}>
-        {[["team", "Team"], ["match", "Match"]].map(([id, label]) => (
+        {[["team", t("Team")], ["match", t("Match")]].map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)} style={{ flex: 1, background: "transparent", border: "none", borderBottom: `2px solid ${tab === id ? T.accent : "transparent"}`, color: tab === id ? T.text : T.muted, padding: "10px 4px", fontSize: 12, fontWeight: 600 }}>{label}</button>
         ))}
       </div>
@@ -2306,11 +2307,11 @@ function MatchChat({ match, me, onView }) {
           messages={messages}
           me={me}
           onView={onView}
-          empty={tab === "team" ? "Nothing said yet. Only your five can read this." : "Nothing said yet. All ten can read this."}
+          empty={tab === "team" ? t("Nothing said yet. Only your five can read this.") : t("Nothing said yet. All ten can read this.")}
         />
       </div>
-      <ChatComposer onSend={send} placeholder={tab === "team" ? "Message your team…" : "Message the match…"} />
-      <div style={{ padding: "4px 10px 8px", fontSize: 10.5, color: T.dim, fontFamily: T.mono }}>chat is not saved</div>
+      <ChatComposer onSend={send} placeholder={tab === "team" ? t("Message your team…") : t("Message the match…")} />
+      <div style={{ padding: "4px 10px 8px", fontSize: 10.5, color: T.dim, fontFamily: T.mono }}>{t("chat is not saved")}</div>
     </Panel>
   );
 }
@@ -2417,7 +2418,7 @@ function MatchScreen({ match, me, onFinished, notify, onView }) {
     } catch (err) {
       setMyReport(null);
       setPhase("live");
-      notify(err?.message ?? "Could not send that report");
+      notify(errorText(err, "Could not send that report"));
     }
   };
 
@@ -2429,26 +2430,30 @@ function MatchScreen({ match, me, onFinished, notify, onView }) {
    * quoting the points that moved, which is the thing we do not publish.
    */
   const rankSummary = (() => {
-    if (!rankMove) return "Both captains agree. Your rank has been updated.";
+    if (!rankMove) return t("Both captains agree. Your rank has been updated.");
     const { tierBefore, tierAfter, placementsRemaining } = rankMove;
     if (!tierAfter) {
       return placementsRemaining > 0
-        ? `Both captains agree. ${placementsRemaining} placement match${placementsRemaining === 1 ? "" : "es"} to go before you are ranked.`
-        : "Both captains agree.";
+        ? tn(
+          "Both captains agree. {count} placement match to go before you are ranked.",
+          "Both captains agree. {count} placement matches to go before you are ranked.",
+          placementsRemaining,
+        )
+        : t("Both captains agree.");
     }
     if (!tierBefore) return `Both captains agree. Placements complete — you are ${tierAfter}.`;
     if (tierBefore === tierAfter) return `Both captains agree. You are still ${tierAfter}.`;
     const order = config.tiers;
-    return `Both captains agree. ${order.indexOf(tierAfter) > order.indexOf(tierBefore) ? "Promoted" : "Demoted"} to ${tierAfter}.`;
+    return `Both captains agree. ${order.indexOf(tierAfter) > order.indexOf(tierBefore) ? t("Promoted") : t("Demoted")} to ${tierAfter}.`;
   })();
 
   const banner = {
-    party: { color: T.captain, title: "Party up", sub: iAmCaptain ? "You're the captain — your teammates add you in-game and join your party. Queue starts in" : `Add ${cap?.inGameName ?? "your captain"} — your captain — in-game and join their party. Queue starts in` },
-    queue: { color: T.accent, title: "Queue casual now", sub: "Both captains hit Casual queue on this signal. Stay in party." },
-    live: { color: T.accent, title: "Match in progress", sub: iAmCaptain ? "When it ends, report the result below." : "Your captain reports the result when the match ends." },
-    reported: { color: T.muted, title: "Waiting for the other captain", sub: `You reported a ${myReport}. Awaiting the other side's report.` },
-    completed: { color: T.ok, title: outcome === "win" ? "Victory" : "Defeat", sub: match.type === "SCRIM" ? "Both captains agree. Scrims are unrated — no rank change." : rankSummary },
-    dispute: { color: T.captain, title: "In dispute", sub: "Captains reported different results. A mod will resolve this with both teams — this stays open until then." },
+    party: { color: T.captain, title: t("Party up"), sub: iAmCaptain ? t("You're the captain — your teammates add you in-game and join your party. Queue starts in") : `Add ${cap?.inGameName ?? "your captain"} — your captain — in-game and join their party. Queue starts in` },
+    queue: { color: T.accent, title: t("Queue casual now"), sub: t("Both captains hit Casual queue on this signal. Stay in party.") },
+    live: { color: T.accent, title: t("Match in progress"), sub: iAmCaptain ? t("When it ends, report the result below.") : t("Your captain reports the result when the match ends.") },
+    reported: { color: T.muted, title: t("Waiting for the other captain"), sub: `You reported a ${myReport}. Awaiting the other side's report.` },
+    completed: { color: T.ok, title: outcome === "win" ? "Victory" : t("Defeat"), sub: match.type === "SCRIM" ? t("Both captains agree. Scrims are unrated — no rank change.") : rankSummary },
+    dispute: { color: T.captain, title: t("In dispute"), sub: "Captains reported different results. A mod will resolve this with both teams — this stays open until then." },
   }[phase];
 
   return (
@@ -2462,26 +2467,26 @@ function MatchScreen({ match, me, onFinished, notify, onView }) {
             <div style={{ color: T.muted, fontSize: 13, marginTop: 6 }}>{banner.sub}{phase === "party" && <span style={{ fontFamily: T.mono, color: T.text }}> {fmt(Math.max(0, left))}</span>}</div>
           </div>
           {phase === "party" && <div style={{ fontFamily: T.mono, fontSize: 44, fontWeight: 600, color: T.captain, lineHeight: 1 }}>{fmt(Math.max(0, left))}</div>}
-          {phase === "queue" && <div style={{ fontFamily: T.display, fontWeight: 800, fontSize: 30, color: T.accent, textTransform: "uppercase", animation: "sqPulse 1s infinite" }}>Queue</div>}
-          {phase === "live" && !iAmCaptain && <Tag>Captain reports</Tag>}
+          {phase === "queue" && <div style={{ fontFamily: T.display, fontWeight: 800, fontSize: 30, color: T.accent, textTransform: "uppercase", animation: "sqPulse 1s infinite" }}>{t("Queue")}</div>}
+          {phase === "live" && !iAmCaptain && <Tag>{t("Captain reports")}</Tag>}
           {phase === "reported" && <Dot pulse color={T.muted} />}
           {(phase === "completed" || phase === "dispute") && <Btn kind="primary" onClick={() => onFinished({ outcome, disputed: phase === "dispute" })}>Back to lobby <ChevronRight size={14} /></Btn>}
         </div>
         {phase === "live" && iAmCaptain && (
           <div style={{ display: "flex", gap: 12, marginTop: 20 }}>
             <button onClick={() => report("win")} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: T.ok, color: "#07110F", border: "none", borderRadius: 6, padding: "16px 20px", fontSize: 16, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.03em", animation: "sqGlow 1.8s ease-in-out infinite" }}><Trophy size={20} /> We won</button>
-            <button onClick={() => report("loss")} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: T.dangerDim, color: T.danger, border: `2px solid ${T.danger}`, borderRadius: 6, padding: "16px 20px", fontSize: 16, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.03em" }}>We lost</button>
+            <button onClick={() => report("loss")} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: T.dangerDim, color: T.danger, border: `2px solid ${T.danger}`, borderRadius: 6, padding: "16px 20px", fontSize: 16, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.03em" }}>{t("We lost")}</button>
           </div>
         )}
       </Panel>
 
       <Panel pad={20} style={{ flexShrink: 0, maxHeight: "60%", overflow: "auto" }}>
-        <Roster team={match.team1} captainId={match.captain1} me={me} side={1} label={myTeamIsOne ? "Your team" : "Team 1"} phase={phase} onView={onView} tier={match.team1Tier} />
-        <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "22px 0" }}><div style={{ flex: 1, height: 1, background: T.line }} /><span style={{ fontFamily: T.display, fontWeight: 800, fontSize: 18, color: T.dim, letterSpacing: "0.1em" }}>VS</span><div style={{ flex: 1, height: 1, background: T.line }} /></div>
-        <Roster team={match.team2} captainId={match.captain2} me={me} side={2} label={myTeamIsOne ? "Opponents" : "Your team"} phase={phase} onView={onView} tier={match.team2Tier} />
+        <Roster team={match.team1} captainId={match.captain1} me={me} side={1} label={myTeamIsOne ? t("Your team") : t("Team 1")} phase={phase} onView={onView} tier={match.team1Tier} />
+        <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "22px 0" }}><div style={{ flex: 1, height: 1, background: T.line }} /><span style={{ fontFamily: T.display, fontWeight: 800, fontSize: 18, color: T.dim, letterSpacing: "0.1em" }}>{t("VS")}</span><div style={{ flex: 1, height: 1, background: T.line }} /></div>
+        <Roster team={match.team2} captainId={match.captain2} me={me} side={2} label={myTeamIsOne ? t("Opponents") : t("Your team")} phase={phase} onView={onView} tier={match.team2Tier} />
         {(phase === "reported" || phase === "completed" || phase === "dispute") && (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 20 }}>
-            {[["Your captain reported", myReport], ["Their captain reported", theirReport]].map(([k, v]) => (
+            {[[t("Your captain reported"), myReport], [t("Their captain reported"), theirReport]].map(([k, v]) => (
               <div key={k} style={{ background: T.raised, borderRadius: 4, padding: "10px 12px", display: "flex", justifyContent: "space-between" }}><span style={{ fontSize: 12.5, color: T.muted }}>{k}</span><span style={{ fontFamily: T.mono, fontWeight: 600, color: !v ? T.dim : v === "win" ? T.ok : T.danger }}>{v ? v.toUpperCase() : "…"}</span></div>
             ))}
           </div>
@@ -2581,19 +2586,19 @@ function LineupModal({ pending, notify, onDone }) {
       await server.confirmLineup(pending.requestId, picked);
       onDone();
     } catch (err) {
-      notify(err?.message ?? "Could not confirm that lineup");
+      notify(errorText(err, "Could not confirm that lineup"));
       setBusy(false);
     }
   };
 
   return (
     <div style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 72, animation: "sqIn .2s ease" }}>
-      <div role="dialog" aria-modal="true" aria-label="Confirm your lineup" style={{ width: 460, maxWidth: "90vw" }}>
+      <div role="dialog" aria-modal="true" aria-label={t("Confirm your lineup")} style={{ width: 460, maxWidth: "90vw" }}>
         <Panel pad={20}>
           <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 16 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <Eyebrow style={{ marginBottom: 6 }}>Scrim vs {pending.opponentTag}</Eyebrow>
-              <H size={22}>Who is playing?</H>
+              <H size={22}>{t("Who is playing?")}</H>
               <div style={{ fontSize: 12.5, color: T.muted, marginTop: 6, lineHeight: 1.5 }}>
                 Five of {pending.roster.length}. Your starters are picked already — change them if
                 you like.
@@ -2601,7 +2606,7 @@ function LineupModal({ pending, notify, onDone }) {
             </div>
             <div style={{ textAlign: "right" }}>
               <div style={{ fontFamily: T.mono, fontSize: 30, fontWeight: 600, lineHeight: 1, color: left <= 10 ? T.danger : T.accent }}>{left}</div>
-              <Eyebrow style={{ marginTop: 2 }}>seconds</Eyebrow>
+              <Eyebrow style={{ marginTop: 2 }}>{t("seconds")}</Eyebrow>
             </div>
           </div>
 
@@ -2626,7 +2631,7 @@ function LineupModal({ pending, notify, onDone }) {
                     </div>
                     <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted, whiteSpace: "nowrap" }}>{r.inGameName ?? r.discordName}</div>
                   </div>
-                  {r.isStarter && <Tag color={T.ok}>Starter</Tag>}
+                  {r.isStarter && <Tag color={T.ok}>{t("Starter")}</Tag>}
                   <Rank tier={r.tier} placementsRemaining={r.placementsRemaining} size={11} />
                 </button>
               );
@@ -2640,7 +2645,7 @@ function LineupModal({ pending, notify, onDone }) {
             title={full ? undefined : `Pick ${5 - picked.length} more`}
             onClick={confirm}
           >
-            {full ? "Confirm the lineup" : `${picked.length}/${config.teamSize} picked`}
+            {full ? t("Confirm the lineup") : `${picked.length}/${config.teamSize} picked`}
           </Btn>
           <div style={{ fontSize: 11.5, color: T.dim, marginTop: 10, lineHeight: 1.5 }}>
             Both captains confirm before anyone is asked to accept. If the clock runs out the scrim
@@ -2680,13 +2685,13 @@ function InviteToasts({ invites, onAccept, onDecline }) {
               <Avatar p={{ discordName: inv.fromName, avatarUrl: inv.fromAvatarUrl, avatarColor: AV_COLORS[Math.abs(hashString(inv.fromUserId)) % AV_COLORS.length] }} size={24} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12.5, fontWeight: 600 }}><PlayerName name={inv.fromName} isGameMaster={inv.fromIsGameMaster} /></div>
-                <div style={{ fontSize: 11, color: T.muted }}>invited you to their party</div>
+                <div style={{ fontSize: 11, color: T.muted }}>{t("invited you to their party")}</div>
               </div>
               <Tier tier={inv.fromTier} size={12} />
             </div>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <Btn size="sm" kind="primary" style={{ flex: 1, justifyContent: "center" }} onClick={() => onAccept(inv)}>Join</Btn>
-              <Btn size="sm" style={{ justifyContent: "center" }} onClick={() => onDecline(inv)}>Decline</Btn>
+              <Btn size="sm" kind="primary" style={{ flex: 1, justifyContent: "center" }} onClick={() => onAccept(inv)}>{t("Join")}</Btn>
+              <Btn size="sm" style={{ justifyContent: "center" }} onClick={() => onDecline(inv)}>{t("Decline")}</Btn>
               <span style={{ fontFamily: T.mono, fontSize: 11, color: left <= 5 ? T.danger : T.dim, minWidth: 24, textAlign: "right" }}>{left}s</span>
             </div>
           </div>
@@ -2694,7 +2699,7 @@ function InviteToasts({ invites, onAccept, onDecline }) {
       })}
       {hidden > 0 && (
         <div style={{ pointerEvents: "none", background: T.raised, border: `1px solid ${T.line}`, borderRadius: 4, padding: "6px 10px", fontSize: 11.5, color: T.muted, textAlign: "center" }}>
-          +{hidden} more invite{hidden === 1 ? "" : "s"} waiting
+          {tn("+{count} more invite waiting", "+{count} more invites waiting", hidden)}
         </div>
       )}
     </div>
@@ -2716,7 +2721,7 @@ function InviteModal({ party, onClose, notify }) {
       setPlayers(res.players ?? []);
       setError(null);
     } catch (err) {
-      setError(err?.message ?? "Could not load the player list");
+      setError(errorText(err, "Could not load the player list"));
       setPlayers([]);
     }
   }, []);
@@ -2754,7 +2759,7 @@ function InviteModal({ party, onClose, notify }) {
         const seconds = Number(/(\d+)s/.exec(err.message ?? "")?.[1] ?? 60);
         setSent((s) => ({ ...s, [p.id]: Date.now() + seconds * 1000 }));
       }
-      notify(err?.message ?? "Could not send that invite");
+      notify(errorText(err, "Could not send that invite"));
     } finally {
       setBusy(null);
     }
@@ -2762,11 +2767,11 @@ function InviteModal({ party, onClose, notify }) {
 
   return (
     <div style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 70, animation: "sqIn .2s ease" }} onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-label="Invite to party" style={{ width: 520, maxWidth: "90vw", maxHeight: "80vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+      <div role="dialog" aria-modal="true" aria-label={t("Invite to party")} style={{ width: 520, maxWidth: "90vw", maxHeight: "80vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
         <Panel pad={0} style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderBottom: `1px solid ${T.line}` }}>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <Eyebrow>Invite to party</Eyebrow>
+              <Eyebrow>{t("Invite to party")}</Eyebrow>
               <div style={{ fontSize: 12, color: T.muted, marginTop: 4 }}>
                 {party.length}/{config.maxPartySize} in your party
                 {partyFull ? " — full" : ""}
@@ -2780,8 +2785,8 @@ function InviteModal({ party, onClose, notify }) {
               autoFocus
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search players…"
-              aria-label="Search players"
+              placeholder={t("Search players…")}
+              aria-label={t("Search players")}
               style={{ width: "100%", background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13 }}
             />
           </div>
@@ -2793,7 +2798,7 @@ function InviteModal({ party, onClose, notify }) {
               <div style={{ color: T.danger, fontSize: 12.5, textAlign: "center", padding: 24 }}>{error}</div>
             ) : matches.length === 0 ? (
               <div style={{ color: T.dim, fontSize: 12.5, textAlign: "center", padding: 24, lineHeight: 1.5 }}>
-                {query.trim() ? `Nobody online matches “${query.trim()}”.` : "Nobody else is online right now."}
+                {query.trim() ? `Nobody online matches “${query.trim()}”.` : t("Nobody else is online right now.")}
               </div>
             ) : (
               matches.map((p) => {
@@ -2854,14 +2859,14 @@ function ChatDock({ me, partyId, open, setOpen, onView }) {
   return (
     <div style={{ position: "absolute", right: 16, bottom: 16, width: 300, height: 380, background: T.panel, border: `1px solid ${T.line2}`, borderRadius: 8, boxShadow: "0 16px 40px rgba(0,0,0,.5)", display: "flex", flexDirection: "column", zIndex: 55, animation: "sqRise .2s ease", overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${T.line}`, padding: "10px 12px" }}>
-        <div style={{ flex: 1, fontFamily: T.mono, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: T.text }}>Party chat</div>
+        <div style={{ flex: 1, fontFamily: T.mono, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: T.text }}>{t("Party chat")}</div>
         <button onClick={() => setOpen(false)} style={{ background: "transparent", border: "none", color: T.muted, padding: 4 }}><X size={14} /></button>
       </div>
       <div style={{ flex: 1, overflow: "auto", padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-        <ChatLog messages={messages} me={me} onView={onView} empty="Nothing said yet. Only your party can read this." />
+        <ChatLog messages={messages} me={me} onView={onView} empty={t("Nothing said yet. Only your party can read this.")} />
       </div>
-      <ChatComposer onSend={send} placeholder="Message your party…" />
-      <div style={{ padding: "4px 10px 8px", fontSize: 10.5, color: T.dim, fontFamily: T.mono }}>chat is not saved</div>
+      <ChatComposer onSend={send} placeholder={t("Message your party…")} />
+      <div style={{ padding: "4px 10px 8px", fontSize: 10.5, color: T.dim, fontFamily: T.mono }}>{t("chat is not saved")}</div>
     </div>
   );
 }
@@ -2870,6 +2875,17 @@ function ChatDock({ me, partyId, open, setOpen, onView }) {
    APP SHELL
    ───────────────────────────────────────────────────────────── */
 export default function App() {
+  /**
+   * Redraw everything when the language changes.
+   *
+   * t() is a plain function, so React has no idea its output depends on
+   * anything -- which is what keeps call sites readable. The trade is that
+   * something has to force the tree to render again, and this is it. Changing
+   * language is rare enough that redrawing wholesale costs nothing.
+   */
+  const [, setLocaleTick] = useState(currentLocale());
+  useEffect(() => onLocaleChange(setLocaleTick), []);
+
   /**
    * What this deployment is, asked for once on start.
    *
@@ -2933,7 +2949,7 @@ export default function App() {
       });
     return () => { cancelled = true; };
   }, []);
-  const notify = useCallback((text) => { const id = Date.now() + Math.random(); setToasts((t) => [...t, { id, text }]); setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3800); }, []);
+  const notify = useCallback((text) => { const id = Date.now() + Math.random(); setToasts((list) => [...list, { id, text }]); setTimeout(() => setToasts((list) => list.filter((x) => x.id !== id)), 3800); }, []);
 
   /**
    * Loads match history.
@@ -2961,7 +2977,7 @@ export default function App() {
       notify(`Joined ${inv.fromName}'s party`);
     } catch (err) {
       dismissInvite(inv.inviteId);
-      notify(err?.message ?? "That invite is no longer valid");
+      notify(errorText(err, "That invite is no longer valid"));
     }
   }, [dismissInvite, notify]);
 
@@ -3044,7 +3060,7 @@ export default function App() {
 
     try {
       const full = adaptMatch(await server.getMatch(m.id));
-      if (!full) { notify("Couldn't load that match"); return; }
+      if (!full) { notify(t("Couldn't load that match")); return; }
       setViewMatch({
         ...m,
         team1: full.team1,
@@ -3055,7 +3071,7 @@ export default function App() {
         team2Tier: full.team2Tier,
       });
     } catch (err) {
-      notify(err?.message ?? "Couldn't load that match");
+      notify(errorText(err, "Couldn't load that match"));
     }
   }, [notify]);
 
@@ -3108,7 +3124,7 @@ export default function App() {
           // A roster we cannot draw is worse than no match screen: rendering
           // one blanks the app. Surface it instead of taking the UI down.
           if (!found) {
-            notify("Match found, but its details could not be loaded");
+            notify(t("Match found, but its details could not be loaded"));
             break;
           }
           setQueue({ state: "idle" });
@@ -3121,13 +3137,13 @@ export default function App() {
           break;
         case "queue.left":
           setQueue({ state: "idle" });
-          if (e.reason === "CONNECTION_LOST") notify("Connection dropped — you left the queue");
+          if (e.reason === "CONNECTION_LOST") notify(t("Connection dropped — you left the queue"));
           break;
         case "match.cancelled": {
           setPendingMatch(null);
           setQueue({ state: "idle" });
           if (!e.atFault) {
-            notify("A player didn't accept — the match was cancelled");
+            notify(t("A player didn't accept — the match was cancelled"));
             break;
           }
           // The server owns the penalty and states it; this only displays it.
@@ -3136,7 +3152,7 @@ export default function App() {
           notify(
             seconds > 0
               ? `You left a match short — queue locked for ${fmt(seconds)}`
-              : "You left a match short",
+              : t("You left a match short"),
           );
           break;
         }
@@ -3144,7 +3160,7 @@ export default function App() {
           notify(
             e.tierAfter && e.tierBefore && e.tierAfter !== e.tierBefore
               ? `Match complete · now ${e.tierAfter}`
-              : "Match complete",
+              : t("Match complete"),
           );
           // Rank, record and placement count all just moved.
           void refreshProfile();
@@ -3179,13 +3195,13 @@ export default function App() {
           break;
         case "scrim.lineup.expired":
           setPendingLineup(null);
-          notify("The scrim was dropped — nobody confirmed a lineup");
+          notify(t("The scrim was dropped — nobody confirmed a lineup"));
           break;
         case "notification":
           notify(e.text);
           break;
         case "auth.expired":
-          notify("Session expired — sign in again");
+          notify(t("Session expired — sign in again"));
           setMe(null);
           break;
         default:
@@ -3238,10 +3254,10 @@ export default function App() {
       </ConfigContext.Provider>
     );
 
-  const NAV = [["play", "PUG", Crosshair], ["scrims", "Scrims", Swords], ["teams", "Teams", Users], ["ladder", "Ladder", Trophy], ["profile", "Profile", User]];
+  const NAV = [["play", "PUG", Crosshair], ["scrims", "Scrims", Swords], ["teams", "Teams", Users], ["ladder", "Ladder", Trophy], ["profile", t("Profile"), User]];
   // Shown only to Game Masters. The server refuses everyone else anyway; this
   // keeps a tab off the rail that would only ever answer 403.
-  if (me.isGameMaster) NAV.push(["disputes", "Disputes", Shield]);
+  if (me.isGameMaster) NAV.push(["disputes", t("Disputes"), Shield]);
   const go = (id) => { setNav(id); setViewProfile(null); };
 
   let content;
@@ -3262,9 +3278,9 @@ export default function App() {
       <ModerationScreen me={me} notify={notify} onView={setViewProfile} />
     ) : (
       <ComingSoon
-        eyebrow="Disputes"
-        title="Game Masters only"
-        body="Disputed matches are settled by a Game Master."
+        eyebrow={t("Disputes")}
+        title={t("Game Masters only")}
+        body={t("Disputed matches are settled by a Game Master.")}
       />
     );
   else if (nav === "ladder") content = <LadderScreen me={me} onView={setViewProfile} notify={notify} />;
@@ -3280,7 +3296,7 @@ export default function App() {
         {/* population strip */}
         <div style={{ display: "flex", gap: 14, marginLeft: 6 }}>
           {/* Server counts, already inclusive of you. */}
-          {[["Online", pop?.online, T.ok], ["In queue", pop?.inQueue, T.accent], ["In match", pop?.inMatch, T.captain]].map(([k, v, c]) => (
+          {[[t("Online"), pop?.online, T.ok], [t("In queue"), pop?.inQueue, T.accent], [t("In match"), pop?.inMatch, T.captain]].map(([k, v, c]) => (
             <div key={k} style={{ display: "flex", alignItems: "center", gap: 6 }}><Dot color={c} /><span style={{ fontFamily: T.mono, fontSize: 12.5, fontWeight: 600 }}>{v ?? "–"}</span><span style={{ fontSize: 11.5, color: T.muted }}>{k}</span></div>
           ))}
         </div>
@@ -3288,7 +3304,7 @@ export default function App() {
         {queue.state === "queued" && !match && <button onClick={() => go("play")} style={{ background: T.accentDim, border: `1px solid ${T.accent}`, color: T.accent, borderRadius: 4, padding: "4px 10px", fontFamily: T.mono, fontSize: 11.5, display: "flex", gap: 6, alignItems: "center" }}><Dot pulse /> IN QUEUE</button>}
         {match && <span style={{ fontFamily: T.mono, fontSize: 11.5, color: T.captain, display: "flex", gap: 6, alignItems: "center" }}><Dot color={T.captain} pulse /> IN MATCH</span>}
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 12 }}><Avatar p={me} size={24} /><PlayerName name={me.discordName} isGameMaster={me.isGameMaster} style={{ fontWeight: 600 }} /><Tier tier={me.tier} size={12} /></div>
-        <button onClick={() => setMe(null)} title="Sign out" style={{ background: "transparent", border: "none", color: T.dim, padding: 4 }}><LogOut size={14} /></button>
+        <button onClick={() => setMe(null)} title={t("Sign out")} style={{ background: "transparent", border: "none", color: T.dim, padding: 4 }}><LogOut size={14} /></button>
       </div>
 
       {update && !match && !pendingMatch && (
@@ -3304,7 +3320,7 @@ export default function App() {
               <Icon size={18} />{label}
             </button>); })}
           <div style={{ flex: 1 }} />
-          <div style={{ padding: 10, textAlign: "center" }}><Eyebrow style={{ fontSize: 9 }}>v0.1</Eyebrow><Eyebrow style={{ fontSize: 9, color: T.dim }}>preview</Eyebrow></div>
+          <div style={{ padding: 10, textAlign: "center" }}><Eyebrow style={{ fontSize: 9 }}>v0.1</Eyebrow><Eyebrow style={{ fontSize: 9, color: T.dim }}>{t("preview")}</Eyebrow></div>
         </div>
         {/* main */}
         <div style={{ flex: 1, minWidth: 0, padding: 16, overflow: "auto", position: "relative" }}>{content}</div>
@@ -3344,7 +3360,7 @@ export default function App() {
 
       {/* toasts */}
       <div style={{ position: "absolute", top: 54, right: 16, display: "flex", flexDirection: "column", gap: 6, zIndex: 60, pointerEvents: "none" }}>
-        {toasts.map((t) => <div key={t.id} style={{ background: T.raised, border: `1px solid ${T.line2}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 4, padding: "8px 12px", fontSize: 12.5, animation: "sqRise .2s ease", boxShadow: "0 6px 20px rgba(0,0,0,.35)", display: "flex", gap: 8, alignItems: "center" }}><Bell size={12} color={T.accent} />{t.text}</div>)}
+        {toasts.map((toast) => <div key={toast.id} style={{ background: T.raised, border: `1px solid ${T.line2}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 4, padding: "8px 12px", fontSize: 12.5, animation: "sqRise .2s ease", boxShadow: "0 6px 20px rgba(0,0,0,.35)", display: "flex", gap: 8, alignItems: "center" }}><Bell size={12} color={T.accent} />{toast.text}</div>)}
       </div>
     </div>
     </ConfigContext.Provider>

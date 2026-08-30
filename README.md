@@ -198,6 +198,26 @@ What is *not* configurable is deliberate: accept windows, cooldowns, rate limits
 and the matchmaking ramp are tuning rather than game shape, and most deployments
 should leave them alone. They live in `packages/core/src/constants.ts`.
 
+## Languages
+
+English only so far, but every string in the interface goes through a lookup, so
+adding a language is a file rather than a hunt through the source for text that
+was never marked as text.
+
+The English sentence is its own key. `t("Ready to queue")` returns that string
+unchanged when nothing is translated, which means an untranslated build is a
+working English one, a half-finished catalogue is a half-translated app rather
+than a broken one, and nobody has to invent key names or keep them in step with
+the copy.
+
+Refusals from the server are handled by code — `error.CAPTAIN_OFFLINE` — falling
+back to the English sentence the server sent. So a refusal added on the server
+today reads properly today, rather than going blank in every language until
+someone remembers to translate it.
+
+See [`apps/desktop/src/i18n/README.md`](apps/desktop/src/i18n/README.md) to add
+one.
+
 ## Deploying the server
 
 Not done yet. What it needs: a host, a Postgres instance that is not the Docker

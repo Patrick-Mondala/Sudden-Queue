@@ -1,6 +1,7 @@
 import { configure } from "@testing-library/dom";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { CATALOGUES, setLocale } from "./i18n/index.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /*
@@ -2132,5 +2133,68 @@ describe("adapting to the deployment", () => {
     // A first paint on stale defaults beats a blank window.
     expect(await screen.findByText(/Ready to queue/i)).toBeTruthy();
     expect(screen.getByText(/5v5/)).toBeTruthy();
+  });
+});
+
+describe("running in another language", () => {
+  /** A stand-in for a shipped language file, removed after each test. */
+  const speakGerman = (entries) => {
+    CATALOGUES.de = entries;
+    act(() => setLocale("de"));
+  };
+
+  afterEach(() => {
+    act(() => setLocale("en"));
+    delete CATALOGUES.de;
+  });
+
+  it("renders English when no catalogue is installed", async () => {
+    await signedIn();
+    expect(screen.getByText("Ready to queue")).toBeTruthy();
+  });
+
+  it("renders the translation once one is", async () => {
+    await signedIn();
+    speakGerman({ "Ready to queue": "Bereit für die Warteschlange" });
+
+    expect(await screen.findByText("Bereit für die Warteschlange")).toBeTruthy();
+    expect(screen.queryByText("Ready to queue")).toBeNull();
+  });
+
+  it("redraws what is already on screen, without a reload", async () => {
+    await signedIn();
+    expect(screen.getByText("Recent matches")).toBeTruthy();
+
+    speakGerman({ "Recent matches": "Letzte Spiele" });
+
+    // t() is a plain function, so something has to force the tree to redraw.
+    expect(await screen.findByText("Letzte Spiele")).toBeTruthy();
+  });
+
+  it("leaves untranslated phrases in English rather than blanking them", async () => {
+    await signedIn();
+    speakGerman({ "Ready to queue": "Bereit" });
+
+    expect(await screen.findByText("Bereit")).toBeTruthy();
+    // A half-finished catalogue is a half-German app, not a broken one.
+    expect(screen.getByText("Recent matches")).toBeTruthy();
+  });
+
+  it("translates a refusal from the server by its code", async () => {
+    speakGerman({ "error.INVALID_NAME": "Dieser Name geht nicht" });
+    server.setInGameName.mockRejectedValue(
+      Object.assign(new Error("In-game name must be between 2 and 16 characters"), {
+        status: 400,
+        code: "INVALID_NAME",
+      }),
+    );
+    server.me.mockResolvedValue({ ...PROFILE, inGameName: null });
+    await signedIn();
+
+    await userEvent.type(await screen.findByLabelText(/^In-game name$/i), "SNIPER_X");
+    await userEvent.click(screen.getByRole("button", { name: /Save it/i }));
+
+    // The code wins over the English sentence the server sent beside it.
+    expect(await screen.findByText("Dieser Name geht nicht")).toBeTruthy();
   });
 });
