@@ -76,10 +76,20 @@ installer="$(grep -m1 '"url"' "$staging/latest.json" | sed -E 's#.*/([^/"]+)".*#
 #
 # The installer has to be there too. A manifest that arrived without one is
 # exactly the half-finished state worth finishing rather than skipping.
+#
+# The version-free alias counts as part of being published, too. Without it
+# here, a deployment already serving the current version could never grow one:
+# every run would decide there was nothing to do, and the download page would
+# point at a 404 until whenever the next release happened to come along. That
+# is precisely the state this deployment was in the day the alias was added.
+alias_name="$(printf '%s' "$installer" | sed -E "s/_${version//./\\.}_/_/")"
+
 current=""
 if [ -f "$releases/latest.json" ]; then
   current="$(grep -m1 '"version"' "$releases/latest.json" | sed -E 's/.*"version": *"([^"]+)".*/\1/' || true)"
-  if [ "$current" = "$version" ] && [ -f "$releases/$installer" ]; then
+  if [ "$current" = "$version" ] &&
+     [ -f "$releases/$installer" ] &&
+     { [ "$alias_name" = "$installer" ] || [ -f "$releases/$alias_name" ]; }; then
     echo "$version is already published. Nothing to do."
     exit 0
   fi
@@ -106,7 +116,6 @@ mv -f "$releases/.SHA256SUMS.incoming" "$releases/SHA256SUMS"
 # versioned file stays: it is what latest.json names, what SHA256SUMS vouches
 # for, and what the server checks before it raises the floor. This is an alias
 # for people, not for machines.
-alias_name="$(printf '%s' "$installer" | sed -E "s/_${version//./\\.}_/_/")"
 if [ "$alias_name" != "$installer" ]; then
   install -m 0644 "$staging/$installer" "$releases/.$alias_name.incoming"
   mv -f "$releases/.$alias_name.incoming" "$releases/$alias_name"
