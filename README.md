@@ -91,7 +91,7 @@ updater. Both are feature-detected, so their absence is silent rather than fatal
 ## Deploying the server
 
 Database, server and TLS come up together, as one stack. From a bare Ubuntu box
-to players signing in is the seven steps below.
+to players signing in is the eight steps below.
 
 It is a light workload: one websocket per player, a heartbeat that touches no
 database, and pushed events only when something changes. A small VPS covers it.
@@ -151,11 +151,11 @@ sudo docker compose -f compose.prod.yaml up -d --build
 sudo docker compose -f compose.prod.yaml --profile migrate run --rm migrate
 ```
 
-`releases/` is where the published installer and its `latest.json` go. It is
-mounted read-only into both Caddy, which serves it at `/download`, and the
-server, which reads the version out of it. Empty is fine and is what it looks
-like until your first release — a deployment that has published nothing enforces
-no version floor.
+`releases/` is where the published installer, its `SHA256SUMS` and `latest.json`
+go. It is mounted read-only into both Caddy, which serves it at `/download`, and
+the server, which reads the version out of it. Empty is fine and is what it
+looks like until your first release — a deployment that has published nothing
+enforces no version floor. Step 8 is what fills it.
 
 Two commands rather than one because migrations are a deliberate step, here for
 the same reason they are in development: a process that migrates when it boots
@@ -206,6 +206,19 @@ Sign in through the app once so the account exists, then:
 sudo docker compose -f compose.prod.yaml exec server \
   npm run grant -- --discord <your discord id> --role game_master
 ```
+
+### 8. Let releases publish themselves
+
+```bash
+sudo cp deploy/sudden-queue-publish.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sudden-queue-publish.timer
+```
+
+Without this the deployment never receives a client release: `releases/` stays
+empty, `/download` serves nothing, and the app has nothing to check itself
+against. With it, a pushed tag is the whole release — the timer notices one this
+deployment has not got, verifies it, and serves it, about a minute later.
 
 That is the server running. The client still has to be pointed at it: set the
 repository variable `VITE_API_URL` to `https://your.host` **before** tagging a
@@ -259,6 +272,11 @@ npm run seed -- --cleanup                 # removes them, reverses their ratings
 Every account it creates is prefixed `seed:`, and `--cleanup` reverses rating
 changes through the ledger rather than deleting rows out from under completed
 matches.
+
+It is a development tool and talks to a development server. Pointed at a
+deployment that publishes releases it will be refused with `426`, because it
+sends no client version and the floor treats that as too old — which is correct,
+and is not worth working around by teaching a bot to claim a version it is not.
 
 ## Game Masters
 
@@ -359,7 +377,7 @@ is a tag:
 
 ```bash
 # bump "version" in apps/desktop/src-tauri/tauri.conf.json first
-git tag v0.1.2 && git push --tags
+git tag v0.1.4 && git push --tags
 ```
 
 The workflow refuses a tag that disagrees with that version, because the updater
@@ -427,8 +445,8 @@ minisign signature the updater verifies before it runs an installer. This
 catches the truncated copy and the wrong order.
 
 Nothing needs restarting. The server notices the new manifest within a few
-seconds. [deploy/README.md](deploy/README.md) covers running it on a timer, and
-why you might not want to.
+seconds — including an installer that arrives late, which is why a bad publish
+recovers on its own once the missing file is in place.
 
 ### Updates are not optional
 
@@ -447,8 +465,9 @@ is refused as well, which is what every copy built before this existed does.
 The floor is the published version rather than a setting of its own, so there is
 nothing to remember to raise and nothing to disagree with. The consequence is
 the one in the step above: publishing is a cutover, and it locks out everyone
-who has not restarted yet. Publish when you are around to notice if it was
-wrong.
+who has not restarted yet. Since the timer publishes for you within a minute of
+the tag, that makes tagging the moment to be paying attention — there is nothing
+between it and every player being asked to update.
 
 Two exemptions on the server, both deliberate. `/health` and `/config` answer
 any version, so a monitor keeps working and a refused client can still render
@@ -476,12 +495,16 @@ TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/<your-app>.key)" npm run tauri build
 npm run release:manifest -- --notes "What changed"
 ```
 
-Upload the three files it names — the installer, its `.sig`, and `latest.json` —
-to a GitHub release tagged `v<version>`. `tauri build` signs the installers but
-does not write the manifest that points at them, so `release:manifest` fills that
-gap. CI runs the same script rather than a second implementation of it, which is
-why a release built by hand and one built by tag describe themselves the same
-way.
+Upload the four files it names — the installer, its `.sig`, `latest.json` and
+`SHA256SUMS` — to a GitHub release tagged `v<version>`, then publish it and let
+the deployment's timer pick it up, or run `deploy/publish-release.sh` there
+yourself.
+
+`tauri build` signs the installers but does not write the manifest that points
+at them, so `release:manifest` fills that gap. CI runs the same script rather
+than a second implementation of it, which is why a release built by hand and one
+built by tag describe themselves the same way — and why the checksum a
+hand-built release carries is the one the server will check it against.
 
 Builds are **not** code-signed with an Authenticode certificate, so Windows shows
 a SmartScreen warning ("More info → Run anyway"), and machines with Smart App

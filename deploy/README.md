@@ -8,9 +8,10 @@ getting a bigger box rather than more of them, and a second server container
 would mean players who cannot see each other.
 
 The first run — Docker, `.env`, bringing the stack up, the Discord redirect, the
-firewall, your first Game Master — is [in the main
-README](../README.md#deploying-the-server). It lives there so somebody deciding
-whether to host this can read what it takes without opening a second file.
+firewall, your first Game Master, and the timer that publishes releases — is [in
+the main README](../README.md#deploying-the-server). It lives there so somebody
+deciding whether to host this can read what it takes without opening a second
+file.
 
 This is everything after that first run.
 
