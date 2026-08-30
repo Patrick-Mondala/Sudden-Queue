@@ -14,14 +14,19 @@ Ships configured for *Sudden Attack Zero Point*, unofficially and by fans.
 Pointing it at a different game is environment variables, not a fork — see
 [Using it for another game](#using-it-for-another-game).
 
-Running it yourself? Start with [Making it yours](#making-it-yours) — a few
-values in the checkout belong to whoever published it, and one of them decides
-who can ship updates to your players.
+Running it yourself? Two sections are for you:
+[Deploying the server](#deploying-the-server) is the walkthrough from a bare box,
+and [Making it yours](#making-it-yours) covers the values in the checkout that
+belong to whoever published it — one of which decides who can ship updates to
+your players.
 
 - **`apps/server`** — Fastify + Postgres. Every rule lives here.
 - **`apps/desktop`** — Tauri v2 shell around a React client.
 - **`packages/core`** — the constants and pure functions both sides share, so a
   rank threshold cannot mean two different things.
+- **`compose.prod.yaml`** and **`deploy/`** — the deployment: database, server
+  and TLS in one file, with the Caddyfile, backup script and systemd unit beside
+  it.
 
 ## Running it
 
@@ -82,6 +87,128 @@ npm run -w @suddenqueue/desktop dev     # http://localhost:1420
 
 Everything works except the parts that need the shell: single-instance and the
 updater. Both are feature-detected, so their absence is silent rather than fatal.
+
+## Deploying the server
+
+Database, server and TLS come up together, as one stack. From a bare Ubuntu box
+to players signing in is the seven steps below.
+
+It is a light workload: one websocket per player, a heartbeat that touches no
+database, and pushed events only when something changes. A small VPS covers it.
+The one ceiling worth knowing is that sockets and chat buffers live in process
+memory, so it scales by getting a bigger box, not more of them. Crossing that
+would mean Redis for fan-out, somewhere north of a couple of thousand
+concurrent players.
+
+You need a host, a domain with an A record pointed at it, and a Discord
+application. The A record matters before you start rather than after: Caddy asks
+Let's Encrypt for the certificate the moment it boots, and Let's Encrypt will not
+issue one for an address that does not resolve to you. To prove the stack works
+before DNS exists, set `SQ_HOSTNAME=:80` and Caddy serves plain HTTP — fine for a
+`curl`, wrong for players, since sign-in tokens would cross the network in the
+clear.
+
+### 1. Docker
+
+```bash
+curl -fsSL https://get.docker.com | sudo sh
+```
+
+### 2. The code and its configuration
+
+```bash
+sudo git clone https://github.com/Patrick-Mondala/Sudden-Queue.git /srv/sudden-queue
+cd /srv/sudden-queue
+sudo cp .env.example .env
+sudo nano .env
+sudo chmod 600 .env
+```
+
+Five values must be set. Everything else in the file has a working default:
+
+| Key | What it is |
+| --- | --- |
+| `SQ_HOSTNAME` | your domain — the certificate is issued for this name |
+| `POSTGRES_PASSWORD` | `openssl rand -hex 32` |
+| `SESSION_SECRET` | `openssl rand -hex 32`, 32 characters minimum |
+| `DISCORD_CLIENT_ID` / `_SECRET` | from your Discord application |
+| `DISCORD_REDIRECT_URI` | `https://your.host/auth/discord/callback` |
+
+**Hex, not base64,** for both generated secrets. The database password ends up
+inside a connection URL, and a `/` from base64 does not truncate that URL — it
+makes the whole string unparseable, so the connection fails before it is
+attempted.
+
+Leave `DATABASE_URL` alone. Compose assembles it from `POSTGRES_USER`,
+`POSTGRES_PASSWORD` and `POSTGRES_DB`, so the password has no second place to
+disagree with itself.
+
+### 3. Bring it up
+
+```bash
+sudo docker compose -f compose.prod.yaml up -d --build
+sudo docker compose -f compose.prod.yaml --profile migrate run --rm migrate
+```
+
+Two commands rather than one because migrations are a deliberate step, here for
+the same reason they are in development: a process that migrates when it boots
+migrates production because somebody restarted it.
+
+The first build takes a few minutes. Caddy obtains and renews the certificate
+itself, and is the only container that publishes a port — Postgres has no
+`ports:` at all and is reached over the internal network, because publishing
+5432 on a public host is how a database gets found.
+
+### 4. Check it
+
+```bash
+sudo docker compose -f compose.prod.yaml ps          # three services up
+curl -s https://your.host/health                     # {"ok":true}
+curl -s https://your.host/config                     # the game this serves
+```
+
+If `/health` answers and `/config` describes your game, the stack is right and
+anything still wrong is Discord or DNS. Logs are
+`sudo docker compose -f compose.prod.yaml logs -f server`.
+
+### 5. Tell Discord where to come back to
+
+Under **OAuth2 → Redirects** in your Discord application, add the value you put
+in `DISCORD_REDIRECT_URI`:
+
+```
+https://your.host/auth/discord/callback
+```
+
+It must match character for character — a trailing slash is a different URL, and
+the failure reads like a Discord problem rather than a configuration one.
+
+### 6. A firewall
+
+```bash
+sudo ufw allow OpenSSH
+sudo ufw allow 80,443/tcp
+sudo ufw --force enable
+```
+
+### 7. Make yourself a Game Master
+
+Sign in through the app once so the account exists, then:
+
+```bash
+sudo docker compose -f compose.prod.yaml exec server \
+  npm run grant -- --discord <your discord id> --role game_master
+```
+
+That is the server running. The client still has to be pointed at it: set the
+repository variable `VITE_API_URL` to `https://your.host` **before** tagging a
+release, because that URL is compiled into the installer — see
+[Releasing the desktop app](#releasing-the-desktop-app).
+
+[deploy/README.md](deploy/README.md) covers what comes after the first day:
+backups and restoring one before you need it, updates and logs, and the systemd
+unit beside the Caddyfile for running the server straight from a checkout if you
+would rather manage Node and Postgres yourself.
 
 ## Working on it
 
@@ -170,10 +297,13 @@ accepts and runs.
 
 ### 2. Point the updater at your releases
 
-In the same file, `plugins.updater.endpoints` ships as `CHANGE-ME`. Until it
-names the repository you publish to, installed copies check a 404 and silently
-stay on the version they have. The release script refuses to run while it says
-`CHANGE-ME`, so this cannot ship wrong by accident.
+In the same file, `plugins.updater.endpoints` names the repository this checkout
+was published from. Point it at yours, and note that leaving it is worse than
+emptying it: installed copies would poll someone else's releases, and
+`release:manifest` reads the same field to work out where your assets will live,
+so its `latest.json` would send your players to installers you did not build.
+The only version of this mistake the script catches by itself is the literal
+`CHANGE-ME` placeholder, which it refuses to run on.
 
 ### 3. Change the bundle identifier
 
@@ -184,9 +314,10 @@ at a time.
 
 ### 4. Set a real database password
 
-`docker-compose.yml` and `.env.example` carry `suddenqueue_dev`, which is fine
-on your own machine and nowhere else. A hosted deployment needs a real password
-in `DATABASE_URL`, and a database that is not reachable from the internet.
+`docker-compose.yml` and the `DATABASE_URL` in `.env.example` carry
+`suddenqueue_dev`, which is fine on your own machine and nowhere else. A real
+deployment sets `POSTGRES_PASSWORD` and lets compose assemble the URL from it —
+[step 2 of the walkthrough](#2-the-code-and-its-configuration).
 
 ### 5. Your own Discord application and session secret
 
@@ -207,7 +338,7 @@ is a tag:
 
 ```bash
 # bump "version" in apps/desktop/src-tauri/tauri.conf.json first
-git tag v0.1.1 && git push --tags
+git tag v0.1.2 && git push --tags
 ```
 
 The workflow refuses a tag that disagrees with that version, because the updater
@@ -238,8 +369,10 @@ npm run release:manifest -- --notes "What changed"
 
 Upload the three files it names — the installer, its `.sig`, and `latest.json` —
 to a GitHub release tagged `v<version>`. `tauri build` signs the installers but
-does not write the manifest that points at them; in CI `tauri-action` fills that
-gap, and by hand `release:manifest` does.
+does not write the manifest that points at them, so `release:manifest` fills that
+gap. CI runs the same script rather than a second implementation of it, which is
+why a release built by hand and one built by tag describe themselves the same
+way.
 
 Builds are **not** code-signed with an Authenticode certificate, so Windows shows
 a SmartScreen warning ("More info → Run anyway"), and machines with Smart App
@@ -299,19 +432,6 @@ someone remembers to translate it.
 
 See [`apps/desktop/src/i18n/README.md`](apps/desktop/src/i18n/README.md) to add
 one.
-
-## Deploying the server
-
-One server, one database, one process — see [deploy/README.md](deploy/README.md)
-for the walkthrough, with a systemd unit, a Caddyfile and a backup script beside
-it.
-
-It is a light workload: one websocket per player, a heartbeat that touches no
-database, and pushed events only when something changes. A small VPS covers it.
-The one ceiling worth knowing is that sockets and chat buffers live in process
-memory, so it scales by getting a bigger box, not more of them. Crossing that
-would mean Redis for fan-out, somewhere north of a couple of thousand
-concurrent players.
 
 ## Licence
 
