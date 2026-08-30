@@ -103,6 +103,16 @@ const winRate = (wins = 0, losses = 0) => {
 const IGN_MIN = 2;
 const IGN_MAX = 16;
 
+/**
+ * How often a running client asks whether it is still current.
+ *
+ * Fifteen minutes because the deployment publishes within a minute of a
+ * release and then refuses this client on its next call anyway -- so this is
+ * not a race to be won, only a way to find out from the updater, which can
+ * install, rather than from a refusal, which cannot.
+ */
+const UPDATE_RECHECK_MS = 15 * 60 * 1000;
+
 const AV_COLORS = ["#4C6EF5","#B23A48","#2A9D8F","#8E44AD","#D97706","#0EA5E9","#DC2626","#65A30D","#7C3AED","#DB2777"];
 
 /** Stable colour pick for a server-issued id, so avatars do not change per render. */
@@ -2056,17 +2066,33 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
    */
   const [full, setFull] = useState(null);
 
+  /**
+   * Re-reads the fetched half.
+   *
+   * Needed on save as well as on arrival, because what is on screen is the
+   * handed-in player with this spread over the top -- so a name changed here
+   * stays hidden behind the copy fetched a moment ago until something
+   * remounts the screen. Refreshing the player alone was not enough, and the
+   * symptom was a rename that only appeared after switching tabs.
+   */
+  const loadFull = useCallback(
+    (id) =>
+      server
+        .playerProfile(id)
+        .then(setFull)
+        .catch(() => {
+          // Fall back to what we arrived with; it is thinner, not wrong.
+        }),
+    [],
+  );
+
   useEffect(() => {
     let cancelled = false;
     setFull(null);
-
-    server
+    void server
       .playerProfile(p.id)
       .then((res) => { if (!cancelled) setFull(res); })
-      .catch(() => {
-        // Fall back to what we arrived with; it is thinner, not wrong.
-      });
-
+      .catch(() => {});
     return () => { cancelled = true; };
   }, [p.id]);
 
@@ -2082,10 +2108,29 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
             <Avatar p={view} size={64} />
             <div style={{ flex: 1 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}><H size={26}><PlayerName p={view} /></H>{isMe && <Tag color={T.accent}>{t("You")}</Tag>}</div>
-              {isMe ? (
-                <InGameNameField value={view.inGameName ?? null} onSaved={onSaved} notify={notify} />
-              ) : (
-                <div style={{ fontFamily: T.mono, fontSize: 12, color: T.muted, marginTop: 4 }}>{view.discordName} · Discord</div>
+
+              {/* Both names, on your own profile as much as anyone else's.
+                  The heading is what people call you; this is the account it
+                  is attached to, and a profile is the one screen where how you
+                  signed in is worth knowing. It is omitted only when it would
+                  repeat the heading, which is the case for somebody who has
+                  not set an in-game name yet. */}
+              {altName(view) && (
+                <div style={{ fontFamily: T.mono, fontSize: 12, color: T.muted, marginTop: 4 }}>{altName(view)} · Discord</div>
+              )}
+
+              {isMe && (
+                <InGameNameField
+                  value={view.inGameName ?? null}
+                  onSaved={async () => {
+                    // Both halves: the player this screen was handed, and the
+                    // profile fetched over the top of it. Refreshing one alone
+                    // leaves the other to overwrite it with the old name.
+                    await onSaved?.();
+                    await loadFull(p.id);
+                  }}
+                  notify={notify}
+                />
               )}
             </div>
             <div style={{ textAlign: "right" }}>
@@ -3054,14 +3099,9 @@ export default function App() {
   const [updateCheck, setUpdateCheck] = useState({ phase: "checking" });
   const [recheck, setRecheck] = useState(0);
 
-  // Once a launch, and it has to stay that way now that the answer blocks the
-  // app: a copy that re-checked on a timer would raise the gate over whatever
-  // was on screen, which for a running client means a queue or a live match.
-  // Restarting is how anyone gets a new version anyway, so a timer could only
-  // interrupt to say what the next start would have said.
-  //
-  // The retry below is not that timer. It runs only while the answer is still
-  // unknown, and stops for good the moment one arrives.
+  // The check at launch. The retry inside it runs only while the answer is
+  // still unknown, and stops for good the moment one arrives; the periodic
+  // re-check further down is a separate thing.
   useEffect(() => {
     let cancelled = false;
     let timer = null;
@@ -3093,6 +3133,34 @@ export default function App() {
     setUpdateCheck({ phase: "checking" });
     setRecheck((n) => n + 1);
   }, []);
+
+  /**
+   * And again while it runs, because a client left open for a week is exactly
+   * the one most likely to be out of date.
+   *
+   * This was once-a-launch on the reasoning that a timer could only raise the
+   * gate over a live match. That reasoning does not survive the server having
+   * a version floor: an out-of-date client is refused on its next call
+   * whatever it is doing, so the interruption happens regardless. The only
+   * question is whether it arrives as a gate that can install the update, or
+   * as an app that has stopped working -- and the first is plainly better.
+   *
+   * Quiet in both directions it can be quiet. It never shows "checking", so a
+   * routine look does not blank a working app; and unlike at launch, a check
+   * that fails is dropped rather than gating. Not knowing is a reason not to
+   * open, but it is not a reason to close something already open and working.
+   */
+  useEffect(() => {
+    if (updateCheck.phase !== "clear") return;
+
+    const id = setInterval(() => {
+      checkForUpdate()
+        .then((found) => { if (found) setUpdateCheck({ phase: "found", update: found }); })
+        .catch(() => {});
+    }, UPDATE_RECHECK_MS);
+
+    return () => clearInterval(id);
+  }, [updateCheck.phase]);
 
   // The server's half of the same rule, which can arrive in answer to any call
   // and so is listened for outside the signed-in shell. It is not a check that

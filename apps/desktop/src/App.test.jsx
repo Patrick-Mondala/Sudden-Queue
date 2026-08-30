@@ -1864,6 +1864,58 @@ describe("your in-game name", () => {
     expect(server.setInGameName).not.toHaveBeenCalled();
   });
 
+  it("shows the new name straight away, without changing screens", async () => {
+    await openOwnProfile({ inGameName: "SNIPER_X" });
+    await screen.findByRole("button", { name: /Change your in-game name/i });
+
+    // What the server will say once the rename lands, on both endpoints: the
+    // screen renders the fetched profile over the handed-in player, so a
+    // refresh of one and not the other left the old name winning.
+    server.me.mockResolvedValue({ ...PROFILE, inGameName: "NEW_NAME" });
+    server.playerProfile.mockResolvedValue({
+      userId: "user-1",
+      discordName: "Player1",
+      inGameName: "NEW_NAME",
+      isGameMaster: false,
+      tier: "B",
+      peakTier: "B",
+      placementsRemaining: 0,
+      gamesPlayed: 40,
+      wins: 20,
+      losses: 20,
+      currentStreak: 0,
+      longestStreak: 0,
+      disputesInvolved: 0,
+      missedAccepts: 0,
+      position: 1,
+      team: null,
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /Change your in-game name/i }));
+    await userEvent.clear(screen.getByLabelText(/^In-game name$/i));
+    await userEvent.type(screen.getByLabelText(/^In-game name$/i), "NEW_NAME");
+    await userEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    await waitFor(() => expect(screen.getAllByText("NEW_NAME").length).toBeGreaterThan(0));
+    expect(screen.queryByText("SNIPER_X")).toBeNull();
+  });
+
+  it("keeps the Discord name on show, since that is what the other line is for", async () => {
+    await openOwnProfile({ inGameName: "SNIPER_X" });
+
+    // Your own profile is the one screen where the account behind the name is
+    // worth knowing, and a heading and an alt name that both say the in-game
+    // name would make having two of them pointless.
+    expect(await screen.findByText(/Player1 · Discord/i)).toBeTruthy();
+  });
+
+  it("shows one name for somebody who has not set an in-game name", async () => {
+    await openOwnProfile({ inGameName: null });
+
+    // Nothing to put on the second line but a copy of the first.
+    expect(screen.queryByText(/· Discord/i)).toBeNull();
+  });
+
   it("says so when the server refuses", async () => {
     server.setInGameName.mockRejectedValue(
       Object.assign(new Error("In-game name must be between 2 and 16 characters"), { status: 400 }),
@@ -2108,6 +2160,55 @@ describe("updating the app", () => {
     expect(await screen.findByText(/Ready to queue/i)).toBeTruthy();
     // The button, not the backoff, which has not come round yet.
     expect(updates.checkForUpdate).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps checking while it runs, and gates when it finds one", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await signedIn();
+      expect(screen.getByText(/Ready to queue/i)).toBeTruthy();
+
+      // Left open long enough for a release to have happened underneath it.
+      updates.checkForUpdate.mockResolvedValue(available());
+      updates.installUpdate.mockReturnValue(neverReturns());
+      await act(async () => { await vi.advanceTimersByTimeAsync(16 * 60 * 1000); });
+
+      expect(await screen.findByText(/Update required/i)).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not blank a working app to say it is checking", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await signedIn();
+
+      // Still nothing to install, and a routine look must not be visible.
+      await act(async () => { await vi.advanceTimersByTimeAsync(16 * 60 * 1000); });
+
+      expect(screen.queryByText(/Checking for updates/i)).toBeNull();
+      expect(screen.getByText(/Ready to queue/i)).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a running app open when a background check fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await signedIn();
+
+      updates.checkForUpdate.mockRejectedValue(new Error("network is down"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(16 * 60 * 1000); });
+
+      // Not knowing is a reason not to open. It is not a reason to close
+      // something already open and working.
+      expect(screen.queryByText(/Cannot reach the update service/i)).toBeNull();
+      expect(screen.getByText(/Ready to queue/i)).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("blocks when the server refuses this version, wherever the call was made", async () => {
