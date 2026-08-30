@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sudden Queue</title>
+<meta name="description" content="Ranked 5v5 matchmaking for Sudden Attack Zero Point. Unofficial, by fans.">
+<link rel="icon" href="icon.png" type="image/png">
+<meta property="og:title" content="Sudden Queue">
+<meta property="og:description" content="Ranked 5v5 matchmaking for Sudden Attack Zero Point. Unofficial, by fans.">
+<meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&family=Saira+Condensed:wght@600;700&display=swap">
+<style>
+  /*
+   * Deliberately one theme. This is the front door of a dark game client, and
+   * a light version of it would be a different product. Every colour is
+   * therefore painted explicitly rather than inherited from the host.
+   *
+   * Two accents, and they are not interchangeable. Blue is the product -- it
+   * is the blue in the app icon, and it marks the thing to press. Teal is the
+   * app's own status colour, used here only for liveness, exactly as the
+   * client uses it on the dots in its header. A teal button would be a lie
+   * about what teal means.
+   */
+  :root {
+    --ink: #0B0E13;
+    --panel: #141922;
+    --raised: #1A212B;
+    --line: #232B36;
+    --text: #E6EAF0;
+    --muted: #79828F;
+    --dim: #59626F;
+    --blue: #2F81F7;
+    --blue-lift: #4C93FF;
+    --teal: #2FC8BF;
+
+    --display: "Saira Condensed", "Bahnschrift", "Arial Narrow", sans-serif;
+    --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--text);
+    font-family: var(--body);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* A faint horizon behind the fold, so the ground is not flat black. */
+  .sky {
+    position: fixed;
+    inset: 0 0 auto 0;
+    height: 70vh;
+    background:
+      radial-gradient(90rem 40rem at 18% -10%, rgba(47,129,247,0.14), transparent 62%),
+      radial-gradient(60rem 30rem at 88% 4%, rgba(47,200,191,0.06), transparent 60%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .wrap {
+    position: relative;
+    z-index: 1;
+    width: min(1080px, 100% - 3rem);
+    margin-inline: auto;
+  }
+
+  a { color: var(--blue-lift); }
+  a:focus-visible,
+  button:focus-visible {
+    outline: 2px solid var(--blue-lift);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  .label {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 0.72rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+
+  /* ---------------------------------------------------------------- header */
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    padding: 1.6rem 0;
+  }
+  header img { width: 30px; height: 30px; border-radius: 6px; display: block; }
+  .wordmark {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 1.2rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  header .spacer { flex: 1; }
+  header a {
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    color: var(--muted);
+    text-decoration: none;
+  }
+  header a:hover { color: var(--text); }
+
+  /* ------------------------------------------------------------------ hero */
+
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+    gap: 3.5rem;
+    align-items: start;
+    padding: 3.5rem 0 4.5rem;
+  }
+
+  h1 {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: clamp(2.6rem, 6vw, 4.1rem);
+    line-height: 0.98;
+    letter-spacing: -0.005em;
+    text-wrap: balance;
+    margin: 0.9rem 0 0;
+  }
+  h1 em { font-style: normal; color: var(--blue); }
+
+  .lede {
+    max-width: 46ch;
+    color: #C3CAD4;
+    margin: 1.4rem 0 0;
+  }
+
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; margin-top: 2.2rem; }
+
+  .download {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.7rem;
+    background: var(--blue);
+    color: #04101F;
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 1.1rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    text-decoration: none;
+    padding: 0.95rem 1.6rem;
+    border: 1px solid var(--blue);
+    transition: background 0.14s ease, transform 0.14s ease;
+  }
+  .download:hover { background: var(--blue-lift); border-color: var(--blue-lift); transform: translateY(-1px); }
+  .download svg { width: 17px; height: 17px; }
+
+  .meta {
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    color: var(--muted);
+  }
+  .meta b { color: var(--text); font-weight: 500; }
+
+  /* --------------------------------------------------------------- readout */
+
+  .readout {
+    border: 1px solid var(--line);
+    background: linear-gradient(var(--panel), var(--ink));
+  }
+  .readout h2 {
+    margin: 0;
+    padding: 0.8rem 1.1rem;
+    border-bottom: 1px solid var(--line);
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 0.72rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  .readout dl {
+    margin: 0;
+    padding: 0.5rem 1.1rem 1rem;
+    display: grid;
+    grid-template-columns: 7.2rem minmax(0, 1fr);
+    font-family: var(--mono);
+    font-size: 0.84rem;
+  }
+  .readout dt {
+    padding: 0.55rem 0;
+    color: var(--dim);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-size: 0.72rem;
+  }
+  .readout dd {
+    margin: 0;
+    padding: 0.55rem 0;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+  .readout dd + dt, .readout dd + dd { border-top: 1px solid #1B222C; }
+  .readout dt + dd { border-top: 1px solid #1B222C; }
+  .readout dt:first-of-type, .readout dt:first-of-type + dd { border-top: 0; }
+
+  .dot {
+    display: inline-block;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--teal);
+    margin-right: 0.5rem;
+    vertical-align: 0.08em;
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+  .dot.down { background: var(--dim); animation: none; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  .regions { display: inline-flex; flex-wrap: wrap; gap: 0.34rem; }
+  .regions span {
+    border: 1px solid var(--line);
+    color: var(--muted);
+    padding: 0.05rem 0.4rem;
+    font-size: 0.76rem;
+  }
+
+  /* -------------------------------------------------------------- sequence */
+
+  .rule { border-top: 1px solid var(--line); }
+
+  .flow {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 2.5rem;
+    padding: 3rem 0;
+  }
+  .flow h3 {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 1.35rem;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    margin: 0.55rem 0 0.5rem;
+  }
+  .flow p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+  .step {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--blue);
+  }
+
+  /* ----------------------------------------------------------- before note */
+
+  .note {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr);
+    gap: 3rem;
+    padding: 3rem 0 3.5rem;
+  }
+  .note h2 {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 1.6rem;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    margin: 0.5rem 0 0.9rem;
+  }
+  .note p { margin: 0 0 0.9rem; color: #B4BCC7; max-width: 60ch; }
+  .note p:last-child { margin-bottom: 0; }
+  .note strong { color: var(--text); font-weight: 500; }
+
+  .hash {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    padding: 1rem 1.1rem;
+    align-self: start;
+  }
+  .hash .label { display: block; margin-bottom: 0.6rem; }
+  .hash code {
+    display: block;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    line-height: 1.7;
+    color: var(--teal);
+    overflow-wrap: anywhere;
+  }
+  .hash button {
+    margin-top: 0.9rem;
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    padding: 0.4rem 0.75rem;
+    cursor: pointer;
+    transition: color 0.14s ease, border-color 0.14s ease;
+  }
+  .hash button:hover { color: var(--text); border-color: var(--dim); }
+
+  /* ---------------------------------------------------------------- footer */
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding: 2rem 0 3rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem 2rem;
+    align-items: baseline;
+    font-size: 0.86rem;
+    color: var(--dim);
+  }
+  footer .spacer { flex: 1; }
+  footer a { color: var(--muted); text-decoration: none; }
+  footer a:hover { color: var(--text); }
+
+  /* ------------------------------------------------------------ responsive */
+
+  @media (max-width: 880px) {
+    .hero, .note { grid-template-columns: minmax(0, 1fr); gap: 2.5rem; }
+    .hero { padding-bottom: 3rem; }
+    .flow { grid-template-columns: minmax(0, 1fr); gap: 1.8rem; padding: 2.2rem 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+    .download:hover { transform: none; }
+  }
+</style>
+</head>
+<body>
+<div class="sky"></div>
+
+<div class="wrap">
+
+  <header>
+    <img src="icon.png" alt="">
+    <span class="wordmark" id="wordmark">Sudden Queue</span>
+    <span class="spacer"></span>
+    <a href="https://github.com/Patrick-Mondala/Sudden-Queue">Source</a>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div>
+        <span class="label">Unofficial &middot; built by players</span>
+        <h1>The matchmaking <em id="game">Sudden Attack Zero Point</em> never shipped.</h1>
+        <p class="lede">
+          Sign in with Discord, queue on your own or with a party, and get put into a
+          rated <span id="format">5v5</span> with nine other people who queued too.
+          Both captains report the score. Your rank moves when they agree.
+        </p>
+
+        <div class="actions">
+          <a class="download" id="download" href="/download/Sudden.Queue_x64-setup.exe">
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0h1v9.6l3.3-3.3.7.7L8.5 12h-1L3 7l.7-.7L7 9.6V0h1zM2 14h12v1H2z"/></svg>
+            Download for Windows
+          </a>
+          <span class="meta">
+            <b id="version">v0.1.3</b> &middot; <span id="size">3.0 MB</span> &middot; Windows 10 &amp; 11
+          </span>
+        </div>
+      </div>
+
+      <div class="readout">
+        <h2>This deployment</h2>
+        <dl>
+          <dt>Server</dt>
+          <dd><span class="dot" id="dot"></span><span id="status">checking</span></dd>
+          <dt>Game</dt>
+          <dd id="gameName">Sudden Attack Zero Point</dd>
+          <dt>Format</dt>
+          <dd id="matchFormat">5v5, parties up to 5</dd>
+          <dt>Regions</dt>
+          <dd><span class="regions" id="regions"><span>NA</span><span>SA</span><span>EU</span><span>ASIA</span></span></dd>
+          <dt>Ranks</dt>
+          <dd id="ranks">F&minus; through S+ &mdash; 21 tiers</dd>
+          <dt>Client</dt>
+          <dd id="clientVersion">0.1.3</dd>
+        </dl>
+      </div>
+    </section>
+
+    <div class="rule"></div>
+
+    <section class="flow">
+      <div>
+        <span class="step">01 &rarr;</span>
+        <h3>Queue</h3>
+        <p>
+          Solo or with up to four friends. Pick your region, and the matchmaker
+          widens its search the longer you wait rather than pairing you with
+          anyone at any cost.
+        </p>
+      </div>
+      <div>
+        <span class="step">02 &rarr;</span>
+        <h3>Accept</h3>
+        <p>
+          Ten players get a ready-check at once. Everyone accepts, or the queue
+          reforms without whoever did not, and they sit out a short cooldown.
+        </p>
+      </div>
+      <div>
+        <span class="step">03 &rarr;</span>
+        <h3>Report</h3>
+        <p>
+          Both captains say who won. Agreement settles it and rating moves; a
+          disagreement goes to a Game Master rather than to whoever clicked
+          first.
+        </p>
+      </div>
+    </section>
+
+    <div class="rule"></div>
+
+    <section class="note">
+      <div>
+        <span class="label">Before you install</span>
+        <h2>Windows will warn you</h2>
+        <p>
+          The installer is not signed with an Authenticode certificate, so
+          SmartScreen shows a blue box saying it protected your PC. Choose
+          <strong>More info &rarr; Run anyway</strong>. If Smart App Control is
+          switched on, it will block the installer outright, and the only way
+          past that is to turn it off.
+        </p>
+        <p>
+          That warning is honest and worth reading. A certificate costs money
+          every year and buys nothing except the absence of the dialog, which is
+          not a good use of a fan project's money &mdash; so instead of asking you
+          to trust a badge, here is the checksum. Compare it against the file you
+          downloaded.
+        </p>
+        <p class="meta">
+          <code style="font-family:var(--mono);color:var(--muted)">certutil -hashfile "Sudden.Queue_x64-setup.exe" SHA256</code>
+        </p>
+      </div>
+
+      <div class="hash">
+        <span class="label">SHA&#8209;256 &middot; <span id="hashFor">current release</span></span>
+        <code id="sha">Loading&hellip;</code>
+        <button type="button" id="copy" aria-live="polite">Copy</button>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>
+      Unofficial, made by fans. Not affiliated with the publisher or developer of
+      <span id="footerGame">Sudden Attack Zero Point</span>.
+    </span>
+    <span class="spacer"></span>
+    <a href="https://github.com/Patrick-Mondala/Sudden-Queue">GitHub</a>
+    <a href="https://github.com/Patrick-Mondala/Sudden-Queue/blob/main/LICENSE">MIT</a>
+  </footer>
+
+</div>
+
+<script>
+  /*
+   * Everything below upgrades a page that already works. The download link,
+   * the version and the copy are all correct in the markup, because a page
+   * whose download button depends on a fetch is a page that breaks the moment
+   * anything about the deployment is having a bad day.
+   *
+   * What the fetches add is truth about *this* deployment rather than the one
+   * the file was written on -- which matters, because anyone can host this for
+   * a different game entirely, and then every number here is wrong.
+   */
+  const set = (id, value) => {
+    const el = document.getElementById(id);
+    if (el && value) el.textContent = value;
+  };
+
+  async function readDeployment() {
+    try {
+      const config = await fetch("/config", { cache: "no-store" }).then((r) => {
+        if (!r.ok) throw new Error(String(r.status));
+        return r.json();
+      });
+
+      document.getElementById("dot").classList.remove("down");
+      set("status", "online");
+      set("wordmark", config.appName);
+      set("game", config.gameName);
+      set("gameName", config.gameName);
+      set("footerGame", config.gameName);
+      document.title = config.appName;
+
+      const side = config.teamSize;
+      set("format", side + "v" + side);
+      set("matchFormat", side + "v" + side + ", parties up to " + config.maxPartySize);
+
+      if (Array.isArray(config.regions) && config.regions.length) {
+        document.getElementById("regions").innerHTML = "";
+        for (const region of config.regions) {
+          const chip = document.createElement("span");
+          chip.textContent = region.label;
+          chip.title = region.name;
+          document.getElementById("regions").append(chip);
+        }
+      }
+
+      if (Array.isArray(config.tiers) && config.tiers.length) {
+        const first = config.tiers[0], last = config.tiers[config.tiers.length - 1];
+        set("ranks", first + " through " + last + " — " + config.tiers.length + " tiers");
+      }
+    } catch {
+      // The server being unreachable does not stop anyone downloading the app;
+      // it only means this panel cannot describe it. Say so rather than
+      // leaving a stale "online" on screen.
+      document.getElementById("dot").classList.add("down");
+      set("status", "unreachable");
+    }
+  }
+
+  async function readRelease() {
+    try {
+      const manifest = await fetch("/download/latest.json", { cache: "no-store" }).then((r) => {
+        if (!r.ok) throw new Error(String(r.status));
+        return r.json();
+      });
+
+      if (manifest.version) {
+        set("version", "v" + manifest.version);
+        set("clientVersion", manifest.version);
+        set("hashFor", "v" + manifest.version);
+      }
+
+      const url = manifest?.platforms?.["windows-x86_64"]?.url;
+      const file = url ? decodeURIComponent(url.split("/").pop()) : null;
+
+      if (file) {
+        // Bytes, from the file itself rather than a number typed in here that
+        // would slowly stop being true.
+        const head = await fetch("/download/" + encodeURIComponent(file), { method: "HEAD" });
+        const bytes = Number(head.headers.get("content-length"));
+        if (bytes > 0) set("size", (bytes / 1048576).toFixed(1) + " MB");
+
+        const sums = await fetch("/download/SHA256SUMS", { cache: "no-store" }).then((r) =>
+          r.ok ? r.text() : "",
+        );
+        const line = sums.split("\n").find((l) => l.includes(file));
+        const digest = line && line.trim().split(/\s+/)[0];
+        if (digest) set("sha", digest);
+        else set("sha", "Not published for this release.");
+      }
+    } catch {
+      set("sha", "Could not read the checksum. The download above still works.");
+    }
+  }
+
+  document.getElementById("copy").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    try {
+      await navigator.clipboard.writeText(document.getElementById("sha").textContent.trim());
+      button.textContent = "Copied";
+    } catch {
+      // Clipboard access is refused in plenty of ordinary situations. The text
+      // is on screen and selectable, so say that rather than nothing.
+      button.textContent = "Select it to copy";
+    }
+    setTimeout(() => { button.textContent = "Copy"; }, 2400);
+  });
+
+  readDeployment();
+  readRelease();
+</script>
+</body>
+</html>

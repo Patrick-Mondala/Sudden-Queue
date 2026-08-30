@@ -89,6 +89,8 @@ services:
       # The published installer and its latest.json, served at /download.
       # Read-only: nothing in this stack writes a release, they are copied in.
       - ./releases:/srv/releases:ro
+      # The download page. Part of the checkout, so a git pull updates it.
+      - ./deploy/site:/srv/site:ro
       - caddy-data:/data      # certificates; losing this means re-issuing them
       - caddy-config:/config
 

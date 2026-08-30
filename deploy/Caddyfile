@@ -20,6 +20,22 @@
 		# The manifest is the one file here that changes meaning in place: a
 		# cached copy is a player told they are current when they are not.
 		header /latest.json Cache-Control "no-cache"
+		# Public data by definition -- every installed client fetches it
+		# unauthenticated. Readable cross-origin so a download page hosted
+		# anywhere can say which version this deployment is serving.
+		header /latest.json Access-Control-Allow-Origin "*"
+		file_server
+	}
+
+	# The download page, which is the only thing a player sees before they have
+	# the app. Served from the checkout rather than built, so `git pull` ships
+	# it and there is no third artifact to publish.
+	handle / {
+		root * /srv/site
+		file_server
+	}
+	handle /icon.png {
+		root * /srv/site
 		file_server
 	}
 

@@ -101,6 +101,17 @@ mv -f "$releases/.$installer.incoming" "$releases/$installer"
 install -m 0644 "$staging/SHA256SUMS" "$releases/.SHA256SUMS.incoming"
 mv -f "$releases/.SHA256SUMS.incoming" "$releases/SHA256SUMS"
 
+# A copy under a name with no version in it, so the download page and every
+# link anyone has ever pasted into Discord keep working across releases. The
+# versioned file stays: it is what latest.json names, what SHA256SUMS vouches
+# for, and what the server checks before it raises the floor. This is an alias
+# for people, not for machines.
+alias_name="$(printf '%s' "$installer" | sed -E "s/_${version//./\\.}_/_/")"
+if [ "$alias_name" != "$installer" ]; then
+  install -m 0644 "$staging/$installer" "$releases/.$alias_name.incoming"
+  mv -f "$releases/.$alias_name.incoming" "$releases/$alias_name"
+fi
+
 install -m 0644 "$staging/latest.json" "$releases/.latest.json.incoming"
 mv -f "$releases/.latest.json.incoming" "$releases/latest.json"
 
