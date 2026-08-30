@@ -1,17 +1,13 @@
 # Caddy in front of the Sudden Queue server.
 #
-#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
-#   sudo systemctl reload caddy
-#
-# Replace the hostname with yours. Caddy gets and renews the certificate on
-# its own, so there is nothing else to set up for TLS.
+# The hostname comes from SQ_HOSTNAME in .env, so there is nothing to edit
+# here. Caddy obtains and renews the certificate itself.
 
-queue.example.com {
+{$SQ_HOSTNAME} {
 	# The server holds a WebSocket per signed-in player. Caddy proxies those
-	# without any special configuration, but the read timeout has to outlast
-	# a quiet socket: the client heartbeat is every five seconds, so a minute
-	# is generous while still cutting off a connection that has really gone.
-	reverse_proxy 127.0.0.1:3000 {
+	# without special configuration; flush_interval -1 stops it buffering the
+	# push events, which would otherwise arrive in batches.
+	reverse_proxy server:3000 {
 		flush_interval -1
 	}
 
@@ -26,20 +22,15 @@ queue.example.com {
 	}
 
 	log {
-		output file /var/log/caddy/sudden-queue.log {
-			roll_size 10MiB
-			roll_keep 5
-		}
+		output stdout
+		format console
 	}
 }
 
-# Serving on a bare IP address instead? Let's Encrypt will not issue a
-# certificate for one, so this is the only shape that works:
+# Testing on a bare IP, before DNS exists? Let's Encrypt will not issue a
+# certificate for an address, so set SQ_HOSTNAME to `:80` and Caddy will serve
+# plain HTTP.
 #
-#   :80 {
-#   	reverse_proxy 127.0.0.1:3000
-#   }
-#
-# It is fine for testing and wrong for players: sign-in tokens would cross the
-# network in the clear, and the Discord callback would be an unencrypted URL.
-# Get a hostname before anyone else uses it.
+# That is fine for proving the stack is up and wrong for players: sign-in
+# tokens would cross the network in the clear and the Discord callback would be
+# an unencrypted URL. Get a hostname before anyone else uses it.

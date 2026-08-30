@@ -1,0 +1,42 @@
+# Everything the image does not need, and a few things it must never have.
+#
+# node_modules first and loudest: copying a host's tree into the image ships
+# platform-specific binaries built for the wrong platform, and silently wins
+# over the ones npm ci just installed.
+node_modules
+**/node_modules
+
+# Secrets. .env is mounted at run time, never baked in -- an image carrying a
+# database password is a password in every registry it is ever pushed to.
+.env
+.env.*
+!.env.example
+*.key
+*.key.pub
+*.pem
+
+# Build output and caches.
+dist
+**/dist
+target
+**/target
+.vite
+**/.vite
+
+# The desktop app is not part of the server image.
+apps/desktop/src-tauri
+apps/desktop/src
+apps/desktop/scripts
+apps/desktop/index.html
+apps/desktop/vite.config.js
+apps/desktop/vitest.config.js
+
+# Repository furniture.
+.git
+.github
+.gitignore
+reference
+deploy
+README.md
+LICENSE
+docker-compose.yml

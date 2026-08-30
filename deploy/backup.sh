@@ -29,7 +29,16 @@ FILE="$DEST/${DB_NAME}-${STAMP}.sql.gz"
 # --clean --if-exists so the dump can be restored over an existing database
 # without hand-editing it first, which is exactly the moment you least want to
 # be hand-editing anything.
-pg_dump \
+# SQ_IN_DOCKER=1 reaches the database inside the compose stack. Unset, it
+# expects a pg_dump on this machine talking to a local Postgres.
+if [ -n "${SQ_IN_DOCKER:-}" ]; then
+	COMPOSE="${SQ_COMPOSE_FILE:-/srv/sudden-queue/compose.prod.yaml}"
+	DUMP=(docker compose -f "$COMPOSE" exec -T postgres pg_dump)
+else
+	DUMP=(pg_dump)
+fi
+
+"${DUMP[@]}" \
 	--username="$DB_USER" \
 	--dbname="$DB_NAME" \
 	--no-owner \

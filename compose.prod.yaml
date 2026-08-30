@@ -1,0 +1,106 @@
+# The whole deployment: database, server, TLS.
+#
+#   cp .env.example .env    # then fill it in
+#   docker compose -f compose.prod.yaml up -d
+#
+# Migrations are a separate, deliberate step rather than something that
+# happens on boot -- see the `migrate` profile at the bottom.
+name: sudden-queue
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-suddenqueue}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-suddenqueue}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Deliberately no `ports:`. The database is reachable from the other
+    # containers on this network and from nowhere else. Publishing 5432 on a
+    # public host is how a database with a default password gets found.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-suddenqueue} -d ${POSTGRES_DB:-suddenqueue}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      # Assembled here rather than written by hand, so the password cannot end
+      # up in two places disagreeing. The host is the service name.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-suddenqueue}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-suddenqueue}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:?set DISCORD_CLIENT_ID in .env}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:?set DISCORD_CLIENT_SECRET in .env}
+      DISCORD_REDIRECT_URI: ${DISCORD_REDIRECT_URI:?set DISCORD_REDIRECT_URI in .env}
+      # Everything describing the game rather than the tool. All optional.
+      SQ_APP_NAME: ${SQ_APP_NAME:-}
+      SQ_GAME_NAME: ${SQ_GAME_NAME:-}
+      SQ_TEAM_SIZE: ${SQ_TEAM_SIZE:-}
+      SQ_MAX_PARTY_SIZE: ${SQ_MAX_PARTY_SIZE:-}
+      SQ_MAX_TEAM_SIZE: ${SQ_MAX_TEAM_SIZE:-}
+      SQ_REGIONS: ${SQ_REGIONS:-}
+      SQ_TIERS: ${SQ_TIERS:-}
+      SQ_TIER_FLOORS: ${SQ_TIER_FLOORS:-}
+      SQ_DEFAULT_RATING: ${SQ_DEFAULT_RATING:-}
+      SQ_PLACEMENT_GAMES: ${SQ_PLACEMENT_GAMES:-}
+    # Also no `ports:`. Caddy reaches it over the internal network; the only
+    # things open to the world are 80 and 443.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Caddy reads this from the Caddyfile, so the hostname lives in .env
+      # with everything else rather than in a file you have to remember to edit.
+      SQ_HOSTNAME: ${SQ_HOSTNAME:?set SQ_HOSTNAME in .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data      # certificates; losing this means re-issuing them
+      - caddy-config:/config
+
+  # Migrations, run on purpose:
+  #
+  #   docker compose -f compose.prod.yaml --profile migrate run --rm migrate
+  #
+  # A separate one-shot rather than part of the server's startup: a process
+  # that migrates when it boots will migrate production because somebody
+  # restarted it.
+  migrate:
+    profiles: ["migrate"]
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-suddenqueue}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-suddenqueue}
+    command: ["npm", "run", "db:migrate", "--workspace", "@suddenqueue/server"]
+
+volumes:
+  pgdata:
+  caddy-data:
+  caddy-config:
