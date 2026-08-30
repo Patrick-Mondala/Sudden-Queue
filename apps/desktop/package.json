@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
-    "release:manifest": "node scripts/release-manifest.mjs"
+    "release:manifest": "node scripts/release-manifest.mjs",
+    "i18n:extract": "node scripts/extract-strings.mjs"
   },
   "dependencies": {
     "@suddenqueue/core": "*",
