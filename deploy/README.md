@@ -45,33 +45,55 @@ in `releases/`, which Caddy serves at `/download` and the server reads the
 current version out of.
 
 ```bash
-cd /srv/sudden-queue/releases
-BASE=https://github.com/<you>/<repo>/releases/download/v0.1.2
-sudo curl -LO $BASE/Sudden.Queue_0.1.2_x64-setup.exe
-sudo curl -LO $BASE/SHA256SUMS
-sha256sum -c SHA256SUMS                            # ...setup.exe: OK
-sudo curl -LO $BASE/latest.json
-curl -s https://your.host/download/latest.json     # the version you just published
+cd /srv/sudden-queue
+sudo deploy/publish-release.sh            # the latest published release
+sudo deploy/publish-release.sh v0.1.3     # or a particular one
 ```
 
-**Installer first, `latest.json` last**, and not the other way round.
-`latest.json` is what the server reads to decide which clients it will still
-serve, so the moment it lands every older copy is refused. If the installer it
-names is not there yet, every player is locked out of an app that cannot
-download the version it is being told to install.
+It fetches the installer, `SHA256SUMS` and `latest.json` from the GitHub
+release, verifies the checksum, and puts them where Caddy serves them from. It
+prints the version now being served, asked the way a client asks for it.
 
-The server checks `SHA256SUMS` itself before believing the manifest, so getting
-this wrong fails safe rather than loudly: the floor stays where it was and the
-log says `not raising the client version floor` with the reason. Worth a look
-after publishing:
+Doing it by hand is three downloads whose order matters silently, which is why
+there is a script. `latest.json` is what the server reads to decide which
+clients it will still serve, so the moment it lands every older copy is refused
+— and if the installer it names is not there yet, every player is locked out of
+an app that cannot download the version it is being told to install. The script
+stages everything in a temporary directory, checks it there, and moves the
+manifest in last.
+
+It refuses rather than half-finishes: a checksum that does not match, or a tag
+whose manifest names a different version, leaves the live directory untouched.
+Running it twice is free — it costs one small file to notice there is nothing to
+do, so it is safe on a timer. Running it after a failed attempt finishes the
+job.
+
+The server checks `SHA256SUMS` for itself as well, before believing any
+manifest, so even a botched manual copy fails safe: the floor stays where it was
+and the log says why.
 
 ```bash
 sudo docker compose -f compose.prod.yaml logs --tail 20 server | grep -i floor
 ```
 
-Nothing restarts. The server picks up the new manifest within a few seconds --
-including the installer arriving late, which is why a bad publish recovers on
+Nothing restarts. The server picks up a new manifest within a few seconds --
+including an installer that arrives late, which is why a bad publish recovers on
 its own once the missing file is in place.
+
+### Without watching it
+
+The script is safe to run unattended, so a timer publishes releases on its own:
+
+```bash
+sudo crontab -e
+#   */10 * * * *  cd /srv/sudden-queue && deploy/publish-release.sh >> /var/log/sudden-queue-publish.log 2>&1
+```
+
+Think before doing that. It only ever picks up releases that have been published
+on GitHub rather than left as drafts, so nothing goes out that nobody looked at
+— but publishing is a cutover, and a timer means the cutover happens whenever
+the timer next fires rather than when you are watching. On a deployment with
+players in it, that is a decision worth making on purpose.
 
 Old installers can stay where they are. Nothing points at them once
 `latest.json` moves on, and keeping them means a link somebody saved still

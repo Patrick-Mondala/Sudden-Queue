@@ -25,8 +25,8 @@ your players.
 - **`packages/core`** — the constants and pure functions both sides share, so a
   rank threshold cannot mean two different things.
 - **`compose.prod.yaml`** and **`deploy/`** — the deployment: database, server
-  and TLS in one file, with the Caddyfile, backup script and systemd unit beside
-  it.
+  and TLS in one file, with the Caddyfile, the publish and backup scripts, and
+  the systemd unit beside it.
 
 ## Running it
 
@@ -387,34 +387,37 @@ players actually download comes from your server, so the last step of a release
 is copying two files into the `releases/` directory beside `compose.prod.yaml`:
 
 ```bash
-# on the server, from the GitHub release
-cd /srv/sudden-queue/releases
-BASE=https://github.com/<you>/<repo>/releases/download/v0.1.2
-sudo curl -LO $BASE/Sudden.Queue_0.1.2_x64-setup.exe
-sudo curl -LO $BASE/SHA256SUMS
-sha256sum -c SHA256SUMS          # Sudden.Queue_0.1.2_x64-setup.exe: OK
-sudo curl -LO $BASE/latest.json
+# on the server
+cd /srv/sudden-queue
+sudo deploy/publish-release.sh            # the latest published release
 ```
 
-**The installer first, `latest.json` last.** The order is not cosmetic. The
-server reads `latest.json` to decide which client versions it will still serve,
-so the moment that file lands, every older copy is refused — and if the
-installer it names is not there yet, everyone is locked out of an app that
-cannot download the version it is being told to install.
+That fetches the installer, `SHA256SUMS` and `latest.json` from the GitHub
+release, verifies the checksum in a staging directory, and moves them into
+`releases/` — the manifest last.
 
-That is also what `SHA256SUMS` is for. The server hashes the installer and
-compares it before it will believe the manifest, so a half-copied file raises no
-floor and shuts nobody out; it logs `not raising the client version floor` and
-keeps serving the version it was already serving. The `sha256sum -c` above is
-the same check, run by you, before the manifest makes it matter.
+The order is not cosmetic, which is why it is a script rather than three
+`curl`s. The server reads `latest.json` to decide which client versions it will
+still serve, so the moment that file lands, every older copy is refused — and if
+the installer it names is not there yet, everyone is locked out of an app that
+cannot download the version it is being told to install. The script stages and
+checks before anything reaches the live directory, and refuses rather than
+half-finishing.
+
+`SHA256SUMS` is checked twice over: once by the script before it publishes, and
+again by the server before it believes any manifest. So even a hand-copied
+mistake fails safe — no floor rises, the log says `not raising the client
+version floor` with the reason, and the deployment keeps serving the version it
+was already serving.
 
 It is an integrity check rather than an authenticity one — anyone who can write
-to this directory can rewrite both files. What makes that not matter is the
+to that directory can rewrite both files. What makes that not matter is the
 minisign signature the updater verifies before it runs an installer. This
 catches the truncated copy and the wrong order.
 
 Nothing needs restarting. The server notices the new manifest within a few
-seconds.
+seconds. [deploy/README.md](deploy/README.md) covers running it on a timer, and
+why you might not want to.
 
 ### Updates are not optional
 

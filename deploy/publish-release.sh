@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+#
+# Publishes a built release to this deployment.
+#
+#   sudo deploy/publish-release.sh          # the latest published release
+#   sudo deploy/publish-release.sh v0.1.3   # a particular one
+#
+# Fetches the installer, its checksums and the manifest from the GitHub
+# release, checks them, and puts them where Caddy serves them from.
+#
+# This exists because the manual version is six commands whose order matters
+# silently. latest.json is what raises the version floor: the moment it lands,
+# every older client is refused, and if the installer it names is not there yet
+# they are refused from an app that cannot download the thing that would let
+# them back in. So here the manifest moves last, after the installer is in
+# place and has been checked, and nothing is copied into the live directory
+# until all of it has been verified somewhere else.
+#
+# Pull rather than push, deliberately. The alternative is CI holding an SSH key
+# to this box, which is a credential that can do rather more than publish a
+# release, kept somewhere with a much larger attack surface than the server it
+# opens.
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root="$(cd "$here/.." && pwd)"
+releases="$root/releases"
+
+fail() { echo "publish-release: $*" >&2; exit 1; }
+
+command -v curl >/dev/null || fail "curl is not installed"
+command -v sha256sum >/dev/null || fail "sha256sum is not installed"
+
+[ -d "$releases" ] || fail "no releases directory at $releases -- is this the deployment checkout?"
+
+# Who to fetch from, taken from the checkout rather than written here again.
+remote="$(git -C "$root" config --get remote.origin.url || true)"
+[ -n "$remote" ] || fail "no git remote in $root, so there is nowhere to fetch a release from"
+slug="$(printf '%s' "$remote" | sed -E 's#^.*github\.com[:/]##; s#\.git$##')"
+[ -n "$slug" ] || fail "cannot read owner/repo out of $remote"
+
+tag="${1:-}"
+if [ -z "$tag" ]; then
+  # The latest *published* release. A draft has not been looked at by a person
+  # yet, and this is not the place to decide it is ready.
+  tag="$(curl -fsSL "https://api.github.com/repos/$slug/releases/latest" |
+    grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+  [ -n "$tag" ] || fail "no published release found for $slug"
+fi
+
+base="https://github.com/$slug/releases/download/$tag"
+staging="$(mktemp -d)"
+trap 'rm -rf "$staging"' EXIT
+
+echo "Publishing $tag from $slug"
+
+# The manifest first, but into staging -- it names the installer, and it is the
+# last thing that will be allowed near the live directory.
+curl -fsSL -o "$staging/latest.json" "$base/latest.json" ||
+  fail "no latest.json in $tag. Is the release still a draft?"
+
+version="$(grep -m1 '"version"' "$staging/latest.json" | sed -E 's/.*"version": *"([^"]+)".*/\1/')"
+installer="$(grep -m1 '"url"' "$staging/latest.json" | sed -E 's#.*/([^/"]+)".*#\1#')"
+[ -n "$version" ] || fail "latest.json names no version"
+[ -n "$installer" ] || fail "latest.json names no installer"
+
+# A tag and a manifest that disagree means one of them is from another release,
+# and publishing either would tell clients to install something that is not
+# what arrived.
+[ "$version" = "${tag#v}" ] ||
+  fail "$tag carries a manifest for $version. Refusing to publish a mismatch."
+
+# Asked before the installer is fetched rather than after, so a run with
+# nothing to do costs a manifest instead of three megabytes -- which is the
+# difference between this being safe to put on a timer and not.
+#
+# The installer has to be there too. A manifest that arrived without one is
+# exactly the half-finished state worth finishing rather than skipping.
+current=""
+if [ -f "$releases/latest.json" ]; then
+  current="$(grep -m1 '"version"' "$releases/latest.json" | sed -E 's/.*"version": *"([^"]+)".*/\1/' || true)"
+  if [ "$current" = "$version" ] && [ -f "$releases/$installer" ]; then
+    echo "$version is already published. Nothing to do."
+    exit 0
+  fi
+fi
+[ -z "$current" ] || [ "$current" = "$version" ] || echo "Replacing $current with $version"
+
+curl -fsSL -o "$staging/SHA256SUMS" "$base/SHA256SUMS" || fail "no SHA256SUMS in $tag"
+curl -fsSL -o "$staging/$installer" "$base/$installer" || fail "no $installer in $tag"
+
+echo -n "Checking $installer ... "
+(cd "$staging" && sha256sum -c --status SHA256SUMS) ||
+  fail "checksum mismatch. The download is corrupt or the release was rebuilt; nothing has been changed."
+echo "ok"
+
+# Installer and checksums first, manifest last, each moved rather than written
+# in place so nothing is ever half a file while the server is reading it.
+install -m 0644 "$staging/$installer" "$releases/.$installer.incoming"
+mv -f "$releases/.$installer.incoming" "$releases/$installer"
+install -m 0644 "$staging/SHA256SUMS" "$releases/.SHA256SUMS.incoming"
+mv -f "$releases/.SHA256SUMS.incoming" "$releases/SHA256SUMS"
+
+install -m 0644 "$staging/latest.json" "$releases/.latest.json.incoming"
+mv -f "$releases/.latest.json.incoming" "$releases/latest.json"
+
+echo "Published $version. The floor rises to it within a few seconds."
+
+# What a player's client will actually fetch, asked the way they will ask it.
+hostname="$(grep -m1 '^SQ_HOSTNAME=' "$root/.env" 2>/dev/null | cut -d= -f2- || true)"
+if [ -n "$hostname" ] && [ "${hostname#:}" = "$hostname" ]; then
+  echo -n "Serving: "
+  curl -fsS "https://$hostname/download/latest.json" | grep -m1 '"version"' ||
+    echo "  could not read https://$hostname/download/latest.json -- check the caddy container"
+fi
