@@ -300,6 +300,19 @@ export class RealtimeBus {
     this.closedByUs = false;
     this._clearReconnect();
 
+    // Whatever was open is being replaced. Without this the previous socket
+    // stays open with its handlers attached and its registration alive on the
+    // server, so every event arrives down both and the app renders each
+    // message, each party update and each invite twice.
+    if (this.socket) {
+      try {
+        this.socket.close();
+      } catch {
+        // Already closing; the identity check below covers the rest.
+      }
+      this.socket = null;
+    }
+
     const url = new URL(this.baseUrl.replace(/^http/, "ws"));
     url.pathname = "/ws";
     url.searchParams.set("token", token);
@@ -319,11 +332,23 @@ export class RealtimeBus {
     };
 
     socket.onmessage = (raw) => {
+      // An orphan we have already replaced still delivers whatever the server
+      // sent before it noticed. Emitting that would be a duplicate of what the
+      // live socket is about to hand us.
+      if (this.socket !== socket) return;
+
       const event = safeParse(raw.data);
       if (event?.type) this.emit(event);
     };
 
     socket.onclose = (ev) => {
+      // A close belonging to a socket that has since been replaced says
+      // nothing about the current one. Acting on it schedules a reconnect for
+      // a connection that is already healthy, and that second connect leaves
+      // the healthy one orphaned -- which is how one blip became two live
+      // sockets and every event arriving twice.
+      if (this.socket !== socket) return;
+
       this._stopHeartbeat();
       this._setStatus("disconnected");
 

@@ -1795,9 +1795,10 @@ describe("your in-game name", () => {
   it("asks for one when it has never been set", async () => {
     await openOwnProfile({ inGameName: null });
 
-    // Nine people have to find this person in-game; not knowing it is set is
-    // the failure this prompt exists to prevent.
-    expect(await screen.findByText(/No in-game name set/i)).toBeTruthy();
+    // Nine people have to find this person in-game; not knowing it is unset is
+    // the failure this prompt exists to prevent. The control says so itself
+    // now that it sits beside the name rather than repeating it.
+    expect(await screen.findByText(/Set in-game name/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: /Change your in-game name/i })).toBeTruthy();
   });
 

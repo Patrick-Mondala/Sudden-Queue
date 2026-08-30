@@ -681,7 +681,7 @@ function ScrimsScreen({ notify }) {
   const [myTeam, setMyTeam] = useState(undefined); // undefined = still loading
   const [regions, setRegions] = usePersistentState("sq.scrims.filter", ["na", "sa", "eu", "asia"]);
   const [note, setNote] = useState("");
-  const [postRegion, setPostRegion] = useState(["na"]);
+  const [postRegion, setPostRegion] = useState("na");
   const [busy, setBusy] = useState(false);
   const [blocked, setBlocked] = useState(null);
 
@@ -816,7 +816,7 @@ function ScrimsScreen({ notify }) {
             </>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <RegionPicker value={postRegion} onChange={(v) => setPostRegion(v.slice(-1))} multi={false} />
+              <RegionPicker value={postRegion} onChange={setPostRegion} multi={false} />
               <input
                 value={note}
                 onChange={(e) => setNote(e.target.value.slice(0, 200))}
@@ -827,9 +827,9 @@ function ScrimsScreen({ notify }) {
               <Btn
                 kind="primary"
                 style={{ width: "100%", justifyContent: "center" }}
-                disabled={busy || postRegion.length === 0}
+                disabled={busy || !postRegion}
                 onClick={() => act(async () => {
-                  await server.postListing(postRegion[0], note.trim() || null);
+                  await server.postListing(postRegion, note.trim() || null);
                   setNote("");
                 }, t("Your team is listed"))}
               >
@@ -1093,7 +1093,7 @@ function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act })
   const [creating, setCreating] = useState(false);
   const [tag, setTag] = useState("");
   const [name, setName] = useState("");
-  const [region, setRegion] = useState(["na"]);
+  const [region, setRegion] = useState("na");
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: 16, height: "100%", minHeight: 0 }}>
@@ -1156,15 +1156,15 @@ function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act })
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <input value={tag} onChange={(e) => setTag(e.target.value.toUpperCase().slice(0, 4))} placeholder={t("Tag (max 4)")} aria-label={t("Team tag")} style={{ background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13, fontFamily: T.mono }} />
               <input value={name} onChange={(e) => setName(e.target.value.slice(0, 24))} placeholder={t("Team name")} aria-label={t("Team name")} style={{ background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 13 }} />
-              <RegionPicker value={region} onChange={(v) => setRegion(v.slice(-1))} multi={false} />
+              <RegionPicker value={region} onChange={setRegion} multi={false} />
               <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                 <Btn
                   kind="primary"
                   style={{ flex: 1, justifyContent: "center" }}
-                  disabled={busy || !tag.trim() || !name.trim() || region.length === 0}
+                  disabled={busy || !tag.trim() || !name.trim() || !region}
                   onClick={() =>
                     act(async () => {
-                      await server.createTeam({ tag: tag.trim(), name: name.trim(), region: region[0] });
+                      await server.createTeam({ tag: tag.trim(), name: name.trim(), region });
                       setCreating(false);
                       setTag("");
                       setName("");
@@ -2013,20 +2013,18 @@ function InGameNameField({ value, onSaved, notify }) {
     }
   };
 
+  // Not editing: nothing but the way in. The name itself is the heading this
+  // sits beside -- printing it again here, under a Discord name, was three
+  // lines to say one thing.
   if (!editing) {
     return (
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
-        <span style={{ fontFamily: T.mono, fontSize: 12, color: value ? T.muted : T.captain }}>
-          {value ?? t("No in-game name set")}
-        </span>
-        <button
-          onClick={() => setEditing(true)}
-          aria-label={t("Change your in-game name")}
-          style={{ background: "transparent", border: "none", color: T.accent, fontSize: 11.5, fontWeight: 600, padding: "2px 4px" }}
-        >
-          {value ? t("Change") : t("Set it")}
-        </button>
-      </div>
+      <button
+        onClick={() => setEditing(true)}
+        aria-label={t("Change your in-game name")}
+        style={{ background: "transparent", border: `1px solid ${T.line2}`, borderRadius: 4, color: value ? T.muted : T.captain, fontSize: 11.5, fontWeight: 600, padding: "3px 8px", whiteSpace: "nowrap" }}
+      >
+        {value ? t("Change") : t("Set in-game name")}
+      </button>
     );
   }
 
@@ -2107,7 +2105,26 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
             <Avatar p={view} size={64} />
             <div style={{ flex: 1 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}><H size={26}><PlayerName p={view} /></H>{isMe && <Tag color={T.accent}>{t("You")}</Tag>}</div>
+              {/* The name, and next to it the one control that changes it.
+                  Both live on the same line because they are the same subject:
+                  reading your name and correcting it is one thought. */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <H size={26}><PlayerName p={view} /></H>
+                {isMe && <Tag color={T.accent}>{t("You")}</Tag>}
+                {isMe && (
+                  <InGameNameField
+                    value={view.inGameName ?? null}
+                    onSaved={async () => {
+                      // Both halves: the player this screen was handed, and the
+                      // profile fetched over the top of it. Refreshing one alone
+                      // leaves the other to overwrite it with the old name.
+                      await onSaved?.();
+                      await loadFull(p.id);
+                    }}
+                    notify={notify}
+                  />
+                )}
+              </div>
 
               {/* Both names, on your own profile as much as anyone else's.
                   The heading is what people call you; this is the account it
@@ -2119,19 +2136,6 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
                 <div style={{ fontFamily: T.mono, fontSize: 12, color: T.muted, marginTop: 4 }}>{altName(view)} · Discord</div>
               )}
 
-              {isMe && (
-                <InGameNameField
-                  value={view.inGameName ?? null}
-                  onSaved={async () => {
-                    // Both halves: the player this screen was handed, and the
-                    // profile fetched over the top of it. Refreshing one alone
-                    // leaves the other to overwrite it with the old name.
-                    await onSaved?.();
-                    await loadFull(p.id);
-                  }}
-                  notify={notify}
-                />
-              )}
             </div>
             <div style={{ textAlign: "right" }}>
               <Tier tier={view.tier} size={40} />
@@ -3161,6 +3165,71 @@ export default function App() {
 
     return () => clearInterval(id);
   }, [updateCheck.phase]);
+
+  /**
+   * No reloading the shipped app.
+   *
+   * A webview reload is a page refresh, and the app is not a page: it drops
+   * the socket, throws away everything the session had learned, and comes back
+   * mid-flight while the server is still deciding whether that disconnect
+   * meant anything. Nothing here is fixed by a reload that is not better fixed
+   * by reopening the app, so the shortcut only ever finds bugs on the way past.
+   *
+   * Dev keeps it, because the whole point there is reloading.
+   */
+  useEffect(() => {
+    if (import.meta.env?.DEV) return;
+
+    const swallow = (e) => {
+      const reload = e.key === "F5" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r");
+      if (reload) e.preventDefault();
+    };
+
+    window.addEventListener("keydown", swallow);
+    return () => window.removeEventListener("keydown", swallow);
+  }, []);
+
+  /**
+   * Re-read the party whenever the socket comes back.
+   *
+   * Events are only true for someone who was listening. A client that was away
+   * -- a reload, a dropped connection, a laptop lid -- missed whatever changed
+   * while it was gone and would otherwise go on drawing the roster it left
+   * with. That is not hypothetical: the server drops a disconnected player out
+   * of their party after a grace period, so the state most likely to be stale
+   * on reconnect is exactly the state that changed because you disconnected.
+   */
+  useEffect(() => {
+    if (!me) return;
+
+    return liveBus.on((e) => {
+      if (e?.type !== "connection.status" || e.status !== "connected") return;
+
+      void server
+        .getParty()
+        .then((fresh) => {
+          setPartyId(fresh?.partyId ?? null);
+          setParty(
+            (fresh?.members ?? []).map((m) => ({
+              id: m.userId,
+              discordName: m.discordName,
+              avatarUrl: m.avatarUrl ?? null,
+              inGameName: m.inGameName ?? null,
+              avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length],
+              isGameMaster: m.isGameMaster ?? false,
+              tier: m.tier ?? null,
+              placementsRemaining: m.placementsRemaining ?? 0,
+              wins: 0,
+              losses: 0,
+            })),
+          );
+        })
+        .catch(() => {
+          // The socket is up but the call failed; the next event or the next
+          // reconnect will put it right rather than blanking what is on screen.
+        });
+    });
+  }, [me]);
 
   // The server's half of the same rule, which can arrive in answer to any call
   // and so is listened for outside the signed-in shell. It is not a check that

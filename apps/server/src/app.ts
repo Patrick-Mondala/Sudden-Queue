@@ -706,6 +706,9 @@ export async function buildApp({
           id: r.id,
           discordName: r.discordName,
           inGameName: r.inGameName ?? r.discordName,
+          // Selected from the start and then dropped here, which is why the
+          // invite list drew initials for people who have a picture.
+          avatarUrl: r.avatarUrl,
           isGameMaster: isGameMaster(r.role),
           tier: isPlaced(gamesPlayed) ? tierForRating(r.rating ?? DEFAULT_RATING) : null,
           placementsRemaining: placementGamesRemaining(gamesPlayed),
@@ -1915,9 +1918,15 @@ export async function buildApp({
     const result = await party.leave(userId);
     if (isFail(result)) return;
 
-    // The party they left needs to hear about it; the fresh solo party they
-    // landed in has nobody else in it to tell.
     await broadcastParty(partyId);
+
+    // And the party they landed in, which has only them in it. It used to be
+    // skipped on the grounds that there was nobody to tell -- but there is:
+    // them, as soon as they are back. A client that reconnects after being
+    // dropped this way was never sent its new party, so it went on showing the
+    // roster it left, minus itself. That reads as "everyone else is still in a
+    // party and I am not in it", which is precisely backwards.
+    await broadcastParty(result.data.partyId);
   }
 
   function scheduleDisconnectCheck(userId: string): void {
