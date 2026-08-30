@@ -101,6 +101,8 @@ const server = {
   declineInvite: vi.fn(),
   joinQueue: vi.fn(),
   leaveQueue: vi.fn(),
+  leaveParty: vi.fn(),
+  kick: vi.fn(),
   accept: vi.fn(),
   decline: vi.fn(),
   reportResult: vi.fn(),
@@ -158,7 +160,28 @@ const PROFILE = {
   gamesPlayed: 40,
   wins: 20,
   losses: 20,
-  party: { partyId: "p1", leaderId: "user-1", queued: false, members: [] },
+  // You are always a member of your own party, and the server always says so.
+  // Empty only passed because the client reset the party to [you] whenever the
+  // profile changed -- papering over this fixture, and in the real app over
+  // whatever the party actually was.
+  party: {
+    partyId: "p1",
+    leaderId: "user-1",
+    queued: false,
+    members: [
+      {
+        userId: "user-1",
+        discordName: "Player1",
+        inGameName: "PLAYER_1",
+        avatarUrl: null,
+        isGameMaster: false,
+        tier: "B",
+        placementsRemaining: 0,
+        gamesPlayed: 40,
+        isLeader: true,
+      },
+    ],
+  },
 };
 
 /** The match payload as GET /match/:id and the match.found event send it. */
@@ -204,6 +227,8 @@ beforeEach(() => {
   server.findPlayers.mockResolvedValue({ users: [] });
   server.suspensions.mockResolvedValue({ users: [] });
   server.moderationHistory.mockResolvedValue({ entries: [] });
+  server.leaveParty.mockResolvedValue({ partyId: "p9" });
+  server.kick.mockResolvedValue({ partyId: "p1" });
   updates.checkForUpdate.mockResolvedValue(null);
   updates.installUpdate.mockReset();
 });
@@ -2455,5 +2480,78 @@ describe("what an officer sees", () => {
 
     await screen.findByText("Aces High");
     expect(screen.queryByRole("button", { name: /Applications (open|closed)/i })).toBeNull();
+  });
+});
+
+describe("leaving and breaking up a party", () => {
+  /** A party of two, as the server broadcasts it. */
+  const twoUp = (leaderIsMe = true) => ({
+    partyId: "p1",
+    leaderId: leaderIsMe ? "user-1" : "user-2",
+    queued: false,
+    members: [
+      { userId: "user-1", discordName: "Player1", inGameName: "PLAYER_1", avatarUrl: null, isGameMaster: false, tier: "B", placementsRemaining: 0, gamesPlayed: 40, isLeader: leaderIsMe },
+      { userId: "user-2", discordName: "Aria", inGameName: "ARIA", avatarUrl: null, isGameMaster: false, tier: "A", placementsRemaining: 0, gamesPlayed: 40, isLeader: !leaderIsMe },
+    ],
+  });
+
+  async function inAPartyOfTwo(leaderIsMe = true) {
+    await signedIn();
+    emit({ type: "party.updated", party: twoUp(leaderIsMe) });
+    await screen.findByText("ARIA");
+  }
+
+  it("tells the server when you leave, rather than only your own screen", async () => {
+    await inAPartyOfTwo();
+
+    // The X on your own slot. This used to filter the row out locally and
+    // stop -- so the server kept everyone together, and they queued and were
+    // matched together while each screen showed something different.
+    await userEvent.click(screen.getByRole("button", { name: /Leave the party/i }));
+
+    await waitFor(() => expect(server.leaveParty).toHaveBeenCalled());
+  });
+
+  it("tells the server when the leader removes somebody", async () => {
+    await inAPartyOfTwo();
+
+    await userEvent.click(screen.getByRole("button", { name: /Remove from the party/i }));
+
+    await waitFor(() => expect(server.kick).toHaveBeenCalledWith("user-2"));
+  });
+
+  it("does not offer to remove other people to somebody who does not lead", async () => {
+    await inAPartyOfTwo(false);
+
+    expect(screen.queryByRole("button", { name: /Remove from the party/i })).toBeNull();
+    // Leaving is always yours to do.
+    expect(screen.getByRole("button", { name: /Leave the party/i })).toBeTruthy();
+  });
+
+  it("waits for the server rather than guessing the new roster", async () => {
+    await inAPartyOfTwo();
+    await userEvent.click(screen.getByRole("button", { name: /Leave the party/i }));
+
+    // Still drawn until the broadcast says otherwise: a local guess would be a
+    // second answer, free to disagree with the one that counts.
+    expect(screen.getByText("ARIA")).toBeTruthy();
+
+    emit({
+      type: "party.updated",
+      party: { partyId: "p9", leaderId: "user-1", queued: false, members: [twoUp().members[0]] },
+    });
+
+    await waitFor(() => expect(screen.queryByText("ARIA")).toBeNull());
+  });
+
+  it("keeps the party when the profile is refreshed", async () => {
+    await inAPartyOfTwo();
+
+    // `me` changing used to reset the party to [you], so any cosmetic profile
+    // refresh silently emptied it.
+    emit({ type: "profile.updated" });
+    await act(async () => {});
+
+    expect(screen.getByText("ARIA")).toBeTruthy();
   });
 });

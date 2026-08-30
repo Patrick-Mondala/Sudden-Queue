@@ -487,8 +487,10 @@ function Login({ onSignedIn }) {
 /* ─────────────────────────────────────────────────────────────
    PUG QUEUE
    ───────────────────────────────────────────────────────────── */
-function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, history, notify, onViewMatch, onView, onInvite, onSetName }) {
+function PlayScreen({ me, party, queue, setQueue, cooldownUntil, history, notify, onViewMatch, onView, onInvite, onSetName }) {
   const config = useConfig();
+  // The server says who leads; the first slot is only where they are drawn.
+  const iLeadTheParty = party.some((p) => p.id === me.id && p.isLeader);
   // Defaults to every region this deployment has: a saved filter naming
   // regions that no longer exist would leave nobody able to queue.
   const [regions, setRegions] = usePersistentState(
@@ -524,7 +526,34 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
     }
     setQueue({ state: "idle" });
   };
-  const kick = (id) => setParty(party.filter((p) => p.id !== id));
+  /**
+   * Leaving, and removing somebody else.
+   *
+   * Both go to the server. The X used to filter the row out of this array and
+   * stop there, which meant a party only ever changed on the screen of whoever
+   * clicked: the server still had everyone together, so they queued together,
+   * were matched together, and got the same two teams every time -- while each
+   * client drew whatever its own clicking had left behind.
+   *
+   * Nothing is removed locally on the way out, either. The server broadcasts
+   * the new roster to everyone who needs it, including whoever just left, and
+   * a local guess would only be a second answer to disagree with.
+   */
+  const leaveParty = async () => {
+    try {
+      await server.leaveParty();
+    } catch (err) {
+      notify(errorText(err, "Could not leave the party"));
+    }
+  };
+
+  const removeFromParty = async (id) => {
+    try {
+      await server.kick(id);
+    } catch (err) {
+      notify(errorText(err, "Could not remove them"));
+    }
+  };
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16, height: "100%" }}>
@@ -593,7 +622,21 @@ function PlayScreen({ me, party, setParty, queue, setQueue, cooldownUntil, histo
                     <Avatar p={p} size={34} ring={i === 0 ? T.captain : null} />
                     <div style={{ fontSize: 12, fontWeight: 600, maxWidth: "100%", textAlign: "center", whiteSpace: "nowrap" }}><PlayerName p={p} /></div>
                     <Rank tier={p.tier} placementsRemaining={p.placementsRemaining} size={11} />
-                    {i > 0 && queue.state !== "queued" && <button onClick={(e) => { e.stopPropagation(); kick(p.id); }} title={t("Remove")} style={{ position: "absolute", top: 4, right: 4, background: "transparent", border: "none", color: T.dim, padding: 2 }}><X size={12} /></button>}
+                    {/* Your own slot offers to leave; everyone else's offers to
+                        remove them, and only to whoever leads the party. The
+                        one X did both jobs badly before: a non-leader could
+                        click it on somebody else, and nobody could use it on
+                        themselves. */}
+                    {queue.state !== "queued" && party.length > 1 && (p.id === me.id || iLeadTheParty) && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); void (p.id === me.id ? leaveParty() : removeFromParty(p.id)); }}
+                        title={p.id === me.id ? t("Leave the party") : t("Remove from the party")}
+                        aria-label={p.id === me.id ? t("Leave the party") : t("Remove from the party")}
+                        style={{ position: "absolute", top: 4, right: 4, background: "transparent", border: "none", color: p.id === me.id ? T.captain : T.dim, padding: 2 }}
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
                     {i === 0 && <span style={{ position: "absolute", top: 4, left: 6 }}><Star size={11} color={T.captain} fill={T.captain} /></span>}
                   </> : <div style={{ color: T.dim, fontSize: 12, margin: "auto" }}>{t("Open slot")}</div>}
                 </div>
@@ -3217,6 +3260,7 @@ export default function App() {
               inGameName: m.inGameName ?? null,
               avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length],
               isGameMaster: m.isGameMaster ?? false,
+              isLeader: m.isLeader ?? false,
               tier: m.tier ?? null,
               placementsRemaining: m.placementsRemaining ?? 0,
               wins: 0,
@@ -3392,6 +3436,7 @@ export default function App() {
         inGameName: m.inGameName ?? m.discordName,
         avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length],
         isGameMaster: m.isGameMaster ?? false,
+        isLeader: m.isLeader ?? false,
         tier: m.tier ?? null,
         placementsRemaining: m.placementsRemaining ?? 0,
         wins: 0,
@@ -3412,7 +3457,11 @@ export default function App() {
   }, [refreshHistory, refreshLineup]);
 
 
-  useEffect(() => { if (me) setParty([me]); }, [me]);
+  // Deliberately not seeded here any more. This used to reset the party to
+  // [me] whenever `me` changed, and `me` changes on every profile refresh --
+  // so a cosmetic reload of your own profile silently emptied the party on
+  // screen, and the next server event was the only thing that put it back.
+  // Sign-in loads the real party from /me, and events keep it current.
   /** Server events that the whole shell reacts to, rather than one screen. */
   useEffect(() => {
     if (!me) return;
@@ -3480,6 +3529,8 @@ export default function App() {
               avatarUrl: m.avatarUrl ?? null,
               inGameName: m.inGameName ?? m.discordName,
               avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length],
+              isGameMaster: m.isGameMaster ?? false,
+              isLeader: m.isLeader ?? false,
               tier: m.tier ?? null,
               placementsRemaining: m.placementsRemaining ?? 0,
               wins: 0,
@@ -3581,7 +3632,7 @@ export default function App() {
     void refreshHistory();
   }} />;
   else if (viewProfile) content = <ProfileScreen p={viewProfile} me={me} history={history} onBack={() => setViewProfile(null)} onViewMatch={openMatch} onSaved={refreshProfile} notify={notify} />;
-  else if (nav === "play") content = <PlayScreen me={me} party={party} setParty={setParty} queue={queue} setQueue={setQueue} cooldownUntil={cooldownUntil} history={history} notify={notify} onViewMatch={openMatch} onView={setViewProfile} onInvite={() => setInviteOpen(true)} onSetName={() => go("profile")} />;
+  else if (nav === "play") content = <PlayScreen me={me} party={party} queue={queue} setQueue={setQueue} cooldownUntil={cooldownUntil} history={history} notify={notify} onViewMatch={openMatch} onView={setViewProfile} onInvite={() => setInviteOpen(true)} onSetName={() => go("profile")} />;
   // These three have no server endpoints yet, so they say so rather than
   // standing in for them.
   else if (nav === "scrims") content = <ScrimsScreen notify={notify} />;
