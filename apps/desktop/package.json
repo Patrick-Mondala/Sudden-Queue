@@ -27,5 +27,6 @@
     "@vitejs/plugin-react": "^4.6.0",
     "jsdom": "^28.0.1",
     "vite": "^7.0.4"
-  }
+  },
+  "license": "MIT"
 }

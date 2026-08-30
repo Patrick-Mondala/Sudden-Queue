@@ -1,13 +1,18 @@
 # Sudden Queue
 
-A matchmaking and team companion app for *Sudden Attack Zero Point*. Players
-sign in with Discord, queue solo or as a party, get matched into 5v5 PUGs,
-report the result, and climb a ladder. Teams can be formed, scrims arranged, and
-disputes settled by a Game Master.
+A self-hostable matchmaking and team companion app for competitive games that
+have no matchmaking of their own. Players sign in with Discord, queue solo or as
+a party, get matched into rated 5v5 games, report the result, and climb a
+ladder. Teams can be formed, scrims arranged, and disputes settled by a Game
+Master.
 
-Unofficial and fan-made. Nothing here talks to the game itself — there is no API
-to talk to — so results are self-reported by both captains and rating only moves
-when they agree.
+Nothing here talks to a game client or its servers, which is the point: it needs
+no cooperation from the publisher and no API to integrate with. Results are
+self-reported by both captains, and rating only moves when they agree.
+
+Currently configured for *Sudden Attack Zero Point*, unofficially and by fans.
+Running it for another game today means editing a handful of constants — see
+[Using it for another game](#using-it-for-another-game).
 
 - **`apps/server`** — Fastify + Postgres. Every rule lives here.
 - **`apps/desktop`** — Tauri v2 shell around a React client.
@@ -159,6 +164,32 @@ a SmartScreen warning ("More info → Run anyway"), and machines with Smart App
 Control enabled will block it outright. That is a deliberate trade for a fan
 project — a certificate costs money and buys only the absence of that dialog.
 
+## Using it for another game
+
+Nothing game-specific reaches the database schema or the type system, so this is
+a smaller job than it sounds — but it is not yet a config file, and that is the
+honest state of it. What is currently hard-coded, all in
+`packages/core/src/constants.ts`:
+
+| Constant | Assumes |
+| --- | --- |
+| `TEAM_SIZE`, `MATCH_SIZE`, `MAX_PARTY_SIZE` | five a side, ten a match |
+| `REGIONS` | `na`, `sa`, `eu`, `asia` |
+| `QUEUE_TYPES` | `PUG` and `SCRIM` as the two modes |
+| `DEFAULT_RATING` and the tier table | a 1200 start, 55 points per tier |
+
+The timing constants beside them — accept windows, cooldowns, rate limits — are
+tuned rather than game-specific, and most deployments will want them as they
+are.
+
+The rest is already game-agnostic: Discord sign-in, parties, the matchmaker,
+Elo, teams, scrims, the ladder, chat, disputes and moderation neither know nor
+care which game is being played. A player's in-game name is stored as exactly
+that, unverified, because no game here can be asked to confirm it.
+
+Making those constants runtime configuration is the next structural piece of
+work. Until it lands, a fork and a few edited numbers is the supported path.
+
 ## Deploying the server
 
 Not done yet. What it needs: a host, a Postgres instance that is not the Docker
@@ -171,3 +202,12 @@ database, and pushed events only when something changes. A small VPS covers it.
 The one ceiling worth knowing: sockets and chat buffers live in process memory,
 so it scales by getting a bigger box, not more of them. Crossing that would mean
 Redis for fan-out, somewhere north of a couple of thousand concurrent players.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE). Use it, change it, host it, fork it commercially
+if you like; keep the copyright notice with the source.
+
+If you run this for your community, a link back is appreciated but not required.
+The licence asks for attribution in the source, not on screen, and any footer in
+the default build is yours to remove.
