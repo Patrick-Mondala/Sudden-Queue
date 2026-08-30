@@ -9,6 +9,14 @@ on:
 permissions:
   contents: write
 
+# One release build at a time, per tag. Two runs for the same tag both publish
+# to the same release, and the loser can leave a latest.json describing an
+# installer the winner replaced -- a signature mismatch, which every client
+# reads as a refused update.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     # Windows only, by choice rather than by omission: the game this was built
