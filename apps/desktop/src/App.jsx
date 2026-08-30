@@ -695,12 +695,15 @@ function ScrimsScreen({ notify }) {
       <ComingSoon
         eyebrow={t("Scrims")}
         title={t("Scrims are for teams")}
-        body="Register a team or join one, and its captain and officers can list it here for practice matches — unrated, but the same accept and report flow as a PUG."
+        body={t("Register a team or join one, and its captain can list it here for practice matches — unrated, but the same accept and report flow as a PUG.")}
       />
     );
   }
 
-  const canManage = myTeam.role === "captain" || myTeam.role === "officer";
+  // A scrim commits ten people to a time, so it is the captain's call. The
+  // server refuses everyone else; this keeps a button off the screen that
+  // would only ever answer 403.
+  const canManage = myTeam.role === "captain";
   const roster = myTeam.team.members.length;
   const tooSmall = roster < 5;
   const listings = state.listings.filter((l) => regions.includes(l.region));
@@ -740,7 +743,7 @@ function ScrimsScreen({ notify }) {
                     size="sm"
                     kind="primary"
                     disabled={busy || !canManage || tooSmall}
-                    title={!canManage ? t("Only the captain and officers arrange scrims") : tooSmall ? t("You need five players") : undefined}
+                    title={!canManage ? t("Only the captain arranges scrims") : tooSmall ? t("You need five players") : undefined}
                     onClick={() => act(() => server.requestScrim(l.id), `Asked ${l.name} for a scrim`)}
                     style={{ minWidth: 92, justifyContent: "center" }}
                   >
@@ -758,7 +761,7 @@ function ScrimsScreen({ notify }) {
           <Eyebrow style={{ marginBottom: 10 }}>{t("Your listing")}</Eyebrow>
           {!canManage ? (
             <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>
-              Only the captain and officers can list {myTeam.team.name} for scrims.
+              {t("Only the captain can list {team} for scrims.", { team: myTeam.team.name })}
             </div>
           ) : tooSmall ? (
             <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>
@@ -806,7 +809,7 @@ function ScrimsScreen({ notify }) {
           <div style={{ flex: 1, overflow: "auto" }}>
             {!canManage ? (
               <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>
-                Captains and officers answer these.
+                {t("The captain answers these.")}
               </div>
             ) : state.incoming.length === 0 ? (
               <div style={{ fontSize: 12.5, color: T.dim, lineHeight: 1.5 }}>
@@ -927,7 +930,7 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
             <H size={22}>{team.name}</H>
             <Eyebrow>{team.region.toUpperCase()} · {team.members.length}/{config.maxTeamSize} players · {starters}/{config.teamSize} starting</Eyebrow>
           </div>
-          {canManage && (
+          {isCaptain && (
             <Btn size="sm" disabled={busy} onClick={() => act(() => server.setApplicationsOpen(!team.applicationsOpen))}>
               {team.applicationsOpen ? <Unlock size={13} color={T.ok} /> : <Lock size={13} color={T.danger} />}
               Applications {team.applicationsOpen ? "open" : "closed"}
@@ -1006,7 +1009,8 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
                       <Star size={13} />
                     </button>
                   )}
-                  {canManage && m.userId !== me.id && m.role !== "captain" && (
+                  {/* An officer clears out members; only the captain removes an officer. */}
+                  {canManage && m.userId !== me.id && m.role !== "captain" && (isCaptain || m.role !== "officer") && (
                     <button
                       title={t("Remove from team")}
                       disabled={busy}

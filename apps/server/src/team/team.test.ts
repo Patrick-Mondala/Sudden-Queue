@@ -393,3 +393,78 @@ describe("the captain column", () => {
     expect(view!.members.map((m) => m.userId)).toContain(team!.captainId);
   });
 });
+
+describe("what an officer may do", () => {
+  /** A team with a captain, an officer, and an ordinary member. */
+  async function staffed() {
+    const { teamId, captain } = await makeTeam("OFF");
+    const officer = await join(teamId, captain);
+    const member = await join(teamId, captain);
+    const promoted = await service.setRole(captain, officer, "officer");
+    if (!isOk(promoted)) throw new Error("promote failed");
+    return { teamId, captain, officer, member };
+  }
+
+  describe("keeps", () => {
+    it("deciding applications", async () => {
+      const { teamId, officer } = await staffed();
+      const applicant = await makeUser(handle, { gamesPlayed: 40 });
+      const applied = await service.apply(applicant, teamId, null);
+      if (!isOk(applied)) throw new Error("apply failed");
+
+      // The reason officers exist: a captain should not be the only one who
+      // can let somebody in.
+      expect(isOk(await service.decideApplication(officer, applied.data.applicationId, true))).toBe(true);
+    });
+
+    it("removing an ordinary member", async () => {
+      const { officer, member } = await staffed();
+      expect(isOk(await service.removeMember(officer, member))).toBe(true);
+    });
+  });
+
+  describe("loses", () => {
+    it("removing another officer", async () => {
+      const { teamId, captain, officer } = await staffed();
+      const other = await join(teamId, captain);
+      expect(isOk(await service.setRole(captain, other, "officer"))).toBe(true);
+
+      // Officers are the captain's appointments; one undoing another is the
+      // captain's decision being reversed by someone who did not make it.
+      const res = await service.removeMember(officer, other);
+      expect(isFail(res)).toBe(true);
+      if (isFail(res)) expect(res.code).toBe("NOT_CAPTAIN");
+    });
+
+    it("opening and closing applications", async () => {
+      const { teamId, officer } = await staffed();
+
+      const res = await service.setApplicationsOpen(officer, teamId, false);
+      expect(isFail(res)).toBe(true);
+      if (isFail(res)) expect(res.code).toBe("NOT_CAPTAIN");
+    });
+
+    it("appointing officers", async () => {
+      const { officer, member } = await staffed();
+      const res = await service.setRole(officer, member, "officer");
+      expect(isFail(res)).toBe(true);
+      if (isFail(res)) expect(res.code).toBe("NOT_CAPTAIN");
+    });
+
+    it("picking who starts", async () => {
+      const { officer, member } = await staffed();
+      const res = await service.setStarter(officer, member, false);
+      expect(isFail(res)).toBe(true);
+      if (isFail(res)) expect(res.code).toBe("NOT_CAPTAIN");
+    });
+  });
+
+  describe("the captain keeps all of it", () => {
+    it("removes an officer, opens applications, and appoints", async () => {
+      const { teamId, captain, officer } = await staffed();
+
+      expect(isOk(await service.setApplicationsOpen(captain, teamId, false))).toBe(true);
+      expect(isOk(await service.removeMember(captain, officer))).toBe(true);
+    });
+  });
+});

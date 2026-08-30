@@ -2480,9 +2480,11 @@ describe("a team has to be present to scrim", () => {
 
   it("refuses to list a team whose captain has gone", async () => {
     const host = await squad("HST");
+    // The socket is what presence is, so a captain with a dead one can still
+    // send the request that is about to be refused.
     goOffline(host.captain.userId);
 
-    const res = await list(host.members[1]!.token);
+    const res = await list(host.captain.token);
     expect(res.statusCode).toBe(409);
     expect(res.json().error).toBe("CAPTAIN_OFFLINE");
     // Only the captain confirms a lineup and only the captain reports, so a
@@ -2527,7 +2529,7 @@ describe("a team has to be present to scrim", () => {
     const res = await app.server.inject({
       method: "POST",
       url: `/scrims/${listed.json().listingId}/request`,
-      headers: authed(guest.members[1]!.token),
+      headers: authed(guest.captain.token),
     });
 
     expect(res.statusCode).toBe(409);
@@ -2596,11 +2598,12 @@ describe("a team has to be present to scrim", () => {
     await list(host.captain.token);
     goOffline(host.captain.userId);
 
-    // Tidying up after yourself is not arranging a match.
+    // Tidying up after yourself is not arranging a match, so the readiness
+    // rules do not apply to it.
     const res = await app.server.inject({
       method: "DELETE",
       url: "/scrims/mine",
-      headers: authed(host.members[1]!.token),
+      headers: authed(host.captain.token),
     });
     expect(res.statusCode).toBe(200);
   });

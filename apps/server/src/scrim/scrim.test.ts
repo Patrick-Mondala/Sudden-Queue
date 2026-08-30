@@ -134,13 +134,13 @@ describe("listing a team for practice", () => {
     if (isFail(again)) expect(again.code).toBe("ALREADY_LISTED");
   });
 
-  it("is a manager's job, not a member's", async () => {
+  it("is the captain's job, not a member's", async () => {
     const host = await makeSquad("HST");
     const member = host.members[1]!;
 
     const res = await scrim.postListing(member, { region: "na", note: null }, await allOnline());
     expect(isFail(res)).toBe(true);
-    if (isFail(res)) expect(res.code).toBe("NOT_A_MANAGER");
+    if (isFail(res)) expect(res.code).toBe("NOT_CAPTAIN");
   });
 
   it("clears waiting requests when the listing comes down", async () => {
@@ -341,5 +341,71 @@ describe("a scrim is unrated", () => {
 
     expect(after!.gamesPlayed).toBe(before!.gamesPlayed + 1);
     expect(after!.rating).toBe(before!.rating);
+  });
+});
+
+describe("who may arrange a scrim", () => {
+  /** Promotes the second member so there is a real officer to test with. */
+  async function squadWithOfficer(tag: string) {
+    const squad = await makeSquad(tag);
+    const officer = squad.members[1]!;
+    const promoted = await team.setRole(squad.captain, officer, "officer");
+    expect(isOk(promoted)).toBe(true);
+    return { ...squad, officer };
+  }
+
+  it("refuses an officer, who runs the roster but does not commit the team", async () => {
+    const host = await squadWithOfficer("HST");
+
+    const res = await scrim.postListing(host.officer, { region: "na", note: null }, await allOnline());
+    expect(isFail(res)).toBe(true);
+    if (isFail(res)) expect(res.code).toBe("NOT_CAPTAIN");
+  });
+
+  it("refuses an officer requesting one too", async () => {
+    const host = await makeSquad("HST");
+    const guest = await squadWithOfficer("GST");
+    const listed = await scrim.postListing(host.captain, { region: "na", note: null }, await allOnline());
+    expect(isOk(listed)).toBe(true);
+    if (!isOk(listed)) return;
+
+    const res = await scrim.request(guest.officer, listed.data.listingId, await allOnline());
+    expect(isFail(res)).toBe(true);
+    if (isFail(res)) expect(res.code).toBe("NOT_CAPTAIN");
+  });
+
+  it("refuses an officer deciding a request made to their team", async () => {
+    const host = await squadWithOfficer("HST");
+    const guest = await makeSquad("GST");
+    const listed = await scrim.postListing(host.captain, { region: "na", note: null }, await allOnline());
+    expect(isOk(listed)).toBe(true);
+    if (!isOk(listed)) return;
+
+    const asked = await scrim.request(guest.captain, listed.data.listingId, await allOnline());
+    expect(isOk(asked)).toBe(true);
+    if (!isOk(asked)) return;
+
+    // Accepting is the moment ten people are committed to a time.
+    const res = await scrim.decideRequest(host.officer, asked.data.requestId, true, await allOnline());
+    expect(isFail(res)).toBe(true);
+    if (isFail(res)) expect(res.code).toBe("NOT_CAPTAIN");
+  });
+
+  it("refuses an officer taking the listing down", async () => {
+    const host = await squadWithOfficer("HST");
+    const listed = await scrim.postListing(host.captain, { region: "na", note: null }, await allOnline());
+    expect(isOk(listed)).toBe(true);
+
+    const res = await scrim.removeListing(host.officer);
+    expect(isFail(res)).toBe(true);
+    if (isFail(res)) expect(res.code).toBe("NOT_CAPTAIN");
+  });
+
+  it("still lets the captain do all of it", async () => {
+    const host = await squadWithOfficer("HST");
+
+    const listed = await scrim.postListing(host.captain, { region: "na", note: null }, await allOnline());
+    expect(isOk(listed)).toBe(true);
+    expect(isOk(await scrim.removeListing(host.captain))).toBe(true);
   });
 });

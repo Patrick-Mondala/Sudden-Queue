@@ -205,7 +205,7 @@ export class ScrimService {
     }
 
     return this.db.transaction(async (tx) => {
-      const manager = await this.requireManager(tx, userId);
+      const manager = await this.requireCaptain(tx, userId);
       if (!manager.ok) return manager.error;
 
       if (manager.memberCount < TEAM_SIZE) {
@@ -234,7 +234,7 @@ export class ScrimService {
 
   async removeListing(userId: string): Promise<Result<{ teamId: string }, ScrimError>> {
     return this.db.transaction(async (tx) => {
-      const manager = await this.requireManager(tx, userId);
+      const manager = await this.requireCaptain(tx, userId);
       if (!manager.ok) return manager.error;
 
       const rows = await tx
@@ -264,7 +264,7 @@ export class ScrimService {
     online: ReadonlySet<string>,
   ): Promise<Result<{ requestId: string; hostTeamId: string }, ScrimError>> {
     return this.db.transaction(async (tx) => {
-      const manager = await this.requireManager(tx, userId);
+      const manager = await this.requireCaptain(tx, userId);
       if (!manager.ok) return manager.error;
 
       if (manager.memberCount < TEAM_SIZE) {
@@ -311,7 +311,7 @@ export class ScrimService {
   }
 
   async withdrawRequest(userId: string, requestId: string): Promise<Result<void, ScrimError>> {
-    const manager = await this.requireManager(this.db, userId);
+    const manager = await this.requireCaptain(this.db, userId);
     if (!manager.ok) return manager.error;
 
     const rows = await this.db
@@ -383,7 +383,7 @@ export class ScrimService {
         return fail("LISTING_NOT_FOUND", "That listing has gone");
       }
 
-      const manager = await this.requireManager(tx, userId);
+      const manager = await this.requireCaptain(tx, userId);
       if (!manager.ok) return manager.error;
       if (manager.teamId !== listing.teamId) {
         return fail("NOT_A_MANAGER", "That request is not for your team");
@@ -804,7 +804,16 @@ export class ScrimService {
   // ---------------------------------------------------------------- helpers
 
   /** Captain or officer of some team, which every action here requires. */
-  private async requireManager(
+  /**
+   * Arranging a scrim is the captain's call and nobody else's.
+   *
+   * Officers run the roster -- they take applications and remove members -- but
+   * a scrim commits ten people to a time, and the captain is the one who
+   * answers for it. It is also the captain who must be online for the team to
+   * be allowed to scrim at all, so letting an officer commit the team while the
+   * captain is away would only produce a match nobody had agreed to.
+   */
+  private async requireCaptain(
     tx: Executor,
     userId: string,
   ): Promise<
@@ -818,10 +827,10 @@ export class ScrimService {
       .limit(1);
 
     if (!row) return { ok: false, error: fail("NOT_IN_TEAM", "You are not in a team") };
-    if (row.role !== "captain" && row.role !== "officer") {
+    if (row.role !== "captain") {
       return {
         ok: false,
-        error: fail("NOT_A_MANAGER", "Only the captain and officers arrange scrims"),
+        error: fail("NOT_CAPTAIN", "Only the captain arranges scrims"),
       };
     }
 

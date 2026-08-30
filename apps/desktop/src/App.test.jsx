@@ -789,7 +789,7 @@ describe("scrims", () => {
 
     expect(screen.getByRole("button", { name: /Request/i }).disabled).toBe(true);
     expect(screen.queryByRole("button", { name: /Post to scrim list/i })).toBeNull();
-    expect(screen.getByText(/Only the captain and officers can list/i)).toBeTruthy();
+    expect(screen.getByText(/Only the captain can list/i)).toBeTruthy();
   });
 
   it("will not let a team of four ask for a five-a-side", async () => {
@@ -2196,5 +2196,71 @@ describe("running in another language", () => {
 
     // The code wins over the English sentence the server sent beside it.
     expect(await screen.findByText("Dieser Name geht nicht")).toBeTruthy();
+  });
+});
+
+describe("what an officer sees", () => {
+  const roster = (over = []) => [
+    { userId: "user-2", discordName: "Captain", inGameName: "CAP", isGameMaster: false, role: "captain", isStarter: true, tier: "B", placementsRemaining: 0, joinedAt: new Date().toISOString() },
+    { userId: "user-1", discordName: "Player1", inGameName: "PLAYER_1", isGameMaster: false, role: "officer", isStarter: true, tier: "B", placementsRemaining: 0, joinedAt: new Date().toISOString() },
+    { userId: "user-3", discordName: "Member", inGameName: "MEM", isGameMaster: false, role: "member", isStarter: true, tier: "B", placementsRemaining: 0, joinedAt: new Date().toISOString() },
+    { userId: "user-4", discordName: "OtherOfficer", inGameName: "OFF2", isGameMaster: false, role: "officer", isStarter: true, tier: "B", placementsRemaining: 0, joinedAt: new Date().toISOString() },
+    ...over,
+  ];
+
+  /** Signed in as user-1, who is an officer rather than the captain. */
+  const asOfficer = () =>
+    server.myTeam.mockResolvedValue({
+      team: {
+        id: "team-1",
+        tag: "ACE",
+        name: "Aces High",
+        region: "na",
+        captainId: "user-2",
+        applicationsOpen: true,
+        createdAt: new Date().toISOString(),
+        members: roster(),
+      },
+      role: "officer",
+      applications: [],
+      myApplication: null,
+    });
+
+  it("is not offered the scrim controls", async () => {
+    asOfficer();
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Scrims/i }));
+
+    // The server refuses an officer outright, so the button would only ever 403.
+    expect(await screen.findByText(/Only the captain can list/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Post to scrim list/i })).toBeNull();
+  });
+
+  it("can still remove an ordinary member", async () => {
+    asOfficer();
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Teams/i }));
+
+    const row = (await screen.findByText("Member")).closest(".row-hover");
+    expect(within(row).getByTitle(/Remove from team/i)).toBeTruthy();
+  });
+
+  it("is not offered a way to remove another officer", async () => {
+    asOfficer();
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Teams/i }));
+
+    // Officers are the captain's appointments; undoing one is the captain's.
+    const row = (await screen.findByText("OtherOfficer")).closest(".row-hover");
+    expect(within(row).queryByTitle(/Remove from team/i)).toBeNull();
+  });
+
+  it("is not offered the applications switch", async () => {
+    asOfficer();
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Teams/i }));
+
+    await screen.findByText("Aces High");
+    expect(screen.queryByRole("button", { name: /Applications (open|closed)/i })).toBeNull();
   });
 });

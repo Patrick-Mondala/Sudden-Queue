@@ -446,8 +446,10 @@ export class TeamService {
     teamId: string,
     open: boolean,
   ): Promise<Result<void, TeamError>> {
-    if (!(await this.canManage(this.db, userId, teamId))) {
-      return fail("NOT_A_MANAGER", "Only the captain and officers can change this");
+    // Officers decide applications; whether the team is taking them at all is
+    // a decision about the shape of the roster, which is the captain's.
+    if (!(await this.isCaptainOf(this.db, userId, teamId))) {
+      return fail("NOT_CAPTAIN", "Only the captain opens and closes applications");
     }
 
     await this.db.update(teams).set({ applicationsOpen: open }).where(eq(teams.id, teamId));
@@ -590,8 +592,24 @@ export class TeamService {
       const teamId = await this.teamIdForIn(tx, actorId);
       if (!teamId) return fail("NOT_IN_TEAM", "You are not in a team");
 
-      if (!(await this.canManage(tx, actorId, teamId))) {
+      const actorRole = await this.roleIn(tx, actorId, teamId);
+      if (actorRole !== "captain" && actorRole !== "officer") {
         return fail("NOT_A_MANAGER", "Only the captain and officers can remove players");
+      }
+
+      /**
+       * An officer may remove members, not other officers.
+       *
+       * Officers are appointed by the captain, so an officer removing one would
+       * be undoing the captain's decision -- and two officers who fell out
+       * could race to remove each other, which is a fight the captain should be
+       * having instead.
+       */
+      if (actorRole === "officer") {
+        const targetRole = await this.roleIn(tx, targetUserId, teamId);
+        if (targetRole === "officer") {
+          return fail("NOT_CAPTAIN", "Only the captain can remove an officer");
+        }
       }
 
       const [team] = await tx
@@ -712,6 +730,21 @@ export class TeamService {
   }
 
   /** Captain or officer. The two have the same powers over the roster. */
+  /** Someone's role on a team, or null if they are not on it. */
+  private async roleIn(tx: Executor, userId: string, teamId: string): Promise<string | null> {
+    const [row] = await tx
+      .select({ role: teamMembers.role })
+      .from(teamMembers)
+      .where(and(eq(teamMembers.userId, userId), eq(teamMembers.teamId, teamId)))
+      .limit(1);
+
+    return row?.role ?? null;
+  }
+
+  private async isCaptainOf(tx: Executor, userId: string, teamId: string): Promise<boolean> {
+    return (await this.roleIn(tx, userId, teamId)) === "captain";
+  }
+
   private async canManage(tx: Executor, userId: string, teamId: string): Promise<boolean> {
     const [row] = await tx
       .select({ role: teamMembers.role })
