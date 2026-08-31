@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useContext, createContext } from "react";
-import { Crosshair, Swords, Users, Trophy, User, MessageSquare, Send, X, Check, Shield, Star, Wifi, Timer, Copy, ChevronRight, LogOut, Bell, Filter, Plus, Minus, AlertTriangle, CircleDot, Lock, Unlock } from "lucide-react";
+import { Crosshair, Swords, Users, Trophy, User, MessageSquare, Send, X, Check, Shield, Star, Wifi, Timer, Copy, ChevronRight, LogOut, Bell, Filter, Plus, Minus, AlertTriangle, CircleDot, Lock, Unlock, RefreshCw } from "lucide-react";
 import { signIn } from "./api/auth.js";
 import { api as server, bus as liveBus, getToken, CLIENT_VERSION } from "./api/client.js";
 import { checkForUpdate, installUpdate } from "./api/updates.js";
@@ -151,6 +151,8 @@ const winRate = (wins = 0, losses = 0) => {
 /** What the server will accept, so a control can say so before the round trip. */
 const IGN_MIN = 2;
 const IGN_MAX = 16;
+/** Matches TEAM_NOTE_MAX_LENGTH on the server, which is the one that refuses. */
+const TEAM_NOTE_MAX = 240;
 
 /**
  * How often a running client asks whether it is still current.
@@ -985,6 +987,7 @@ function TeamsScreen({ me, notify, onView }) {
   const [directory, setDirectory] = useState(null);
   const [regions, setRegions] = usePersistentState("sq.teams.filter", ["na", "sa", "eu", "asia"]);
   const [busy, setBusy] = useState(false);
+  const [openTeam, setOpenTeam] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -1026,25 +1029,48 @@ function TeamsScreen({ me, notify, onView }) {
     return <Panel style={{ height: "100%", display: "grid", placeItems: "center", color: T.dim, fontSize: 12.5 }}>Loading…</Panel>;
   }
 
-  return state.team ? (
-    <MyTeamPanel me={me} state={state} busy={busy} act={act} onView={onView} />
-  ) : (
-    <TeamDirectory
-      teams={(directory ?? []).filter((team) => regions.includes(team.region))}
-      regions={regions}
-      setRegions={setRegions}
-      myApplication={state.myApplication}
-      busy={busy}
-      act={act}
-    />
+  return (
+    <>
+      {state.team ? (
+        <MyTeamPanel me={me} state={state} busy={busy} act={act} onView={onView} onRefresh={load} />
+      ) : (
+        <TeamDirectory
+          teams={(directory ?? []).filter((team) => regions.includes(team.region))}
+          regions={regions}
+          setRegions={setRegions}
+          myApplication={state.myApplication}
+          busy={busy}
+          act={act}
+          onRefresh={load}
+          onOpenTeam={setOpenTeam}
+        />
+      )}
+
+      {openTeam && (
+        <TeamDetail
+          teamId={openTeam}
+          me={me}
+          myApplication={state.myApplication}
+          busy={busy}
+          onView={onView}
+          onClose={() => setOpenTeam(null)}
+          onApply={(team) => {
+            setOpenTeam(null);
+            void act(() => server.applyToTeam(team.id, null), `Applied to ${team.name}`);
+          }}
+        />
+      )}
+    </>
   );
 }
 
 /** The roster you are on, with whatever powers your role carries. */
-function MyTeamPanel({ me, state, busy, act, onView }) {
+function MyTeamPanel({ me, state, busy, act, onView, onRefresh }) {
   const config = useConfig();
   const [tab, setTab] = useState("roster");
   const [confirmDisband, setConfirmDisband] = useState(false);
+  const [editingNote, setEditingNote] = useState(false);
+  const [noteDraft, setNoteDraft] = useState("");
   const team = state.team;
   const isCaptain = state.role === "captain";
   const canManage = isCaptain || state.role === "officer";
@@ -1058,7 +1084,44 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
           <div style={{ flex: 1, minWidth: 0 }}>
             <H size={22}>{team.name}</H>
             <Eyebrow>{team.region.toUpperCase()} · {team.members.length}/{config.maxTeamSize} players · {starters}/{config.teamSize} starting</Eyebrow>
+
+            {/* What the directory shows people deciding whether to apply.
+                Managers edit it, because the officer fielding applications is
+                the one who knows what it should say. */}
+            {editingNote ? (
+              <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                <input
+                  value={noteDraft}
+                  autoFocus
+                  onChange={(e) => setNoteDraft(e.target.value.slice(0, TEAM_NOTE_MAX))}
+                  onKeyDown={(e) => { if (e.key === "Escape") setEditingNote(false); }}
+                  placeholder={t("When you play, what you need, where your voice comms are")}
+                  aria-label={t("Team note")}
+                  style={{ flex: 1, background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "6px 9px", color: T.text, fontSize: 12.5 }}
+                />
+                <Btn size="sm" kind="primary" disabled={busy} onClick={async () => { await act(() => server.setTeamNote(noteDraft.trim() || null), t("Note saved")); setEditingNote(false); }}>{t("Save")}</Btn>
+                <Btn size="sm" disabled={busy} onClick={() => setEditingNote(false)}>{t("Cancel")}</Btn>
+              </div>
+            ) : (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+                <span style={{ fontSize: 12.5, color: team.note ? "#C3CAD4" : T.dim, lineHeight: 1.5 }}>
+                  {team.note ?? t("No note yet")}
+                </span>
+                {canManage && (
+                  <button
+                    onClick={() => { setNoteDraft(team.note ?? ""); setEditingNote(true); }}
+                    aria-label={t("Change the team note")}
+                    style={{ background: "transparent", border: `1px solid ${T.line2}`, borderRadius: 4, color: T.muted, fontSize: 11, fontWeight: 600, padding: "2px 7px", whiteSpace: "nowrap" }}
+                  >
+                    {team.note ? t("Edit") : t("Add a note")}
+                  </button>
+                )}
+              </div>
+            )}
           </div>
+          <Btn size="sm" disabled={busy} onClick={onRefresh} title={t("Refresh")} aria-label={t("Refresh")}>
+            <RefreshCw size={13} />
+          </Btn>
           {isCaptain && (
             <Btn size="sm" disabled={busy} onClick={() => act(() => server.setApplicationsOpen(!team.applicationsOpen))}>
               {team.applicationsOpen ? <Unlock size={13} color={T.ok} /> : <Lock size={13} color={T.danger} />}
@@ -1181,7 +1244,7 @@ function MyTeamPanel({ me, state, busy, act, onView }) {
 }
 
 /** No team yet: browse for one, or start your own. */
-function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act }) {
+function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act, onOpenTeam, onRefresh }) {
   const [creating, setCreating] = useState(false);
   const [tag, setTag] = useState("");
   const [name, setName] = useState("");
@@ -1193,6 +1256,12 @@ function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act })
         <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderBottom: `1px solid ${T.line}` }}>
           <Eyebrow style={{ flex: 1 }}>{t("Teams")}</Eyebrow>
           <RegionPicker value={regions} onChange={setRegions} />
+          {/* Rosters change without an event reaching you -- somebody else's
+              team accepting somebody else's application is not something you
+              are told about. */}
+          <Btn size="sm" disabled={busy} onClick={onRefresh} title={t("Refresh")} aria-label={t("Refresh")}>
+            <RefreshCw size={13} />
+          </Btn>
         </div>
 
         <div style={{ flex: 1, overflow: "auto", padding: 8 }}>
@@ -1202,7 +1271,7 @@ function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act })
             </div>
           ) : (
             teams.map((team) => (
-              <div key={team.id} className="row-hover" style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 8px", borderRadius: 4 }}>
+              <div key={team.id} className="row-hover" onClick={() => onOpenTeam(team.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 8px", borderRadius: 4, cursor: "pointer" }}>
                 <div style={{ width: 32, height: 32, borderRadius: 4, background: T.raised, display: "grid", placeItems: "center", fontFamily: T.mono, fontSize: 10.5, color: T.muted, border: `1px solid ${T.line2}`, flexShrink: 0 }}>{team.tag}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>{team.name}</div>
@@ -1211,7 +1280,7 @@ function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act })
                 <Tier tier={team.tier} size={12} />
                 <Tag color={team.applicationsOpen ? T.ok : T.dim}>{team.applicationsOpen ? t("Open") : t("Closed")}</Tag>
                 {myApplication?.teamId === team.id ? (
-                  <Btn size="sm" disabled={busy} onClick={() => act(() => server.withdrawApplication(), "Application withdrawn")} style={{ minWidth: 88, justifyContent: "center" }}>
+                  <Btn size="sm" disabled={busy} onClick={(e) => { e.stopPropagation(); act(() => server.withdrawApplication(), "Application withdrawn"); }} style={{ minWidth: 88, justifyContent: "center" }}>
                     <Dot pulse /> Withdraw
                   </Btn>
                 ) : (
@@ -1220,7 +1289,7 @@ function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act })
                     kind={team.applicationsOpen ? "primary" : "ghost"}
                     disabled={busy || !team.applicationsOpen || !!myApplication || team.memberCount >= 10}
                     title={myApplication ? t("Withdraw your other application first") : undefined}
-                    onClick={() => act(() => server.applyToTeam(team.id, null), `Applied to ${team.name}`)}
+                    onClick={(e) => { e.stopPropagation(); act(() => server.applyToTeam(team.id, null), `Applied to ${team.name}`); }}
                     style={{ minWidth: 88, justifyContent: "center" }}
                   >
                     Apply
@@ -2986,6 +3055,85 @@ function InviteToasts({ invites, onAccept, onDecline }) {
           {tn("+{count} more invite waiting", "+{count} more invites waiting", hidden)}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * A team, opened from the directory.
+ *
+ * The list could say a tag, a name and a headcount, and that is not enough to
+ * decide whether to apply to somewhere -- who is on it, what ranks, and what
+ * they say about themselves are the things you actually want. Fetched rather
+ * than passed down, because the row carries a summary and this needs the
+ * roster.
+ */
+function TeamDetail({ teamId, me, onClose, onView, onApply, myApplication, busy }) {
+  const [team, setTeam] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    server
+      .team(teamId)
+      .then((res) => { if (!cancelled) setTeam(res); })
+      .catch((err) => { if (!cancelled) setError(errorText(err, "Could not load that team")); });
+    return () => { cancelled = true; };
+  }, [teamId]);
+
+  const mine = team?.members?.some((m) => m.userId === me.id);
+
+  return (
+    <div style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 70, animation: "sqIn .2s ease" }} onClick={onClose}>
+      <Panel pad={0} style={{ width: 560, maxWidth: "92vw", maxHeight: "84vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderBottom: `1px solid ${T.line}` }}>
+          <div style={{ width: 36, height: 36, borderRadius: 4, background: T.raised, display: "grid", placeItems: "center", fontFamily: T.mono, fontSize: 11, color: T.muted, border: `1px solid ${T.line2}`, flexShrink: 0 }}>{team?.tag ?? "…"}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontFamily: T.display, fontWeight: 700, fontSize: 17 }}>{team?.name ?? t("Loading…")}</div>
+            {team && <Eyebrow>{team.region.toUpperCase()} · {tn("{count} player", "{count} players", team.members.length)}</Eyebrow>}
+          </div>
+          <button onClick={onClose} aria-label={t("Close")} style={{ background: "transparent", border: "none", color: T.muted, padding: 4 }}><X size={16} /></button>
+        </div>
+
+        <div style={{ flex: 1, overflow: "auto", padding: 14 }}>
+          {error && <div style={{ color: T.danger, fontSize: 12.5 }}>{error}</div>}
+
+          {team?.note && (
+            <div style={{ background: T.raised, border: `1px solid ${T.line}`, borderRadius: 5, padding: "10px 12px", marginBottom: 14, fontSize: 12.5, lineHeight: 1.55, color: "#C3CAD4", whiteSpace: "pre-wrap" }}>
+              {team.note}
+            </div>
+          )}
+
+          {team?.members?.map((m) => (
+            <div key={m.userId} className="row-hover" onClick={() => onView?.({ id: m.userId })} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 8px", borderRadius: 4, cursor: "pointer" }}>
+              <Avatar p={{ ...m, id: m.userId, avatarColor: AV_COLORS[Math.abs(hashString(m.userId)) % AV_COLORS.length] }} size={28} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>
+                  <PlayerName p={m} suffix={m.userId === me.id ? <span style={{ color: T.muted, fontWeight: 400 }}> (you)</span> : null} />
+                </div>
+                {altName(m) && <div style={{ fontFamily: T.mono, fontSize: 10.5, color: T.muted }}>{altName(m)}</div>}
+              </div>
+              {m.isStarter && <Tag color={T.accent}>{t("Starter")}</Tag>}
+              {m.role !== "member" && <Tag color={m.role === "captain" ? T.captain : T.muted}>{m.role === "captain" ? t("Captain") : t("Officer")}</Tag>}
+              <Rank tier={m.tier} placementsRemaining={m.placementsRemaining} size={11} />
+            </div>
+          ))}
+        </div>
+
+        {team && !mine && (
+          <div style={{ padding: 14, borderTop: `1px solid ${T.line}` }}>
+            <Btn
+              kind={team.applicationsOpen ? "primary" : "ghost"}
+              style={{ width: "100%", justifyContent: "center" }}
+              disabled={busy || !team.applicationsOpen || !!myApplication}
+              title={myApplication ? t("Withdraw your other application first") : undefined}
+              onClick={() => onApply(team)}
+            >
+              {team.applicationsOpen ? t("Apply to this team") : t("Applications closed")}
+            </Btn>
+          </div>
+        )}
+      </Panel>
     </div>
   );
 }

@@ -64,6 +64,8 @@ const server = {
   getMatch: vi.fn(),
   onlinePlayers: vi.fn(),
   listTeams: vi.fn(),
+  team: vi.fn(),
+  setTeamNote: vi.fn(),
   getTeam: vi.fn(),
   myTeam: vi.fn(),
   createTeam: vi.fn(),

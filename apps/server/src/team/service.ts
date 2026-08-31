@@ -3,6 +3,7 @@ import {
   MAX_TEAM_SIZE,
   REGIONS,
   TEAM_NAME_MAX_LENGTH,
+  TEAM_NOTE_MAX_LENGTH,
   TEAM_SIZE,
   TEAM_TAG_MAX_LENGTH,
   type Result,
@@ -47,6 +48,8 @@ export interface TeamView {
   region: string;
   captainId: string;
   applicationsOpen: boolean;
+  /** What the team says about itself: times, what they need, voice comms. */
+  note: string | null;
   createdAt: string;
   members: TeamMemberView[];
 }
@@ -91,7 +94,8 @@ export type TeamError =
   | "APPLICATIONS_CLOSED"
   | "ALREADY_APPLIED"
   | "APPLICATION_NOT_FOUND"
-  | "TOO_MANY_STARTERS";
+  | "TOO_MANY_STARTERS"
+  | "INVALID_NOTE";
 
 /**
  * Registered teams — persistent rosters, distinct from the throwaway parties
@@ -159,6 +163,7 @@ export class TeamService {
       region: team.region,
       captainId: team.captainId,
       applicationsOpen: team.applicationsOpen,
+      note: team.note,
       createdAt: team.createdAt.toISOString(),
       members: rows.map((r) => {
         const games = r.gamesPlayed ?? 0;
@@ -453,6 +458,38 @@ export class TeamService {
     }
 
     await this.db.update(teams).set({ applicationsOpen: open }).where(eq(teams.id, teamId));
+    return ok();
+  }
+
+  /**
+   * Sets what the team says about itself. Captain and officers.
+   *
+   * Wider than the captain-only settings because this is recruiting copy
+   * rather than a decision about the roster -- an officer who is fielding the
+   * applications is the person who knows what the note should say.
+   *
+   * Blank clears it. A note trimmed to nothing is not a note, and storing ""
+   * would render as an empty line claiming to be information.
+   */
+  async setNote(
+    userId: string,
+    teamId: string,
+    note: string | null,
+  ): Promise<Result<void, TeamError>> {
+    if (!(await this.canManage(this.db, userId, teamId))) {
+      return fail("NOT_A_MANAGER", "Only the captain or an officer can change the team note");
+    }
+
+    const trimmed = note?.trim() ?? "";
+    if (trimmed.length > TEAM_NOTE_MAX_LENGTH) {
+      return fail("INVALID_NOTE", `Keep the note under ${TEAM_NOTE_MAX_LENGTH} characters`);
+    }
+
+    await this.db
+      .update(teams)
+      .set({ note: trimmed.length === 0 ? null : trimmed })
+      .where(eq(teams.id, teamId));
+
     return ok();
   }
 

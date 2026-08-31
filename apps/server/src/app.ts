@@ -7,6 +7,7 @@ import {
   MAX_PARTY_SIZE,
   PARTY_DISCONNECT_GRACE_SECONDS,
   TEAM_APPLICATION_NOTE_MAX_LENGTH,
+  TEAM_NOTE_MAX_LENGTH,
   cooldownRemainingSeconds,
   REGIONS,
   isFail,
@@ -1146,6 +1147,41 @@ export async function buildApp({
     });
 
     return result.data;
+  });
+
+  /**
+   * What the team says about itself in the directory.
+   *
+   * Managers rather than the captain alone: this is recruiting copy, and the
+   * officer fielding the applications is the one who knows what it should say.
+   */
+  server.patch("/team/note", { preHandler: authedWrite }, async (req, reply) => {
+    const body = z
+      .object({ note: z.string().max(TEAM_NOTE_MAX_LENGTH).nullable() })
+      .safeParse(req.body);
+
+    if (!body.success) {
+      return reply.code(400).send({
+        error: "BAD_REQUEST",
+        message: `note must be text of at most ${TEAM_NOTE_MAX_LENGTH} characters, or null`,
+      });
+    }
+
+    const user = requireUser(req);
+    const teamId = await team.teamIdFor(user.userId);
+    if (!teamId) {
+      return reply.code(409).send({ error: "NOT_IN_TEAM", message: "You are not in a team" });
+    }
+
+    const result = await team.setNote(user.userId, teamId, body.data.note);
+    if (isFail(result)) {
+      return reply
+        .code(teamErrorStatus(result.code))
+        .send({ error: result.code, message: result.message });
+    }
+
+    await broadcastTeam(teamId);
+    return { ok: true };
   });
 
   server.patch("/team/applications-open", { preHandler: authedWrite }, async (req, reply) => {

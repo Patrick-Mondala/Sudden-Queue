@@ -1,4 +1,4 @@
-import { MAX_TEAM_SIZE, isFail, isOk } from "@suddenqueue/core";
+import { MAX_TEAM_SIZE, TEAM_NOTE_MAX_LENGTH, isFail, isOk } from "@suddenqueue/core";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -466,5 +466,64 @@ describe("what an officer may do", () => {
       expect(isOk(await service.setApplicationsOpen(captain, teamId, false))).toBe(true);
       expect(isOk(await service.removeMember(captain, officer))).toBe(true);
     });
+  });
+});
+
+describe("the team note", () => {
+  it("is empty until somebody writes one", async () => {
+    const { teamId } = await makeTeam();
+    expect((await service.view(teamId))!.note).toBeNull();
+  });
+
+  it("is set by the captain, trimmed to what they actually wrote", async () => {
+    const { teamId, captain } = await makeTeam();
+
+    const r = await service.setNote(captain, teamId, "  Tuesdays and Thursdays, need an AWPer  ");
+    expect(isOk(r)).toBe(true);
+    expect((await service.view(teamId))!.note).toBe("Tuesdays and Thursdays, need an AWPer");
+  });
+
+  it("is set by an officer, who is the one fielding the applications", async () => {
+    const { teamId, captain } = await makeTeam();
+    const member = await join(teamId, captain);
+    const promoted = await service.setRole(captain, member, "officer");
+    expect(isOk(promoted)).toBe(true);
+
+    expect(isOk(await service.setNote(member, teamId, "Scrims most evenings"))).toBe(true);
+  });
+
+  it("is refused to an ordinary member", async () => {
+    const { teamId, captain } = await makeTeam();
+    const member = await join(teamId, captain);
+
+    const r = await service.setNote(member, teamId, "let me in");
+    expect(isFail(r)).toBe(true);
+    if (isFail(r)) expect(r.code).toBe("NOT_A_MANAGER");
+  });
+
+  it("is refused to somebody with no connection to the team at all", async () => {
+    const { teamId } = await makeTeam();
+    const stranger = await makeUser(handle, { gamesPlayed: 40 });
+
+    const r = await service.setNote(stranger, teamId, "hello");
+    expect(isFail(r)).toBe(true);
+  });
+
+  it("clears back to nothing rather than storing an empty line", async () => {
+    const { teamId, captain } = await makeTeam();
+    await service.setNote(captain, teamId, "Recruiting");
+
+    await service.setNote(captain, teamId, "   ");
+
+    // Not "", which would render as a blank line claiming to be information.
+    expect((await service.view(teamId))!.note).toBeNull();
+  });
+
+  it("refuses a note longer than the limit", async () => {
+    const { teamId, captain } = await makeTeam();
+
+    const r = await service.setNote(captain, teamId, "x".repeat(TEAM_NOTE_MAX_LENGTH + 1));
+    expect(isFail(r)).toBe(true);
+    if (isFail(r)) expect(r.code).toBe("INVALID_NOTE");
   });
 });

@@ -217,6 +217,8 @@ export const api = {
     request(`/scrims/requests/${requestId}/decide`, { method: "POST", body: { accept } }),
 
   listTeams: (region) => request(region ? `/teams?region=${region}` : "/teams"),
+  team: (id) => request(`/teams/${id}`),
+  setTeamNote: (note) => request("/team/note", { method: "PATCH", body: { note } }),
   getTeam: (teamId) => request(`/teams/${teamId}`),
   myTeam: () => request("/me/team"),
   createTeam: (body) => request("/teams", { method: "POST", body }),

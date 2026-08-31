@@ -26,6 +26,8 @@ export const MAX_TEAM_SIZE = gameConfig.maxTeamSize;
 export const TEAM_TAG_MAX_LENGTH = 4;
 export const TEAM_NAME_MAX_LENGTH = 24;
 export const TEAM_APPLICATION_NOTE_MAX_LENGTH = 200;
+/** What a team says about itself in the directory: times, needs, voice. */
+export const TEAM_NOTE_MAX_LENGTH = 240;
 export const MAX_PARTY_SIZE = gameConfig.maxPartySize;
 
 /**

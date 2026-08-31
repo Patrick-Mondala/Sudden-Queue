@@ -36,6 +36,13 @@
       "when": 1787978090336,
       "tag": "0004_magenta_reavers",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788156882111,
+      "tag": "0005_red_vance_astro",
+      "breakpoints": true
     }
   ]
 }

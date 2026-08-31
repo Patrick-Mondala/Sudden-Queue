@@ -45,6 +45,13 @@ export const teams = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
     applicationsOpen: boolean("applications_open").notNull().default(true),
+    /**
+     * What the team wants people to know before applying: when they play, what
+     * they are short of, where their voice comms are. Nullable rather than
+     * defaulted to "": a team that has not written one has not written one, and
+     * an empty string would render as a blank line saying nothing.
+     */
+    note: text("note"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
