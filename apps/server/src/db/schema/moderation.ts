@@ -5,6 +5,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 
@@ -68,5 +69,55 @@ export const auditLog = pgTable(
     index("audit_log_event_type_idx").on(t.eventType, t.createdAt),
     index("audit_log_actor_idx").on(t.actorId, t.createdAt),
     index("audit_log_subject_idx").on(t.subjectType, t.subjectId),
+  ],
+);
+
+export const playerReportStatus = pgEnum("player_report_status", [
+  "open",
+  "actioned",
+  "dismissed",
+]);
+
+/**
+ * One player telling a Game Master about another.
+ *
+ * One row per pair, enforced by the unique index rather than by hoping: a
+ * report is an opinion, and letting somebody file the same opinion twenty
+ * times would make the queue a measure of persistence rather than of trouble.
+ * The message stays editable, because "he was toxic" becomes useful when the
+ * reporter comes back and adds what was actually said.
+ *
+ * Kept separate from the audit log. That records what staff did; this records
+ * what players asked them to look at, and most of it will never be acted on.
+ */
+export const playerReports = pgTable(
+  "player_reports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+
+    reporterId: uuid("reporter_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    subjectId: uuid("subject_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+
+    reason: text("reason").notNull(),
+    status: playerReportStatus("status").notNull().default("open"),
+
+    /** Who closed it, and what they decided. Null while it is still open. */
+    reviewedBy: uuid("reviewed_by").references(() => users.id, { onDelete: "set null" }),
+    reviewNote: text("review_note"),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("player_reports_pair_idx").on(t.reporterId, t.subjectId),
+    // The manager reads by subject: how many people have reported this person,
+    // and is any of it still open.
+    index("player_reports_subject_idx").on(t.subjectId, t.status),
+    index("player_reports_status_idx").on(t.status, t.createdAt),
   ],
 );

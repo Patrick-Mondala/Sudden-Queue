@@ -45,6 +45,7 @@ import { ScrimService } from "./scrim/service.js";
 import { LadderService } from "./ladder/service.js";
 import { ChatService } from "./chat/service.js";
 import { ModerationService, MAX_SUSPENSION_HOURS, MIN_SUSPENSION_HOURS, SUSPENSION_REASON_MAX_LENGTH } from "./moderation/service.js";
+import { ReportService, REPORT_REASON_MAX_LENGTH } from "./moderation/reports.js";
 import { RateLimiter } from "./http/rate-limit.js";
 import { QueueRepository } from "./queue/repository.js";
 import { createReleaseFloor } from "./releases.js";
@@ -289,6 +290,7 @@ export async function buildApp({
   const lifecycle = new MatchLifecycle(db);
   const reporting = new MatchReporting(db);
   const moderation = new ModerationService(db);
+  const reports = new ReportService(db);
 
   // ---------------------------------------------------------------- realtime
 
@@ -1858,6 +1860,87 @@ export async function buildApp({
     notifier.closeUser(userId);
     population.nudge();
   }
+
+  // ------------------------------------------------------ reporting a player
+
+  /**
+   * What this player has already said about that one.
+   *
+   * Fetched before the form opens so an existing report arrives filled in:
+   * there is one per pair, and rewriting it is the intended way to add what
+   * you left out the first time.
+   */
+  server.get("/players/:id/report", { preHandler: authenticate }, async (req) => {
+    const { id } = req.params as { id: string };
+    const user = requireUser(req);
+    return { report: await reports.mine(user.userId, id) };
+  });
+
+  server.post("/players/:id/report", { preHandler: authedWrite }, async (req, reply) => {
+    const body = z
+      .object({ reason: z.string().max(REPORT_REASON_MAX_LENGTH) })
+      .safeParse(req.body);
+
+    if (!body.success) {
+      return reply.code(400).send({ error: "BAD_REQUEST", message: "reason is required" });
+    }
+
+    const { id } = req.params as { id: string };
+    const user = requireUser(req);
+
+    const result = await reports.file(user.userId, id, body.data.reason);
+    if (isFail(result)) {
+      const status = result.code === "SUBJECT_NOT_FOUND" ? 404 : 400;
+      return reply.code(status).send({ error: result.code, message: result.message });
+    }
+
+    return result.data;
+  });
+
+  server.delete("/players/:id/report", { preHandler: authenticate }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const user = requireUser(req);
+
+    const result = await reports.withdraw(user.userId, id);
+    if (isFail(result)) {
+      return reply.code(404).send({ error: result.code, message: result.message });
+    }
+
+    return { ok: true };
+  });
+
+  server.get("/mod/reports", { preHandler: authenticate }, async (req, reply) => {
+    if (!requireGameMaster(req, reply)) return reply;
+    const all = String((req.query as Record<string, string>)?.all ?? "") === "true";
+    return { players: await reports.pending(all) };
+  });
+
+  server.post("/mod/reports/:id/review", { preHandler: authenticate }, async (req, reply) => {
+    if (!requireGameMaster(req, reply)) return reply;
+
+    const body = z
+      .object({
+        status: z.enum(["actioned", "dismissed"]),
+        note: z.string().max(SUSPENSION_REASON_MAX_LENGTH).nullish(),
+      })
+      .safeParse(req.body);
+
+    if (!body.success) {
+      return reply
+        .code(400)
+        .send({ error: "BAD_REQUEST", message: "status must be actioned or dismissed" });
+    }
+
+    const { id } = req.params as { id: string };
+    const user = requireUser(req);
+
+    const result = await reports.review(id, user.userId, body.data.status, body.data.note ?? null);
+    if (isFail(result)) {
+      return reply.code(404).send({ error: result.code, message: result.message });
+    }
+
+    return { ok: true };
+  });
 
   server.get("/mod/users", { preHandler: authenticate }, async (req, reply) => {
     if (!requireGameMaster(req, reply)) return reply;

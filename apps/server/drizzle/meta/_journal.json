@@ -43,6 +43,13 @@
       "when": 1788156882111,
       "tag": "0005_red_vance_astro",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788157991357,
+      "tag": "0006_swift_demogoblin",
+      "breakpoints": true
     }
   ]
 }
