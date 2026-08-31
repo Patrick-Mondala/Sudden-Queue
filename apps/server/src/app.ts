@@ -94,6 +94,16 @@ export interface App {
 
 const SESSION_COOKIE = "sq_session";
 
+/**
+ * Where the browser build of the client is served from.
+ *
+ * Used only to send a web sign-in back to the app it started from. A fixed
+ * relative path rather than anything the request can influence: this is the
+ * one route that has just minted a session, and an open redirect here would
+ * hand it to whoever supplied the destination.
+ */
+const WEB_APP_PATH = "/app/";
+
 /** Shown in the browser tab after a desktop login completes. */
 const SIGNED_IN_PAGE = `<!doctype html>
 <meta charset="utf-8">
@@ -542,6 +552,9 @@ export async function buildApp({
     if (isFail(login)) {
       // Tell the waiting app why, so it stops polling instead of timing out.
       if (handoffId) handoff.reject(handoffId, login.code);
+      // A browser has nowhere to show a JSON error. Send the reason back to
+      // the sign-in screen, which knows how to say it in words.
+      if (!handoffId) return reply.redirect(`${WEB_APP_PATH}?error=${login.code}`);
       return reply.code(401).send({ error: login.code, message: login.message });
     }
 
@@ -565,12 +578,11 @@ export async function buildApp({
       return reply.type("text/html").send(SIGNED_IN_PAGE);
     }
 
-    return reply.send({
-      userId: login.data.userId,
-      token: login.data.token,
-      expiresAt: login.data.expiresAt.toISOString(),
-      isNewAccount: login.data.isNewAccount,
-    });
+    // No handoff means a browser signed in to play here, not an app waiting on
+    // a token. The session is already in an httpOnly cookie, so there is
+    // nothing left to hand over -- and nothing that belongs in the URL, where
+    // it would outlive the redirect in history and referrers.
+    return reply.redirect(WEB_APP_PATH);
   });
 
   server.post("/auth/logout", { preHandler: authenticate }, async (req, reply) => {

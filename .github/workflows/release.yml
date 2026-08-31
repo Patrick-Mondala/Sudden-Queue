@@ -96,6 +96,28 @@ jobs:
           # Where the shipped client will look for its server.
           VITE_API_URL: ${{ vars.VITE_API_URL }}
 
+      # The same client, built for a browser. Shipped as a release asset so the
+      # deployment installs it in the same step that raises the version floor
+      # -- this bundle reports the version it was built as, so a floor that
+      # moves without it refuses the website along with the old installers.
+      #
+      # VITE_API_URL is deliberately empty here, unlike the desktop build. This
+      # copy is served by the deployment it calls, so an empty base resolves to
+      # the page's own origin and every request is same-origin -- which is what
+      # lets the session cookie be sent at all.
+      - name: Build the browser client
+        working-directory: apps/desktop
+        run: npm run build:web
+        env:
+          VITE_API_URL: ""
+
+      - name: Pack the browser client
+        shell: bash
+        working-directory: apps/desktop
+        run: |
+          tar -czf webapp.tar.gz -C dist-web .
+          sha256sum webapp.tar.gz
+
       - name: Write latest.json
         working-directory: apps/desktop
         run: >
@@ -124,3 +146,4 @@ jobs:
             apps/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe.sig
             apps/desktop/src-tauri/target/release/bundle/nsis/latest.json
             apps/desktop/src-tauri/target/release/bundle/nsis/SHA256SUMS
+            apps/desktop/webapp.tar.gz

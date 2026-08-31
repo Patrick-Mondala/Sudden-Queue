@@ -15,8 +15,19 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const DEFAULT_BASE = "http://127.0.0.1:3000";
 
-/** Where the server lives. Overridable for a hosted deployment. */
-export const BASE_URL = import.meta.env?.VITE_API_URL ?? DEFAULT_BASE;
+/**
+ * Where the server lives. Overridable for a hosted deployment.
+ *
+ * Set to the empty string by the web build, which is served by the deployment
+ * it calls: resolving that to the page's own origin makes every request
+ * same-origin, which is what lets the browser send the session cookie without
+ * a CORS negotiation that could refuse it.
+ */
+const CONFIGURED_BASE = import.meta.env?.VITE_API_URL ?? DEFAULT_BASE;
+export const BASE_URL =
+  CONFIGURED_BASE === "" && typeof window !== "undefined"
+    ? window.location.origin
+    : CONFIGURED_BASE;
 
 /**
  * What this build calls itself, sent with every request.
@@ -74,6 +85,11 @@ async function request(path, { method = "GET", body, auth = true } = {}) {
     response = await fetch(`${BASE_URL}${path}`, {
       method,
       headers,
+      // The desktop app carries its session in the Authorization header above.
+      // The browser build cannot: its session is an httpOnly cookie, which is
+      // the point -- script never sees it, so script cannot leak it. Sending
+      // credentials is how that build authenticates at all.
+      credentials: "include",
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
@@ -326,8 +342,13 @@ export class RealtimeBus {
   }
 
   connect() {
+    // No early return on a missing token. In the browser build there never is
+    // one -- the session is a cookie the page cannot read -- and bailing here
+    // was the difference between a web client that loads and one that shows a
+    // dead connection forever. The handshake is the thing that knows: it
+    // closes with 4401 when neither the token nor the cookie is good, and the
+    // shell already turns that into the sign-in screen.
     const token = getToken();
-    if (!token) return;
 
     this.closedByUs = false;
     this._clearReconnect();
@@ -347,10 +368,11 @@ export class RealtimeBus {
 
     const url = new URL(this.baseUrl.replace(/^http/, "ws"));
     url.pathname = "/ws";
-    url.searchParams.set("token", token);
     // In the URL rather than a header: nothing lets script set headers on a
     // WebSocket handshake, so this is the only request that has to say its
-    // version another way.
+    // version another way. The token goes the same way when there is one; when
+    // there is not, the cookie rides along with the handshake instead.
+    if (token) url.searchParams.set("token", token);
     if (CLIENT_VERSION) url.searchParams.set("v", CLIENT_VERSION);
 
     this._setStatus("connecting");

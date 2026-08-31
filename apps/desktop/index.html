@@ -2,13 +2,89 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" type="image/png" href="/icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri + React</title>
+    <!-- Invisible inside the desktop window; the tab, the bookmark and the
+         history entry once this same bundle is served as a website. -->
+    <title>Sudden Queue</title>
+
+    <!--
+      The small-screen refusal.
+
+      Here rather than in the bundle on purpose: this is the one screen a phone
+      is ever meant to see, and putting it in the document means it paints
+      immediately, without downloading and starting the app it exists to turn
+      away.
+
+      Keyed on viewport width, not on the user agent. Agent sniffing is wrong
+      about every device that ships after it is written, and a width query is
+      right for free on the case nobody remembers to test -- a desktop browser
+      dragged narrow, which deserves the same answer.
+
+      The desktop window ships this file too, and never sees it: tauri.conf.json
+      fixes the window at 1320 wide with resizable false, so it cannot reach the
+      breakpoint. Anything that makes that window resizable needs to come back
+      here -- "open this on a computer" is poor advice inside the desktop app.
+    -->
+    <style>
+      #too-small { display: none; }
+
+      @media (max-width: 1100px) {
+        #root { display: none; }
+        #too-small {
+          /* Taken out of flow so it does not inherit the app stylesheet's
+             locked-down html/body overflow, which loads later and would
+             otherwise clip this on a short screen. */
+          position: fixed;
+          inset: 0;
+          overflow-y: auto;
+          display: grid;
+          place-content: center;
+          gap: 0.85rem;
+          padding: 2rem;
+          box-sizing: border-box;
+          text-align: center;
+          background: #0d1014;
+          color: #e4e7eb;
+          font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+        }
+        #too-small img { width: 56px; height: 56px; margin: 0 auto; }
+        #too-small h1 {
+          margin: 0;
+          font-family: "Bahnschrift", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+          font-size: 1.5rem;
+          font-weight: 600;
+          letter-spacing: 0.02em;
+        }
+        #too-small p { margin: 0; color: #7c8794; line-height: 1.55; max-width: 34ch; }
+        #too-small a {
+          justify-self: center;
+          margin-top: 0.4rem;
+          padding: 0.6rem 1.1rem;
+          border-radius: 6px;
+          background: #2fc8bf;
+          color: #0d1014;
+          font-weight: 600;
+          text-decoration: none;
+        }
+      }
+    </style>
   </head>
 
   <body>
     <div id="root"></div>
+
+    <div id="too-small">
+      <img src="/icon.png" alt="" />
+      <h1>Sudden Queue needs a bigger screen</h1>
+      <p>
+        Queueing, match chat and the scrim board are built for a desktop, and
+        there is no phone app to send you to. Open this on a computer, or
+        install the desktop client.
+      </p>
+      <a href="/">Get the desktop app</a>
+    </div>
+
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

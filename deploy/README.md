@@ -69,9 +69,15 @@ sudo deploy/publish-release.sh            # the latest published release
 sudo deploy/publish-release.sh v0.1.3     # or a particular one
 ```
 
-It fetches the installer, `SHA256SUMS` and `latest.json` from the GitHub
-release, verifies the checksum, and puts them where Caddy serves them from. It
-prints the version now being served, asked the way a client asks for it.
+It fetches the installer, the browser bundle, `SHA256SUMS` and `latest.json`
+from the GitHub release, verifies the checksums, and puts them where Caddy
+serves them from — `releases/` for the installer and `webapp/` for the
+browser client. It prints the version now being served, asked the way a client
+asks for it.
+
+The browser client is published in the same step and before the manifest,
+because it reports the version it was built as: a release that raised the floor
+without it would leave the deployment refusing its own website.
 
 Doing it by hand is three downloads whose order matters silently, which is why
 there is a script. `latest.json` is what the server reads to decide which

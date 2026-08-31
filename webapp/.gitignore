@@ -1,0 +1,7 @@
+# The built browser client lands here, installed by deploy/publish-release.sh
+# from the release it belongs to. Built output, so none of it is committed --
+# but the directory has to exist, because compose mounts it into Caddy and
+# Docker would otherwise create it as root-owned.
+*
+!.gitignore
+!index.html

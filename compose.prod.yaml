@@ -99,6 +99,11 @@ services:
       - ./releases:/srv/releases:ro
       # The download page. Part of the checkout, so a git pull updates it.
       - ./deploy/site:/srv/site:ro
+      # The browser build of the client, served at /app. Unlike the page above
+      # this is built rather than checked in, and publish-release.sh installs
+      # it alongside the installer -- it carries a version, and a stale one is
+      # refused by the floor the same release just raised.
+      - ./webapp:/srv/webapp:ro
       - caddy-data:/data      # certificates; losing this means re-issuing them
       - caddy-config:/config
 

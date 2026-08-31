@@ -162,6 +162,27 @@
   .download:hover { background: var(--blue-lift); border-color: var(--blue-lift); transform: translateY(-1px); }
   .download svg { width: 17px; height: 17px; }
 
+  /* The same shape as the download, outlined instead of filled. Deliberately
+     second: the desktop app is the better way to play, and this is the way in
+     for everyone who cannot or will not install one. */
+  .play {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.7rem;
+    color: var(--text);
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 1.1rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    text-decoration: none;
+    padding: 0.95rem 1.6rem;
+    border: 1px solid var(--line);
+    transition: border-color 0.14s ease, color 0.14s ease;
+  }
+  .play:hover { border-color: var(--teal); color: var(--teal); }
+  .play svg { width: 17px; height: 17px; }
+
   .meta {
     font-family: var(--mono);
     font-size: 0.82rem;
@@ -363,8 +384,13 @@
             <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0h1v9.6l3.3-3.3.7.7L8.5 12h-1L3 7l.7-.7L7 9.6V0h1zM2 14h12v1H2z"/></svg>
             Download for Windows
           </a>
+          <a class="play" href="/app/">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="6.6"/><path d="M1.6 8h12.8M8 1.4a11 11 0 0 1 0 13.2A11 11 0 0 1 8 1.4z"/></svg>
+            Play in browser
+          </a>
           <span class="meta">
             <b id="version">v0.1.3</b> &middot; <span id="size">3.0 MB</span> &middot; Windows 10 &amp; 11
+            <br />Nothing to install in the browser &mdash; needs a desktop-sized screen.
           </span>
         </div>
       </div>

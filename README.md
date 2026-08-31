@@ -31,7 +31,9 @@ your players.
 ## Running it
 
 The desktop app is **Windows only**, deliberately. The server runs anywhere
-Node does.
+Node does. The same client is also served as a website at `/app`, for players
+who cannot install anything — see
+[The browser client](#the-browser-client).
 
 To work on it you need **Node 22+**, **Docker** (for Postgres), and — for the
 desktop shell — the **Rust toolchain** and **WebView2** (already present on
@@ -85,8 +87,43 @@ Windows' Smart App Control blocking an unsigned local build:
 npm run -w @suddenqueue/desktop dev     # http://localhost:1420
 ```
 
-Everything works except the parts that need the shell: single-instance and the
-updater. Both are feature-detected, so their absence is silent rather than fatal.
+Everything works except the parts that need the shell: single-instance, the
+window flash, and the updater. Which shell it is in is detected from the Tauri
+bridge on `window` (`src/api/shell.js`), so their absence is silent rather
+than fatal.
+
+## The browser client
+
+The same bundle is served by the deployment at `/app`, so a player who will not
+install an unsigned binary — or cannot install anything — can still play. It is
+the same code against the same API, and it holds a session the same way, except
+that the session is an `httpOnly` cookie the page cannot read instead of a token
+in local storage.
+
+Three things differ, on purpose:
+
+- **Sign-in navigates** rather than opening a browser and polling a handoff. The
+  tab that signs in is the tab that plays, so there is nothing to hand off.
+- **There is no update gate.** A tab is served fresh by the deployment it talks
+  to, so it cannot be out of date. The server's version floor still applies.
+- **It refuses small screens.** Below 1100px it shows a "needs a desktop" page
+  instead of the app, because the layout is built for a fixed 1320×940 window
+  and there is no phone app to send anyone to. That gate lives in
+  `apps/desktop/index.html` rather than the bundle, so it paints on a phone
+  without downloading the app it exists to turn away.
+
+**The one thing to know before you touch it:** the browser build reports the
+version it was compiled as, exactly like the installer. So it has to be
+redeployed with every release, or the version floor the release raises refuses
+your own website. `deploy/publish-release.sh` installs it in the same ordered
+step that moves `latest.json`, for that reason — there is nothing extra to
+remember, but there is something to not break.
+
+Turning it on is `git pull` and `docker compose up -d` like any other change;
+the Caddy route and the mount come with the checkout. Until you cut a release
+that carries a browser bundle, `/app` serves a short "not published yet" page —
+releases from before this existed have nothing to install, and publishing one
+does not fail on that.
 
 ## Deploying the server
 
@@ -421,9 +458,16 @@ sudo deploy/publish-release.sh            # the latest published release
 sudo deploy/publish-release.sh v0.1.3     # or a particular one
 ```
 
-It fetches the installer, `SHA256SUMS` and `latest.json` from the GitHub
-release, verifies the checksum in a staging directory, and moves them into
-`releases/` — the manifest last.
+It fetches the installer, the browser bundle, `SHA256SUMS` and `latest.json`
+from the GitHub release, verifies the checksums in a staging directory, and
+moves them into place — `releases/` for the installer, `webapp/` for the
+browser client, and the manifest last of all.
+
+The browser bundle goes in before the manifest for the same reason the
+installer does: it reports the version it was built as, so from the moment the
+floor rises a stale copy is refused by the very server serving it. Releases cut
+before the browser build existed do not have one, and publish exactly as they
+always did.
 
 The order is not cosmetic, which is why it is a script rather than three
 `curl`s. The server reads `latest.json` to decide which client versions it will
