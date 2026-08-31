@@ -2673,6 +2673,54 @@ function LadderScreen({ me, onView, notify }) {
  * makes, and it is only defensible because there is nothing worth reaching
  * here offline -- every screen behind the gate needs the server anyway.
  */
+/**
+ * Shown to a browser player before anything else, on every load.
+ *
+ * The browser build exists for people who cannot install the desktop app, so
+ * this asks them to say that is what they are. Answering no is not a refusal
+ * -- it takes them to the download page, which is the better way to play and
+ * the reason the question is worth asking at all.
+ *
+ * Deliberately not remembered. Asked every load, by decision, so it keeps
+ * pointing at the desktop app rather than being dismissed once and forgotten.
+ *
+ * The wording is the whole of the design here; if it should read more gently,
+ * PROMPT is the only line to change.
+ */
+const BROWSER_PROMPT = "I am technically illiterate and need to use the web version";
+
+function BrowserNotice({ onConfirm }) {
+  return (
+    <div style={{ height: "100%", display: "grid", placeItems: "center", background: T.bg, padding: 24, boxSizing: "border-box" }}>
+      <div style={{ width: 430, maxWidth: "100%", background: T.panel, border: `1px solid ${T.line}`, borderRadius: 8, padding: "22px 24px", boxSizing: "border-box" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 13 }}>
+          <Dot color={T.captain} />
+          <span style={{ fontFamily: T.display, fontWeight: 700, fontSize: 14, textTransform: "uppercase", letterSpacing: "0.02em" }}>
+            {t("Before you play")}
+          </span>
+        </div>
+
+        <p style={{ margin: "0 0 18px", fontSize: 13, lineHeight: 1.5, color: T.text }}>
+          {t(BROWSER_PROMPT)}
+        </p>
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <Btn kind="primary" onClick={onConfirm} autoFocus>{t("Yes")}</Btn>
+          {/* A plain link, not a click handler: the browser's own middle-click,
+              open-in-new-tab and status bar all keep working, and it survives
+              script failing to load. */}
+          <a
+            href="/"
+            style={{ display: "inline-flex", alignItems: "center", gap: 8, border: `1px solid ${T.line2}`, borderRadius: 4, fontWeight: 600, fontSize: 13, padding: "9px 14px", background: T.raised, color: T.text, textDecoration: "none", whiteSpace: "nowrap" }}
+          >
+            {t("No")}
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function UpdateGate({ check, onRetry }) {
   const [progress, setProgress] = useState(null);
   const [installError, setInstallError] = useState(null);
@@ -4226,6 +4274,11 @@ export default function App() {
   const [updateCheck, setUpdateCheck] = useState({ phase: "checking" });
   const [recheck, setRecheck] = useState(0);
 
+  // Asked on every load of the browser build, and never in the desktop app,
+  // where it starts already answered. Held in state rather than storage on
+  // purpose: the question is meant to be put again each time.
+  const [acknowledgedBrowser, setAcknowledgedBrowser] = useState(IS_DESKTOP);
+
   // The check at launch. The retry inside it runs only while the answer is
   // still unknown, and stops for good the moment one arrives; the periodic
   // re-check further down is a separate thing.
@@ -4684,6 +4737,19 @@ export default function App() {
     playQueuePop();
   }, [pendingMatch]);
 
+
+  // Ahead of everything, including the update gate: it is about which build
+  // this is, which is settled before any of the rest can matter. Inert in the
+  // desktop app, where acknowledged starts true.
+  if (!acknowledgedBrowser)
+    return (
+      <ConfigContext.Provider value={config}>
+        <div className="sq" style={{ height: "100vh", width: "100vw", boxSizing: "border-box", fontFamily: T.body, color: T.text }}>
+          <style>{css}</style>
+          <BrowserNotice onConfirm={() => setAcknowledgedBrowser(true)} />
+        </div>
+      </ConfigContext.Provider>
+    );
 
   // Ahead of the sign-in screen on purpose. An update that can be walked
   // around by not signing in is not required, and there is nothing worth

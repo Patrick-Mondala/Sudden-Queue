@@ -137,6 +137,28 @@ vi.mock("./api/client.js", () => ({
 vi.mock("./api/auth.js", () => ({ signIn: vi.fn() }));
 
 /**
+ * Which shell the app believes it is in.
+ *
+ * Real detection reads the Tauri bridge off `window`, which jsdom does not
+ * have -- so without this the whole suite would silently run as the browser
+ * build, behind the notice it shows on every load, and the desktop paths it
+ * was written for would never execute.
+ *
+ * Declared rather than inferred, and mutable so the handful of browser-only
+ * behaviours can be tested too. Getters because the value is read at call
+ * time, long after the imports are bound.
+ */
+let isDesktop = true;
+vi.mock("./api/shell.js", () => ({
+  get IS_DESKTOP() {
+    return isDesktop;
+  },
+  get IS_WEB() {
+    return !isDesktop;
+  },
+}));
+
+/**
  * Signed out, as the app now determines it.
  *
  * Not "no token in storage" any more. The browser build keeps its session in
@@ -2966,5 +2988,63 @@ describe("another player's profile", () => {
     await openThem({}, []);
 
     expect(await screen.findByText(/no finished matches yet/i)).toBeTruthy();
+  });
+});
+
+describe("the browser build", () => {
+  // The notice is the first thing a web player sees, so almost every other
+  // assertion in this file would be made against it rather than the app. The
+  // suite runs as the desktop shell for that reason; these tests are the ones
+  // that deliberately do not.
+  beforeEach(() => {
+    isDesktop = false;
+  });
+  afterEach(() => {
+    isDesktop = true;
+  });
+
+  it("asks before anything else, sign-in included", async () => {
+    signedOut();
+    render(<App />);
+
+    expect(await screen.findByText(/need to use the web version/i)).toBeTruthy();
+    expect(screen.queryByText(/Continue with Discord/i)).toBeNull();
+  });
+
+  it("gets out of the way once it has an answer", async () => {
+    signedOut();
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Yes" }));
+
+    expect(await screen.findByText(/Continue with Discord/i)).toBeTruthy();
+  });
+
+  it("sends anyone who answers no to the download page", async () => {
+    render(<App />);
+
+    // A real link rather than a click handler, so the browser's own
+    // open-in-new-tab and status bar keep working.
+    const no = await screen.findByRole("link", { name: "No" });
+    expect(no.getAttribute("href")).toBe("/");
+  });
+
+  it("asks again next time rather than remembering the answer", async () => {
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Yes" }));
+    cleanup();
+
+    render(<App />);
+
+    expect(await screen.findByText(/need to use the web version/i)).toBeTruthy();
+  });
+
+  it("never shows it in the desktop app", async () => {
+    isDesktop = true;
+    signedOut();
+    render(<App />);
+
+    expect(await screen.findByText(/Continue with Discord/i)).toBeTruthy();
+    expect(screen.queryByText(/need to use the web version/i)).toBeNull();
   });
 });
