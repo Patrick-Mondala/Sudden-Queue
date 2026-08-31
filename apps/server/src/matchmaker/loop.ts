@@ -1,6 +1,7 @@
 import {
   DEFAULT_RATING,
   MATCHMAKING_INTERVAL_MS,
+  SWEEPER_INTERVAL_MS,
   MAX_MATCHES_PER_TICK,
   type MatchDecision,
   findBestMatch,
@@ -189,7 +190,7 @@ export class MatchSweeper {
       onDisputed?: (matchId: string) => void | Promise<void>;
       onError?: (error: unknown) => void;
     } = {},
-    private readonly intervalMs = 1_000,
+    private readonly intervalMs = SWEEPER_INTERVAL_MS,
   ) {}
 
   async sweepOnce(): Promise<void> {

@@ -6,6 +6,7 @@ import {
   INVITE_EXPIRATION_SECONDS,
   MAX_PARTY_SIZE,
   PARTY_DISCONNECT_GRACE_SECONDS,
+  SCRIM_SWEEP_INTERVAL_MS,
   TEAM_APPLICATION_NOTE_MAX_LENGTH,
   TEAM_NOTE_MAX_LENGTH,
   cooldownRemainingSeconds,
@@ -2390,7 +2391,7 @@ export async function buildApp({
   if (autoStart) {
     scrimSweep = setInterval(() => {
       void sweepScrims().catch((err) => server.log.error({ err }, "scrim sweep failed"));
-    }, 1_000);
+    }, SCRIM_SWEEP_INTERVAL_MS);
     scrimSweep.unref?.();
   }
 

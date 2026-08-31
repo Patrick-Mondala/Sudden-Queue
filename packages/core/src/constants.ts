@@ -71,7 +71,46 @@ export const MATCHMAKING_WINDOW_GROWTH = 50;
 export const MATCHMAKING_WINDOW_GROWTH_SECONDS = 10;
 
 /** How often the matchmaker sweeps the queue, and its per-pass output cap. */
-export const MATCHMAKING_INTERVAL_MS = 2_000;
+/**
+ * How often the matchmaker wakes up on its own.
+ *
+ * Rarely, because it is not how matches are made. Joining the queue calls
+ * requestRun directly, so the tenth ticket forms a match the moment it
+ * arrives, whatever this says. Polling only covers what no join would notice:
+ * tickets left behind by a restart, and tickets whose client stopped
+ * heartbeating.
+ *
+ * That second case is the one that needs a clock at all, and only in a narrow
+ * shape -- the last person in the queue going quiet, so no further join ever
+ * fires to sweep them up. Nothing waits on it: a stale ticket cannot be
+ * matched, so the cost of finding it late is a queue count that is briefly
+ * wrong.
+ *
+ * It was two seconds, which meant two queries a second forever on a
+ * deployment where nobody was queued.
+ */
+export const MATCHMAKING_INTERVAL_MS = 30_000;
+
+/**
+ * Expiry of accept windows, which are ACCEPT_WINDOW_SECONDS long.
+ *
+ * This one genuinely needs a clock: an accept window runs out on wall time
+ * with nobody necessarily doing anything, so there is no event to hang it on.
+ *
+ * Two seconds against a twenty second window is a tenth of it late at worst,
+ * and the countdown a player watches is drawn client-side from the deadline
+ * rather than from this, so the overrun is invisible to them.
+ */
+export const SWEEPER_INTERVAL_MS = 2_000;
+
+/**
+ * Expiry of unconfirmed scrim lineups, which are SCRIM_LINEUP_SECONDS long.
+ *
+ * Thirty seconds is a short deadline, so this stays fairly tight: five seconds
+ * is a sixth of it, and the alternative is a join across three tables every
+ * second in perpetuity to catch something that happens rarely.
+ */
+export const SCRIM_SWEEP_INTERVAL_MS = 5_000;
 export const MAX_MATCHES_PER_TICK = 10;
 
 /**
