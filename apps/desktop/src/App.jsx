@@ -316,6 +316,27 @@ const toHistoryRows = (rows) =>
     openable: true,
   }));
 
+/**
+ * What each audit event is called on a player's record.
+ *
+ * This was a boolean -- suspended, or else reinstated -- which was true when
+ * those were the only two things that could happen to an account. Every power
+ * added since fell into the else, so lifting a cooldown, clearing a name and
+ * correcting rating all appeared on the record as REINSTATED. Unrecognised
+ * events now show their own type rather than borrowing somebody else's label,
+ * so the next one added is merely ugly instead of wrong.
+ */
+const AUDIT_EVENTS = {
+  "user.suspended": { label: "suspended", color: T.danger },
+  "user.reinstated": { label: "reinstated", color: T.ok },
+  "cooldown.cleared": { label: "cooldown lifted", color: T.captain },
+  "ingamename.cleared": { label: "name cleared", color: T.muted },
+  "rating.adjusted": { label: "rating corrected", color: T.accent },
+  "match.voided": { label: "match voided", color: T.captain },
+  "team.renamed": { label: "team renamed", color: T.muted },
+  "queue.removed": { label: "queue ticket removed", color: T.muted },
+};
+
 const displayName = (p) => p?.inGameName?.trim() || p?.discordName || null;
 
 /**
@@ -1835,8 +1856,8 @@ function PlayersPanel({ me, notify }) {
               ) : history.map((h) => (
                 <div key={h.id} style={{ padding: "9px 10px", borderBottom: `1px solid ${T.line}` }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <Tag color={h.eventType === "user.suspended" ? T.danger : T.ok}>
-                      {h.eventType === "user.suspended" ? "suspended" : "reinstated"}
+                    <Tag color={AUDIT_EVENTS[h.eventType]?.color ?? T.muted}>
+                      {AUDIT_EVENTS[h.eventType]?.label ?? h.eventType}
                     </Tag>
                     <span style={{ fontSize: 11.5, color: T.muted }}>by {h.actorName ?? "unknown"}</span>
                     <span style={{ flex: 1, textAlign: "right", fontSize: 11, color: T.dim }}>{ago(Date.parse(h.createdAt))}</span>

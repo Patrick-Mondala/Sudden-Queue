@@ -409,3 +409,60 @@ describe("who may arrange a scrim", () => {
     expect(isOk(await scrim.removeListing(host.captain))).toBe(true);
   });
 });
+
+describe("confirming a lineup", () => {
+  it("asks both captains even when neither has a choice to make", async () => {
+    const host = await makeSquad("HST");
+    const guest = await makeSquad("GST");
+
+    const listing = await scrim.postListing(host.captain, { region: "na", note: null }, await allOnline());
+    if (!isOk(listing)) throw new Error("listing failed");
+    const requested = await scrim.request(guest.captain, listing.data.listingId, await allOnline());
+    if (!isOk(requested)) throw new Error("request failed");
+
+    const decided = await scrim.decideRequest(host.captain, requested.data.requestId, true, await allOnline());
+    if (!isOk(decided)) throw new Error("decide failed");
+
+    // Both rosters are exactly five, so there is only one possible lineup --
+    // and they are asked anyway. Confirming is the captain saying the scrim is
+    // on and their five are around, not only picking who plays. A team that
+    // was never asked finds out it is in a match.
+    expect(decided.data.ready).toBe(false);
+    expect(await scrim.pendingLineupFor(host.captain)).not.toBeNull();
+    expect(await scrim.pendingLineupFor(guest.captain)).not.toBeNull();
+  });
+
+  it("is ready once both have confirmed, and not before", async () => {
+    const host = await makeSquad("HST");
+    const guest = await makeSquad("GST");
+
+    const listing = await scrim.postListing(host.captain, { region: "na", note: null }, await allOnline());
+    if (!isOk(listing)) throw new Error("listing failed");
+    const requested = await scrim.request(guest.captain, listing.data.listingId, await allOnline());
+    if (!isOk(requested)) throw new Error("request failed");
+    await scrim.decideRequest(host.captain, requested.data.requestId, true, await allOnline());
+
+    const first = await scrim.confirmLineup(host.captain, requested.data.requestId, host.members);
+    expect(isOk(first)).toBe(true);
+    if (isOk(first)) expect(first.data.ready).toBe(false);
+
+    const second = await scrim.confirmLineup(guest.captain, requested.data.requestId, guest.members);
+    expect(isOk(second)).toBe(true);
+    if (isOk(second)) expect(second.data.ready).toBe(true);
+  });
+
+  it("still only lets the captain confirm", async () => {
+    const host = await makeSquad("HST");
+    const guest = await makeSquad("GST");
+
+    const listing = await scrim.postListing(host.captain, { region: "na", note: null }, await allOnline());
+    if (!isOk(listing)) throw new Error("listing failed");
+    const requested = await scrim.request(guest.captain, listing.data.listingId, await allOnline());
+    if (!isOk(requested)) throw new Error("request failed");
+    await scrim.decideRequest(host.captain, requested.data.requestId, true, await allOnline());
+
+    const notCaptain = host.members[1]!;
+    const r = await scrim.confirmLineup(notCaptain, requested.data.requestId, host.members);
+    expect(isFail(r)).toBe(true);
+  });
+});

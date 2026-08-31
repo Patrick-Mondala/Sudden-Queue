@@ -413,11 +413,16 @@ export class ScrimService {
         if (notReady) return notReady;
       }
 
-      // A roster of exactly five has nothing to choose, so it is filled in
-      // here and its captain is never asked. Only a team carrying subs gets
-      // the confirmation step.
-      const hostLine = await this.autoLineup(tx, listing.teamId);
-      const guestLine = await this.autoLineup(tx, request.requestingTeamId);
+      // Both captains confirm, whatever their roster looks like.
+      //
+      // A team of exactly five was filled in here and never asked, on the
+      // grounds that there is only one possible answer. But confirming is
+      // not only picking who plays -- it is the captain saying the scrim is
+      // on, that their five are around, and that they know it is starting.
+      // A team that was never asked finds out it is in a match, which is a
+      // worse answer than one extra click.
+      const hostLine = null;
+      const guestLine = null;
 
       await tx
         .update(scrimRequests)
@@ -466,22 +471,6 @@ export class ScrimService {
       .update(scrimListings)
       .set({ status: "open" })
       .where(eq(scrimListings.id, listingId));
-  }
-
-  /**
-   * The lineup a team does not have to be asked for.
-   *
-   * Exactly five on the roster means exactly one possible answer. Anything
-   * more and the captain picks, so this returns null and the confirmation
-   * step takes over.
-   */
-  private async autoLineup(tx: Executor, teamId: string): Promise<string[] | null> {
-    const rows = await tx
-      .select({ userId: teamMembers.userId })
-      .from(teamMembers)
-      .where(eq(teamMembers.teamId, teamId));
-
-    return rows.length === TEAM_SIZE ? rows.map((r) => r.userId) : null;
   }
 
   /** What this player's team still owes, if they are the one who owes it. */

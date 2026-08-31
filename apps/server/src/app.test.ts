@@ -1604,6 +1604,33 @@ describe("scrims over the API", () => {
     return { teamId, captain, members };
   }
 
+  /**
+   * Both captains confirming their lineup, which a scrim now always needs.
+   * A roster of exactly five used to be filled in on accept and never asked;
+   * confirming is the captain saying the scrim is on, not only who plays.
+   */
+  async function bothConfirm(
+    requestId: string,
+    host: Awaited<ReturnType<typeof squad>>,
+    guest: Awaited<ReturnType<typeof squad>>,
+  ) {
+    let last!: Awaited<ReturnType<typeof app.server.inject>>;
+
+    for (const side of [host, guest]) {
+      last = await app.server.inject({
+        method: "POST",
+        url: `/scrims/requests/${requestId}/lineup`,
+        headers: authed(side.captain.token),
+        payload: { userIds: side.members.map((m) => m.userId) },
+      });
+      if (last.statusCode !== 200) throw new Error(`confirm failed: ${last.body}`);
+    }
+
+    // The second confirmation is what commits the match, so its body is
+    // where the match id now comes from rather than the accept.
+    return last.json() as { confirmed: boolean; matchId?: string };
+  }
+
   async function list(captainToken: string, note: string | null = null) {
     return app.server.inject({
       method: "POST",
@@ -1652,10 +1679,13 @@ describe("scrims over the API", () => {
     expect(accepted.statusCode).toBe(200);
     expect(accepted.json().accepted).toBe(true);
 
+    // Both captains confirm, and confirming is what commits the match.
+    const { matchId } = await bothConfirm(requested.json().requestId, host, guest);
+
     // The same prompt a PUG raises, for all ten.
     const match = await app.server.inject({
       method: "GET",
-      url: `/match/${accepted.json().matchId}`,
+      url: `/match/${matchId}`,
       headers: authed(host.captain.token),
     });
     expect(match.json().type).toBe("SCRIM");
@@ -1686,6 +1716,8 @@ describe("scrims over the API", () => {
       payload: { accept: true },
     });
 
+    await bothConfirm(requested.json().requestId, host, guest);
+
     expect(seen.some((e) => e.type === "match.found")).toBe(true);
     app.notifier.remove(guest.members[3]!.userId, conn);
   });
@@ -1707,6 +1739,10 @@ describe("scrims over the API", () => {
       headers: authed(host.captain.token),
       payload: { accept: true },
     });
+
+    // The listing survives the accept now and comes down when the match
+    // commits, which is when both captains have confirmed.
+    await bothConfirm(requested.json().requestId, host, guest);
 
     const board = await app.server.inject({
       method: "GET",
@@ -1770,8 +1806,26 @@ describe("scrims over the API", () => {
       payload: { accept: true },
     });
 
-    expect(accepted.statusCode).toBe(409);
-    expect(accepted.json().error).toBe("PLAYER_QUEUED");
+    // Accepting is only an arrangement now; the match is committed when both
+    // captains confirm, so that is where a queued player is noticed.
+    expect(accepted.statusCode).toBe(200);
+
+    const refused = await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requested.json().requestId}/lineup`,
+      headers: authed(host.captain.token),
+      payload: { userIds: host.members.map((m) => m.userId) },
+    });
+    const guestRefused = await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requested.json().requestId}/lineup`,
+      headers: authed(guest.captain.token),
+      payload: { userIds: guest.members.map((m) => m.userId) },
+    });
+
+    expect(guestRefused.statusCode).toBe(409);
+    expect(guestRefused.json().error).toBe("PLAYER_QUEUED");
+    expect(refused.statusCode).toBe(200);
 
     // The arrangement survives, so the host can try again once they are free.
     const board = await app.server.inject({
@@ -2248,14 +2302,21 @@ describe("scrim lineups", () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it("skips the confirmation when both rosters are exactly five", async () => {
+  it("asks both captains even when neither has a choice to make", async () => {
     const host = await squad("HST", 5);
     const guest = await squad("GST", 5);
     const { accepted } = await arrange(host, guest);
 
-    // Nothing to choose, so nobody is asked and the match goes straight out.
-    expect(accepted.json().matchId).toBeTruthy();
-    expect(accepted.json().awaitingLineup).toBeUndefined();
+    // A roster of exactly five used to be filled in on accept and its captain
+    // never asked, on the grounds that there is one possible answer. But
+    // confirming is the captain saying the scrim is on and their five are
+    // around, not only picking who plays -- and a team that was never asked
+    // finds out it is already in a match.
+    expect(accepted.json().awaitingLineup).toBe(true);
+    expect(accepted.json().matchId).toBeUndefined();
+
+    expect((await board(host.captain.token)).json().pendingLineup).toBeTruthy();
+    expect((await board(guest.captain.token)).json().pendingLineup).toBeTruthy();
   });
 
   it("asks both captains when a roster carries substitutes", async () => {
@@ -2266,13 +2327,14 @@ describe("scrim lineups", () => {
     expect(accepted.json().awaitingLineup).toBe(true);
     expect(accepted.json().matchId).toBeUndefined();
 
-    // The host has to pick; the guest of five does not.
+    // The host picks from seven; the guest of five is asked as well, even
+    // though their answer is the only one available to them.
     const hostBoard = await board(host.captain.token);
     expect(hostBoard.json().pendingLineup).toBeTruthy();
     expect(hostBoard.json().pendingLineup.roster).toHaveLength(7);
     expect(hostBoard.json().pendingLineup.opponentTag).toBe("GST");
 
-    expect((await board(guest.captain.token)).json().pendingLineup).toBeNull();
+    expect((await board(guest.captain.token)).json().pendingLineup).toBeTruthy();
   });
 
   it("preselects the starters", async () => {
@@ -2301,11 +2363,23 @@ describe("scrim lineups", () => {
     });
 
     expect(confirmed.statusCode).toBe(200);
-    expect(confirmed.json().matchId).toBeTruthy();
+
+    // The host is not the last word any more: the match commits when the
+    // second captain confirms, so that is the response carrying the match.
+    expect(confirmed.json().awaitingLineup).toBe(true);
+
+    const guestPending = (await board(guest.captain.token)).json().pendingLineup;
+    const last = await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requestId}/lineup`,
+      headers: authed(guest.captain.token),
+      payload: { userIds: guestPending.roster.map((r: { userId: string }) => r.userId) },
+    });
+    expect(last.json().matchId).toBeTruthy();
 
     const match = await app.server.inject({
       method: "GET",
-      url: `/match/${confirmed.json().matchId}`,
+      url: `/match/${last.json().matchId}`,
       headers: authed(host.captain.token),
     });
     expect(match.json().type).toBe("SCRIM");
@@ -2333,9 +2407,18 @@ describe("scrim lineups", () => {
 
     // Starters are a default, not a rule.
     expect(confirmed.statusCode).toBe(200);
+
+    const guestPending = (await board(guest.captain.token)).json().pendingLineup;
+    const last = await app.server.inject({
+      method: "POST",
+      url: `/scrims/requests/${requestId}/lineup`,
+      headers: authed(guest.captain.token),
+      payload: { userIds: guestPending.roster.map((r: { userId: string }) => r.userId) },
+    });
+
     const match = await app.server.inject({
       method: "GET",
-      url: `/match/${confirmed.json().matchId}`,
+      url: `/match/${last.json().matchId}`,
       headers: authed(host.captain.token),
     });
     expect(match.json().team1.map((p: { id: string }) => p.id)).toContain(benched.userId);
