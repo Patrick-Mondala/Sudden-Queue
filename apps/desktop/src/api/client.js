@@ -250,6 +250,9 @@ export const api = {
   decline: (matchId) => request(`/match/${matchId}/decline`, { method: "POST" }),
   reportResult: (matchId, winner) =>
     request(`/match/${matchId}/report`, { method: "POST", body: { winner } }),
+  // Before the other captain reports. After that the result is agreed or
+  // disputed, and neither is a captain's to take back.
+  withdrawReport: (matchId) => request(`/match/${matchId}/report`, { method: "DELETE" }),
 };
 
 /* ─────────────────────────────────────────────────────────────

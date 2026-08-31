@@ -150,6 +150,70 @@ describe("one-sided report", () => {
   });
 });
 
+describe("withdrawing a report", () => {
+  it("takes the claim back and puts the match back to live", async () => {
+    const m = await liveMatch();
+    await reporting.report(m.matchId, m.captain1, "TEAM1");
+
+    const r = await reporting.withdraw(m.matchId, m.captain1);
+    expect(isOk(r)).toBe(true);
+    if (isOk(r)) expect(r.data.state).toBe("LIVE");
+
+    expect(await reporting.reportsFor(m.matchId)).toHaveLength(0);
+
+    // The window was counting down against a result nobody is claiming now.
+    const match = await lifecycle.getMatch(m.matchId);
+    expect(match!.state).toBe("LIVE");
+    expect(match!.reportDeadline).toBeNull();
+  });
+
+  it("leaves the match reported while the other captain's claim stands", async () => {
+    const m = await liveMatch();
+    await reporting.report(m.matchId, m.captain1, "TEAM1");
+    await reporting.report(m.matchId, m.captain2, "TEAM1");
+
+    // Agreement settles it, so there is nothing left to withdraw from.
+    const r = await reporting.withdraw(m.matchId, m.captain1);
+    expect(isOk(r)).toBe(false);
+    if (!isOk(r)) expect(r.code).toBe("ALREADY_RESOLVED");
+  });
+
+  it("refuses when this captain never reported", async () => {
+    const m = await liveMatch();
+    await reporting.report(m.matchId, m.captain1, "TEAM1");
+
+    const r = await reporting.withdraw(m.matchId, m.captain2);
+    expect(isOk(r)).toBe(false);
+    if (!isOk(r)) expect(r.code).toBe("NOT_REPORTED");
+
+    // And the claim that was there is untouched.
+    expect(await reporting.reportsFor(m.matchId)).toHaveLength(1);
+  });
+
+  it("refuses once a match is disputed, which is a Game Master's to settle", async () => {
+    const m = await liveMatch();
+    await reporting.report(m.matchId, m.captain1, "TEAM1");
+    await reporting.report(m.matchId, m.captain2, "TEAM2");
+
+    const r = await reporting.withdraw(m.matchId, m.captain1);
+    expect(isOk(r)).toBe(false);
+    if (!isOk(r)) expect(r.code).toBe("ALREADY_RESOLVED");
+  });
+
+  it("lets a captain withdraw and then report again", async () => {
+    const m = await liveMatch();
+    await reporting.report(m.matchId, m.captain1, "TEAM1");
+    await reporting.withdraw(m.matchId, m.captain1);
+
+    const again = await reporting.report(m.matchId, m.captain1, "TEAM2");
+    expect(isOk(again)).toBe(true);
+
+    const reports = await reporting.reportsFor(m.matchId);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]!.claimedWinner).toBe("TEAM2");
+  });
+});
+
 describe("agreement", () => {
   it("settles the match and applies rating both ways", async () => {
     const m = await liveMatch({ rating: 1200, games: 30 });

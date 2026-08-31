@@ -106,6 +106,7 @@ const server = {
   accept: vi.fn(),
   decline: vi.fn(),
   reportResult: vi.fn(),
+  withdrawReport: vi.fn(),
 };
 
 let token = "test-token";

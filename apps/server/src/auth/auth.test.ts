@@ -352,15 +352,28 @@ describe("login", () => {
     expect(ratings).toHaveLength(1);
   });
 
-  it("refreshes the display name when the player renames on Discord", async () => {
+  it("stores the username rather than the display name", async () => {
+    const svc = service();
+    const first = await svc.loginWithProfile({ ...PROFILE, globalName: "Whatever I Feel Like" });
+    if (!isOk(first)) throw new Error("expected ok");
+
+    // The handle you are found and added by, not the name someone chose this
+    // morning. Two people can share a display name; usernames are unique.
+    const user = await svc.getUser(first.data.userId);
+    expect(user!.discordName).toBe(PROFILE.username);
+  });
+
+  it("refreshes the username when the player renames on Discord", async () => {
     const svc = service();
     const first = await svc.loginWithProfile(PROFILE);
     if (!isOk(first)) throw new Error("expected ok");
 
-    await svc.loginWithProfile({ ...PROFILE, globalName: "Renamed" });
+    await svc.loginWithProfile({ ...PROFILE, username: "renamed_handle" });
 
+    // Which is also how accounts that stored a display name before this put
+    // themselves right: the next login overwrites it.
     const user = await svc.getUser(first.data.userId);
-    expect(user!.discordName).toBe("Renamed");
+    expect(user!.discordName).toBe("renamed_handle");
   });
 
   it("preserves rating across logins", async () => {

@@ -13,6 +13,55 @@ import { t, tn, errorText, currentLocale, onLocaleChange } from "./i18n/index.js
  * as under Smart App Control. Everything else here is ordinary web code; this
  * was the only part that was not.
  */
+/**
+ * The sound a found match makes.
+ *
+ * Synthesised rather than shipped as a file: two short notes through the Web
+ * Audio API weigh nothing, need no asset in the bundle, and cannot be the
+ * thing that fails to load. The interval is a rising fourth because it has to
+ * read as "come back" from another room and through a game's own audio, which
+ * a single beep does not.
+ *
+ * Everything here is best-effort. A machine with no audio device, a webview
+ * that refuses to start an AudioContext without a gesture, a muted output --
+ * none of them are reasons to fail the accept prompt, which is the thing that
+ * actually matters and is already on screen.
+ */
+function playQueuePop() {
+  try {
+    const Ctx = window.AudioContext ?? window.webkitAudioContext;
+    if (!Ctx) return;
+
+    const ctx = new Ctx();
+    const at = ctx.currentTime;
+
+    for (const [i, hz] of [660, 880].entries()) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = "triangle";
+      osc.frequency.value = hz;
+
+      // Shaped rather than switched: an envelope with no ramp clicks, and a
+      // click is what a cheap notification sounds like.
+      const start = at + i * 0.13;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.22, start + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.12);
+
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.14);
+    }
+
+    // Let the device go once the sound has finished rather than holding an
+    // audio context open for the rest of the session.
+    setTimeout(() => void ctx.close().catch(() => {}), 800);
+  } catch {
+    // No audio is not a failure worth reporting; the prompt is on screen.
+  }
+}
+
 async function demandAttention() {
   try {
     const { getCurrentWindow, UserAttentionType } = await import("@tauri-apps/api/window");
@@ -2629,6 +2678,25 @@ function MatchScreen({ match, me, onFinished, notify, onView }) {
   };
 
   /**
+   * Takes it back, while there is still something to take back.
+   *
+   * Reporting the wrong way round could already be corrected by reporting
+   * again, but reporting the wrong *match* -- or reporting while the other
+   * side is still playing -- had no way out. The server refuses once both
+   * captains have spoken, because by then the result is agreed or disputed and
+   * neither is one captain's to undo.
+   */
+  const cancelReport = async () => {
+    try {
+      await server.withdrawReport(match.id);
+      setMyReport(null);
+      setPhase("live");
+    } catch (err) {
+      notify(errorText(err, "Could not cancel that report"));
+    }
+  };
+
+  /**
    * What the result did to your rank.
    *
    * Most matches move a rating without crossing a threshold, and saying
@@ -2675,7 +2743,17 @@ function MatchScreen({ match, me, onFinished, notify, onView }) {
           {phase === "party" && <div style={{ fontFamily: T.mono, fontSize: 44, fontWeight: 600, color: T.captain, lineHeight: 1 }}>{fmt(Math.max(0, left))}</div>}
           {phase === "queue" && <div style={{ fontFamily: T.display, fontWeight: 800, fontSize: 30, color: T.accent, textTransform: "uppercase", animation: "sqPulse 1s infinite" }}>{t("Queue")}</div>}
           {phase === "live" && !iAmCaptain && <Tag>{t("Captain reports")}</Tag>}
-          {phase === "reported" && <Dot pulse color={T.muted} />}
+          {phase === "reported" && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <Dot pulse color={T.muted} />
+              {/* Only the captain who sent it, and only while the other side
+                  has not answered -- which is exactly when the server will
+                  still allow it. */}
+              {iAmCaptain && myReport && (
+                <Btn size="sm" onClick={cancelReport}>{t("Cancel report")}</Btn>
+              )}
+            </div>
+          )}
           {(phase === "completed" || phase === "dispute") && <Btn kind="primary" onClick={() => onFinished({ outcome, disputed: phase === "dispute" })}>Back to lobby <ChevronRight size={14} /></Btn>}
         </div>
         {phase === "live" && iAmCaptain && (
@@ -3592,6 +3670,7 @@ export default function App() {
   useEffect(() => {
     if (!pendingMatch) return;
     void demandAttention();
+    playQueuePop();
   }, [pendingMatch]);
 
 

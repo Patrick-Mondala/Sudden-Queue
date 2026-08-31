@@ -50,7 +50,19 @@ export class AuthService {
   async loginWithProfile(
     profile: DiscordProfile,
   ): Promise<Result<LoginResult, "BANNED">> {
-    const displayName = profile.globalName ?? profile.username;
+    /**
+     * The username, not the display name.
+     *
+     * Discord has two: `username` is the unique handle you are found and added
+     * by, `global_name` is whatever someone felt like being called today. The
+     * display name was stored here, which made this field decorative -- two
+     * people can share one, it changes on a whim, and it is not what you type
+     * to find somebody.
+     *
+     * Refreshed on every login below, so accounts that stored a display name
+     * before this correct themselves the next time their owner signs in.
+     */
+    const displayName = profile.username;
 
     const upserted = await this.db
       .insert(users)

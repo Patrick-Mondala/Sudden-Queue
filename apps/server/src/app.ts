@@ -1643,6 +1643,33 @@ export async function buildApp({
 
   const reportBody = z.object({ winner: z.enum(["TEAM1", "TEAM2"]) });
 
+  /**
+   * Takes a report back, before the match is settled.
+   *
+   * Reporting could already be corrected into a different claim, but not
+   * withdrawn -- so a captain who reported the wrong match, or reported while
+   * the other side was still playing, had no way to say so.
+   */
+  server.delete("/match/:id/report", { preHandler: authenticate }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const user = requireUser(req);
+
+    const result = await reporting.withdraw(id, user.userId);
+    if (isFail(result)) {
+      return reply.code(409).send({ error: result.code, message: result.message });
+    }
+
+    const parts = await lifecycle.participants(id);
+    notifier.toUsers(parts.map((p) => p.userId), {
+      type: "match.state",
+      matchId: id,
+      state: result.data.state,
+    });
+    population.nudge();
+
+    return result.data;
+  });
+
   server.post("/match/:id/report", { preHandler: authenticate }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const body = reportBody.safeParse(req.body);

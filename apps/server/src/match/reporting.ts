@@ -52,7 +52,8 @@ type ReportError =
   | "MATCH_NOT_FOUND"
   | "NOT_A_CAPTAIN"
   | "NOT_REPORTABLE"
-  | "ALREADY_RESOLVED";
+  | "ALREADY_RESOLVED"
+  | "NOT_REPORTED";
 
 /**
  * Result reporting.
@@ -182,6 +183,67 @@ export class MatchReporting {
       });
 
       return ok({ state: "COMPLETED" as const, winner, ratingChanges: changes });
+    });
+  }
+
+  /**
+   * Takes a captain's claim back.
+   *
+   * Re-reporting already let a captain correct a misclick, but only into
+   * another claim -- there was no way to say "ignore me, we are still playing"
+   * or to undo a report entered on the wrong match. This is that.
+   *
+   * Only before the match is settled. Once both sides have reported, the
+   * result is either agreed and applied or disputed and a Game Master's to
+   * decide; withdrawing then would be rewriting history rather than correcting
+   * an entry, and the retroactive edit is a separate, deliberate power.
+   *
+   * The match drops back to LIVE when nothing is left claiming otherwise, so
+   * the report window stops counting down against a result nobody has offered.
+   */
+  async withdraw(
+    matchId: string,
+    userId: string,
+  ): Promise<Result<{ state: "LIVE" | "REPORTED" }, ReportError>> {
+    return this.db.transaction(async (tx) => {
+      const [match] = await tx
+        .select()
+        .from(matches)
+        .where(eq(matches.id, matchId))
+        .for("update");
+
+      if (!match) return fail("MATCH_NOT_FOUND", "Match not found");
+
+      if (match.state === "COMPLETED" || match.state === "DISPUTED") {
+        return fail("ALREADY_RESOLVED", "This match has already been settled");
+      }
+
+      const removed = await tx
+        .delete(matchReports)
+        .where(and(eq(matchReports.matchId, matchId), eq(matchReports.reporterId, userId)))
+        .returning({ reporterId: matchReports.reporterId });
+
+      if (removed.length === 0) {
+        return fail("NOT_REPORTED", "You have not reported this match");
+      }
+
+      const [remaining] = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(matchReports)
+        .where(eq(matchReports.matchId, matchId));
+
+      // Back to LIVE only when the last claim is gone. A match with one report
+      // still standing is still reported, and its window still applies.
+      if ((remaining?.count ?? 0) === 0) {
+        await tx
+          .update(matches)
+          .set({ state: "LIVE", reportDeadline: null })
+          .where(eq(matches.id, matchId));
+
+        return ok({ state: "LIVE" as const });
+      }
+
+      return ok({ state: "REPORTED" as const });
     });
   }
 
