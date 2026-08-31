@@ -44,6 +44,31 @@
 	redir /app /app/
 	handle_path /app/* {
 		root * /srv/webapp
+
+		# index.html is to this app what latest.json is to the installer: the
+		# one file here that changes meaning in place. It names which bundle to
+		# load, so a cached copy points a returning player at the previous
+		# release -- and unlike the desktop app, a tab cannot update itself out
+		# of that. It would send the old version, be refused by the floor this
+		# deployment just raised, and sit on a screen telling it to update with
+		# no way to do so short of a hard refresh nobody knows to try.
+		#
+		# no-cache is revalidate-before-use, not "never store": the browser
+		# still keeps it and still gets a 304 when nothing has changed.
+		#
+		# Two paths, because handle_path has already stripped /app by the time
+		# these match: the page is requested as / and served as index.html from
+		# disk, so matching only the filename would miss every ordinary visit
+		# and catch only somebody who typed it out.
+		@page path / /index.html
+		header @page Cache-Control "no-cache"
+
+		# The opposite for everything else, because their names carry a content
+		# hash: a given URL's bytes can never change, so re-checking is pure
+		# latency. immutable says exactly that, and stops a reload revalidating
+		# every asset on the page.
+		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+
 		# .published records which release this bundle came from, for the
 		# publish script. It lives with the bundle so it cannot outlive it, and
 		# it is nobody else's business.
