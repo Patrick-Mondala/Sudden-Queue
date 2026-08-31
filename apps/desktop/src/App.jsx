@@ -224,6 +224,9 @@ function profileToPlayer(profile) {
     avatarColor: AV_COLORS[Math.abs(hashString(profile.userId)) % AV_COLORS.length],
     tier: profile.tier,
     isGameMaster: profile.isGameMaster ?? false,
+    // Kept because "is staff" and "is an admin" are different questions, and
+    // only the second decides who may act on a Game Master.
+    role: profile.role ?? "player",
     placementsRemaining: profile.placementsRemaining,
     // An absolute moment rather than a duration, so it keeps counting down
     // correctly across re-renders and reconnects.
@@ -1624,6 +1627,16 @@ function PlayersPanel({ me, notify }) {
   const serving = target && Date.parse(target.bannedUntil ?? 0) > Date.now();
   const cooling = target && Date.parse(target.queueCooldownUntil ?? 0) > Date.now();
 
+  /**
+   * Whether this account is one a Game Master may suspend.
+   *
+   * The same rule the server enforces, mirrored here so it is not discovered by
+   * clicking: an admin may act on a Game Master, nobody may act on an admin
+   * from this screen, and two Game Masters suspending each other is not a
+   * dispute the system should be able to have.
+   */
+  const maySuspend = target && !(target.role === "admin" || (target.role === "game_master" && me.role !== "admin"));
+
   const row = (u) => (
     <div
       key={u.userId}
@@ -1767,7 +1780,18 @@ function PlayersPanel({ me, notify }) {
               </div>
             )}
 
-            {serving ? (
+            {/* Staff are not suspendable from here, and saying so beats
+                offering the controls and refusing the click. The repairs
+                above stay available: lifting a cooldown or clearing a name
+                is not a punishment, and a Game Master can miss an accept
+                like anybody. */}
+            {!maySuspend ? (
+              <div style={{ marginTop: 14, padding: "10px 12px", background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 5, fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>
+                {target.role === "admin"
+                  ? t("Admins cannot be suspended from here.")
+                  : t("A Game Master cannot be suspended by another Game Master. An admin can.")}
+              </div>
+            ) : serving ? (
               <Btn kind="primary" disabled={busy} onClick={doReinstate} style={{ marginTop: 14 }}>
                 Lift the suspension
               </Btn>

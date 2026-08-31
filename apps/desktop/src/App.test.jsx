@@ -1727,12 +1727,39 @@ describe("suspending a player", () => {
     expect(screen.getByText(/Throwing matches/)).toBeTruthy();
   });
 
-  it("surfaces a refusal rather than looking like it worked", async () => {
+  it("does not offer to suspend another Game Master", async () => {
     server.findPlayers.mockResolvedValue({ users: [account({ role: "game_master" })] });
+    await openPlayers();
+
+    await userEvent.type(screen.getByLabelText(/Find a player/i), "grief");
+    await userEvent.click(await screen.findByText("Griefer99"));
+
+    // The server refuses this, and offering a control that will be refused
+    // teaches people the rule by making them break it.
+    expect(screen.getByText(/cannot be suspended by another Game Master/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Suspend$/i })).toBeNull();
+    expect(server.suspend).not.toHaveBeenCalled();
+  });
+
+  it("still repairs a Game Master's account, which is not a punishment", async () => {
+    server.findPlayers.mockResolvedValue({ users: [account({ role: "game_master" })] });
+    server.clearCooldown.mockResolvedValue({ ok: true });
+    await openPlayers();
+
+    await userEvent.type(screen.getByLabelText(/Find a player/i), "grief");
+    await userEvent.click(await screen.findByText("Griefer99"));
+
+    // A Game Master can miss an accept like anybody.
+    await userEvent.click(screen.getByRole("button", { name: /Lift cooldown/i }));
+    await waitFor(() => expect(server.clearCooldown).toHaveBeenCalledWith("user-9"));
+  });
+
+  it("surfaces a refusal rather than looking like it worked", async () => {
+    server.findPlayers.mockResolvedValue({ users: [account()] });
     server.suspend.mockRejectedValue(
-      Object.assign(new Error("Griefer99 cannot be suspended from here"), {
-        status: 403,
-        code: "CANNOT_SUSPEND_STAFF",
+      Object.assign(new Error("Give a reason, under 500 characters"), {
+        status: 400,
+        code: "INVALID_REASON",
       }),
     );
     await openPlayers();
@@ -1742,7 +1769,7 @@ describe("suspending a player", () => {
     await userEvent.type(screen.getByLabelText(/^Reason$/i), "because");
     await userEvent.click(screen.getByRole("button", { name: /^Suspend$/i }));
 
-    expect(await screen.findByText(/cannot be suspended from here/i)).toBeTruthy();
+    expect(await screen.findByText(/Give a reason/i)).toBeTruthy();
   });
 
   it("never puts a rating on screen", async () => {
