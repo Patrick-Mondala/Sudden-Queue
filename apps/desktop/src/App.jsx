@@ -4625,8 +4625,6 @@ export default function App() {
   }} />;
   else if (viewProfile) content = <ProfileScreen p={viewProfile} me={me} history={history} onBack={() => setViewProfile(null)} onViewMatch={openMatch} onSaved={refreshProfile} notify={notify} />;
   else if (nav === "play") content = <PlayScreen me={me} party={party} queue={queue} setQueue={setQueue} cooldownUntil={cooldownUntil} history={history} notify={notify} onViewMatch={openMatch} onView={setViewProfile} onInvite={() => setInviteOpen(true)} onSetName={() => go("profile")} />;
-  // These three have no server endpoints yet, so they say so rather than
-  // standing in for them.
   else if (nav === "scrims") content = <ScrimsScreen notify={notify} />;
   else if (nav === "teams") content = <TeamsScreen me={me} notify={notify} onView={setViewProfile} />;
   else if (nav === "bans") content = <BansScreen notify={notify} />;
