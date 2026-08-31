@@ -1997,11 +1997,29 @@ export async function buildApp({
     return { ok: true };
   });
 
-  /** Bans handed down, newest first. Spent ones included: it is a record. */
-  server.get("/mod/bans", { preHandler: authenticate }, async (req, reply) => {
-    if (!requireGameMaster(req, reply)) return reply;
+  /**
+   * Bans handed down, newest first. Spent ones included: it is a record.
+   *
+   * Deliberately not a Game Master route. The point of publishing this is that
+   * everybody can see it -- a consequence nobody watches is a consequence
+   * nobody weighs, and a community that cannot see what gets you banned has to
+   * guess. Signed in, though: it is for the people playing, not for the open
+   * internet to index.
+   *
+   * Who issued the ban is left out of the public shape. Naming the Game Master
+   * beside the punishment turns a decision about a player into a grievance
+   * against a person, and the audit log already records it for the people who
+   * need to know.
+   */
+  server.get("/bans", { preHandler: authenticate }, async (req) => {
     const limit = Number((req.query as Record<string, string>)?.limit ?? 100);
-    return { bans: await moderation.banHistory(Number.isFinite(limit) ? limit : 100) };
+    const user = requireUser(req);
+    const staff = isGameMaster(user.role);
+
+    const bans = await moderation.banHistory(Number.isFinite(limit) ? limit : 100);
+    return {
+      bans: staff ? bans : bans.map(({ byName: _byName, ...rest }) => rest),
+    };
   });
 
   server.get("/mod/audit", { preHandler: authenticate }, async (req, reply) => {

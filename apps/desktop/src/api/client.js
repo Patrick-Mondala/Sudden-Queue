@@ -202,6 +202,25 @@ export const api = {
   reinstate: (userId, note) =>
     request(`/mod/users/${userId}/reinstate`, { method: "POST", body: { note } }),
 
+  // The wall. Not a /mod route: everybody can see it, which is the point.
+  bans: (limit = 100) => request(`/bans?limit=${limit}`),
+
+  // Powers that used to mean opening psql on the server.
+  clearCooldown: (userId) => request(`/mod/users/${userId}/clear-cooldown`, { method: "POST" }),
+  clearInGameName: (userId) => request(`/mod/users/${userId}/clear-name`, { method: "POST" }),
+  adjustRating: (userId, delta, reason) =>
+    request(`/mod/users/${userId}/rating`, { method: "POST", body: { delta, reason } }),
+  renameTeam: (teamId, changes) =>
+    request(`/mod/teams/${teamId}`, { method: "PATCH", body: changes }),
+  voidMatch: (matchId, reason) =>
+    request(`/mod/matches/${matchId}/void`, { method: "POST", body: { reason } }),
+  removeFromQueue: (partyId) => request(`/mod/queue/${partyId}`, { method: "DELETE" }),
+  auditLog: (limit = 100) => request(`/mod/audit?limit=${limit}`),
+
+  reports: (all = false) => request(`/mod/reports${all ? "?all=true" : ""}`),
+  reviewReport: (reportId, status, note) =>
+    request(`/mod/reports/${reportId}/review`, { method: "POST", body: { status, note } }),
+
   chatHistory: (channel) => request(`/chat/${channel}`),
 
   ladder: (limit, offset) => request(`/ladder?limit=${limit}&offset=${offset}`),

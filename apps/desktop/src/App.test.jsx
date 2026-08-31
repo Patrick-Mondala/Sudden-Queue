@@ -98,6 +98,16 @@ const server = {
   moderationHistory: vi.fn(),
   suspend: vi.fn(),
   reinstate: vi.fn(),
+  bans: vi.fn(),
+  clearCooldown: vi.fn(),
+  clearInGameName: vi.fn(),
+  adjustRating: vi.fn(),
+  renameTeam: vi.fn(),
+  voidMatch: vi.fn(),
+  removeFromQueue: vi.fn(),
+  auditLog: vi.fn(),
+  reports: vi.fn(),
+  reviewReport: vi.fn(),
   setStarter: vi.fn(),
   confirmLineup: vi.fn(),
   invite: vi.fn(),
@@ -234,6 +244,9 @@ beforeEach(() => {
   server.findPlayers.mockResolvedValue({ users: [] });
   server.suspensions.mockResolvedValue({ users: [] });
   server.moderationHistory.mockResolvedValue({ entries: [] });
+  server.bans.mockResolvedValue({ bans: [] });
+  server.reports.mockResolvedValue({ players: [] });
+  server.auditLog.mockResolvedValue({ entries: [] });
   server.leaveParty.mockResolvedValue({ partyId: "p9" });
   server.kick.mockResolvedValue({ partyId: "p1" });
   updates.checkForUpdate.mockResolvedValue(null);
@@ -1145,13 +1158,13 @@ describe("Game Masters", () => {
 
   it("hides the disputes tab from a player", async () => {
     await signedIn();
-    expect(screen.queryByRole("button", { name: /Disputes/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Manage/i })).toBeNull();
   });
 
   it("shows it to a Game Master", async () => {
     server.me.mockResolvedValue(GM_PROFILE);
     await signedIn();
-    expect(screen.getByRole("button", { name: /Disputes/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Manage/i })).toBeTruthy();
   });
 
   it("marks a GM's own name in the title bar", async () => {
@@ -1191,7 +1204,7 @@ describe("Game Masters", () => {
   it("shows both claims side by side", async () => {
     server.me.mockResolvedValue(GM_PROFILE);
     await signedIn();
-    await userEvent.click(screen.getByRole("button", { name: /Disputes/i }));
+    await userEvent.click(screen.getByRole("button", { name: /Manage/i }));
 
     await userEvent.click(await screen.findByText(/Captains reported different results/i));
 
@@ -1203,7 +1216,7 @@ describe("Game Masters", () => {
   it("will not let a ruling go in without a winner and a reason", async () => {
     server.me.mockResolvedValue(GM_PROFILE);
     await signedIn();
-    await userEvent.click(screen.getByRole("button", { name: /Disputes/i }));
+    await userEvent.click(screen.getByRole("button", { name: /Manage/i }));
     await userEvent.click(await screen.findByText(/Captains reported different results/i));
 
     const settle = await screen.findByRole("button", { name: /Settle this match/i });
@@ -1220,7 +1233,7 @@ describe("Game Masters", () => {
   it("records the ruling and clears it from the queue", async () => {
     server.me.mockResolvedValue(GM_PROFILE);
     await signedIn();
-    await userEvent.click(screen.getByRole("button", { name: /Disputes/i }));
+    await userEvent.click(screen.getByRole("button", { name: /Manage/i }));
     await userEvent.click(await screen.findByText(/Captains reported different results/i));
 
     await userEvent.click(await screen.findByRole("button", { name: /Team 2 won/i }));
@@ -1242,7 +1255,7 @@ describe("Game Masters", () => {
   it("says plainly that nothing has moved yet", async () => {
     server.me.mockResolvedValue(GM_PROFILE);
     await signedIn();
-    await userEvent.click(screen.getByRole("button", { name: /Disputes/i }));
+    await userEvent.click(screen.getByRole("button", { name: /Manage/i }));
     await userEvent.click(await screen.findByText(/Captains reported different results/i));
 
     // Rating only applies on agreement, so this is a first ruling rather than
@@ -1610,14 +1623,14 @@ describe("suspending a player", () => {
   async function openPlayers() {
     server.me.mockResolvedValue(GM);
     await signedIn();
-    await userEvent.click(screen.getByRole("button", { name: /Disputes/i }));
+    await userEvent.click(screen.getByRole("button", { name: /Manage/i }));
     await userEvent.click(await screen.findByRole("button", { name: /^Players$/i }));
   }
 
   it("is not reachable by an ordinary player", async () => {
     await signedIn();
     // The rail does not carry a tab that would only ever answer 403.
-    expect(screen.queryByRole("button", { name: /Disputes/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Manage/i })).toBeNull();
   });
 
   it("lists who is serving one before anything is searched", async () => {
@@ -1733,8 +1746,15 @@ describe("suspending a player", () => {
     await userEvent.type(screen.getByLabelText(/Find a player/i), "grief");
     await userEvent.click(await screen.findByText("Griefer99"));
 
-    // The Discord id is a long digit run; the scan has to not read it as one.
-    expect(visibleText()).not.toMatch(/\brating\b/i);
+    // The panel offers to *correct* a rating, which is a Game Master power and
+    // says the word out loud. What it must never do is show the number: the
+    // moderation payload is identity only, and the server does not send one.
+    // So the scan is for a rating-shaped number rather than for the word.
+    //
+    // Anchored, because a Discord id is a long digit run and an unanchored
+    // scan would read a rating out of the middle of one.
+    expect(visibleText()).not.toMatch(/\b(6[2-9]\d|[7-9]\d\d|1[0-7]\d\d)\b/);
+    expect(screen.getByRole("button", { name: /Correct rating/i })).toBeTruthy();
   });
 });
 
@@ -2637,5 +2657,157 @@ describe("reporting a player", () => {
     await userEvent.click(screen.getByRole("button", { name: /Profile/i }));
 
     expect(screen.queryByRole("button", { name: /^Report$/i })).toBeNull();
+  });
+});
+
+describe("the bans wall", () => {
+  const ban = (over = {}) => ({
+    id: `b${Math.random()}`,
+    userId: "user-9",
+    discordName: "griefer",
+    inGameName: "GRIEFER",
+    reason: "Left three matches in a row",
+    hours: 24,
+    until: new Date(Date.now() + 3_600_000).toISOString(),
+    active: true,
+    at: new Date().toISOString(),
+    ...over,
+  });
+
+  it("is there for everybody, not just Game Masters", async () => {
+    server.bans.mockResolvedValue({ bans: [ban()] });
+    await signedIn();
+
+    // A consequence nobody watches is a consequence nobody weighs.
+    await userEvent.click(screen.getByRole("button", { name: /Bans/i }));
+
+    expect(await screen.findByText("GRIEFER")).toBeTruthy();
+    expect(screen.getByText(/Left three matches in a row/i)).toBeTruthy();
+  });
+
+  it("keeps a served ban on the wall, marked as served", async () => {
+    server.bans.mockResolvedValue({
+      bans: [ban({ active: false, until: new Date(Date.now() - 1000).toISOString() })],
+    });
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Bans/i }));
+
+    // It records what was done, not who is currently out.
+    expect(await screen.findByText(/Served/i)).toBeTruthy();
+  });
+
+  it("says so plainly when nobody has been banned", async () => {
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Bans/i }));
+
+    expect(await screen.findByText(/Nobody has been banned/i)).toBeTruthy();
+  });
+});
+
+describe("the management tab", () => {
+  const GM = { ...PROFILE, isGameMaster: true };
+
+  async function openManage(tabName) {
+    server.me.mockResolvedValue(GM);
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Manage/i }));
+
+    // Teams is both a nav destination and a panel in here. The nav rail is
+    // drawn first, so the panel's tab is the later of the two.
+    if (tabName) {
+      const tabs = screen.getAllByRole("button", { name: tabName });
+      await userEvent.click(tabs[tabs.length - 1]);
+    }
+  }
+
+  it("is not offered to an ordinary player", async () => {
+    await signedIn();
+    expect(screen.queryByRole("button", { name: /Manage/i })).toBeNull();
+  });
+
+  it("groups reports by who was reported, not by report", async () => {
+    server.reports.mockResolvedValue({
+      players: [{
+        userId: "user-9",
+        discordName: "griefer",
+        inGameName: "GRIEFER",
+        isGameMaster: false,
+        openCount: 3,
+        totalCount: 3,
+        latestAt: new Date().toISOString(),
+        reports: [
+          { id: "r1", reason: "Threw the match", status: "open", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), reviewNote: null, reviewedAt: null, reporter: { userId: "user-2", discordName: "aria", inGameName: "ARIA" } },
+        ],
+      }],
+    });
+    await openManage(/Reports/i);
+
+    // Three people complaining about one player is one problem, and the count
+    // is what decides where to look first.
+    expect(await screen.findByText("GRIEFER")).toBeTruthy();
+    expect(screen.getByText(/3 reports/i)).toBeTruthy();
+    expect(screen.getByText(/Threw the match/i)).toBeTruthy();
+  });
+
+  it("closes a report with what was decided", async () => {
+    server.reports.mockResolvedValue({
+      players: [{
+        userId: "user-9", discordName: "griefer", inGameName: "GRIEFER", isGameMaster: false,
+        openCount: 1, totalCount: 1, latestAt: new Date().toISOString(),
+        reports: [{ id: "r1", reason: "Threw", status: "open", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), reviewNote: null, reviewedAt: null, reporter: { userId: "user-2", discordName: "aria", inGameName: "ARIA" } }],
+      }],
+    });
+    server.reviewReport.mockResolvedValue({ ok: true });
+    await openManage(/Reports/i);
+
+    await userEvent.type(await screen.findByLabelText(/Review note/i), "Suspended 24h");
+    await userEvent.click(screen.getByRole("button", { name: /Actioned/i }));
+
+    await waitFor(() => expect(server.reviewReport).toHaveBeenCalledWith("r1", "actioned", "Suspended 24h"));
+  });
+
+  it("will not void a match without a reason", async () => {
+    await openManage(/Matches/i);
+
+    await userEvent.type(await screen.findByLabelText(/Match id/i), "m-123");
+
+    // The reason is kept, and an unexplained void is indistinguishable from a
+    // bug six months later.
+    expect(screen.getByRole("button", { name: /Void this match/i }).disabled).toBe(true);
+  });
+
+  it("voids a match, saying how much rating it put back", async () => {
+    server.voidMatch.mockResolvedValue({ reversed: 10 });
+    await openManage(/Matches/i);
+
+    await userEvent.type(await screen.findByLabelText(/Match id/i), "m-123");
+    await userEvent.type(screen.getByLabelText(/Reason/i), "Wrong lineup");
+    await userEvent.click(screen.getByRole("button", { name: /Void this match/i }));
+
+    await waitFor(() => expect(server.voidMatch).toHaveBeenCalledWith("m-123", "Wrong lineup"));
+  });
+
+  it("renames a team that named itself something unrepeatable", async () => {
+    server.listTeams.mockResolvedValue({ teams: [{ id: "t1", tag: "BAD", name: "Something Vile", region: "na", applicationsOpen: true, memberCount: 5, tier: "B" }] });
+    server.renameTeam.mockResolvedValue({ ok: true });
+    await openManage(/Teams/i);
+
+    await userEvent.click(await screen.findByRole("button", { name: /Rename/i }));
+    await userEvent.clear(screen.getByLabelText(/Team name/i));
+    await userEvent.type(screen.getByLabelText(/Team name/i), "Renamed Team");
+    await userEvent.click(screen.getByRole("button", { name: /^Save$/i }));
+
+    await waitFor(() => expect(server.renameTeam).toHaveBeenCalledWith("t1", { name: "Renamed Team", tag: "BAD" }));
+  });
+
+  it("shows what staff have been doing", async () => {
+    server.auditLog.mockResolvedValue({
+      entries: [{ id: "a1", eventType: "match.voided", actorId: "user-1", actorName: "Player1", subjectType: "match", subjectId: "m-1", payload: { reason: "bug" }, createdAt: new Date().toISOString() }],
+    });
+    await openManage(/Audit/i);
+
+    // The tab can rewrite results, and a power that leaves no visible trace is
+    // the kind that gets used quietly.
+    expect(await screen.findByText("match.voided")).toBeTruthy();
   });
 });
