@@ -1,4 +1,5 @@
-import { loginWithDiscord as startLogin, logout as apiLogout, bus } from "./client.js";
+import { loginWithDiscord as startLogin, logout as apiLogout, bus, BASE_URL } from "./client.js";
+import { IS_DESKTOP } from "./shell.js";
 
 /**
  * Opens a URL in the user's real browser.
@@ -24,6 +25,18 @@ async function openInBrowser(url) {
  * Resolves with the session token; throws an ApiError on failure or timeout.
  */
 export async function signIn({ signal } = {}) {
+  if (!IS_DESKTOP) {
+    // In a browser the handoff has nothing to bridge: the tab that signs in is
+    // the tab that plays. So just go, and let the callback redirect back with
+    // the session already set as a cookie.
+    window.location.assign(`${BASE_URL}/auth/discord/start`);
+
+    // Never resolves, on purpose. The document is being replaced; returning
+    // would let the caller clear its waiting state and paint a sign-in button
+    // over a page that is already on its way to Discord.
+    return new Promise(() => {});
+  }
+
   const token = await startLogin({ openUrl: openInBrowser, signal });
   bus.connect();
   return token;

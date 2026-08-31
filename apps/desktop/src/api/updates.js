@@ -1,11 +1,17 @@
 /**
  * Update checking.
  *
- * Only the bundled desktop app can update itself. The same client also runs in
- * a plain browser during development, where these plugins do not exist -- so
- * the shell is detected rather than assumed, and everything degrades to "no
- * update available" instead of throwing at import time.
+ * Only the bundled desktop app can update itself. The same client also runs as
+ * a website, and in a plain browser during development -- so the shell is
+ * detected rather than assumed, and everything degrades to "no update
+ * available" instead of throwing.
+ *
+ * Note that the plugin being importable is not the test. It is a dependency of
+ * this package, so a browser build bundles it happily; what is missing there
+ * is the Tauri side of the bridge, and that only fails once something calls
+ * it. The shell has to be checked before the call, not inferred from it.
  */
+import { IS_DESKTOP } from "./shell.js";
 
 /** Resolves the plugin, or null when running outside the desktop shell. */
 async function updater() {
@@ -24,6 +30,11 @@ async function updater() {
  * what went wrong -- a silent "you are up to date" would be a lie.
  */
 export async function checkForUpdate() {
+  // A browser tab cannot be out of date: it is served fresh by the very
+  // deployment it talks to, so by the time it has loaded it is already current.
+  // The version floor is still the real enforcement, and still applies to it.
+  if (!IS_DESKTOP) return null;
+
   // A development build is not a released one. It has no published version to
   // be behind, and gating it on the deployment's manifest would mean the app
   // could not be worked on while that host is unreachable -- or, for a

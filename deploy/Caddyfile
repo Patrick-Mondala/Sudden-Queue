@@ -27,6 +27,26 @@
 		file_server
 	}
 
+	# The same client, built for a browser instead of a window.
+	#
+	# For the players who cannot install anything, do not know how, or will not
+	# trust an unsigned binary from a stranger -- which is most of the people
+	# this was hard to hand to. Same bundle, same API, same version floor.
+	#
+	# Which is the catch worth knowing about: this build sends the version it
+	# was compiled as, so it has to be redeployed with every release or the
+	# floor refuses the website itself. publish-release.sh installs it in the
+	# same ordered step that moves latest.json, for exactly that reason.
+	# Matched with the trailing slash, not as a bare prefix: /app* would also
+	# claim /application and anything else that happens to start that way.
+	# handle_path strips /app, so /app/assets/x.js is read as /assets/x.js and
+	# /app/ as /, which is the index.
+	redir /app /app/
+	handle_path /app/* {
+		root * /srv/webapp
+		file_server
+	}
+
 	# The download page, which is the only thing a player sees before they have
 	# the app. Served from the checkout rather than built, so `git pull` ships
 	# it and there is no third artifact to publish.
@@ -49,7 +69,7 @@
 	encode zstd gzip
 
 	header {
-		# The API is called by the desktop app, never framed or embedded.
+		# Neither the app nor the site is ever meant to be framed.
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
 		Referrer-Policy no-referrer

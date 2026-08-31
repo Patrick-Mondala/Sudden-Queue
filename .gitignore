@@ -8,6 +8,13 @@ dist/
 dist-ssr/
 build/
 *.local
+# The browser client, built by CI and installed onto a deployment by
+# deploy/publish-release.sh. webapp/ is where it lands there; the directory is
+# committed empty because compose bind-mounts it into Caddy.
+dist-web/
+webapp/*
+!webapp/.gitignore
+!webapp/index.html
 
 # Rust / Tauri
 target/
@@ -62,3 +69,6 @@ coverage/
 
 # Published installers on a deployment, fetched rather than committed.
 releases/
+# Which version of the browser client this deployment has installed. Written by
+# deploy/publish-release.sh, kept outside webapp/ because that is served.
+.webapp-published

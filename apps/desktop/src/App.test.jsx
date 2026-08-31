@@ -136,6 +136,21 @@ vi.mock("./api/client.js", () => ({
 
 vi.mock("./api/auth.js", () => ({ signIn: vi.fn() }));
 
+/**
+ * Signed out, as the app now determines it.
+ *
+ * Not "no token in storage" any more. The browser build keeps its session in
+ * an httpOnly cookie that script cannot read, so an empty local store looks
+ * identical whether or not there is a live session -- and the server is the
+ * only thing that knows. A refused /me is how the answer actually arrives.
+ */
+const signedOut = () => {
+  token = null;
+  server.me.mockRejectedValue(
+    Object.assign(new Error("no session"), { status: 401, code: "UNAUTHENTICATED" }),
+  );
+};
+
 /** The desktop shell is not present under jsdom, so the updater is stood in for. */
 const updates = { checkForUpdate: vi.fn(), installUpdate: vi.fn() };
 vi.mock("./api/updates.js", () => updates);
@@ -272,7 +287,7 @@ async function signedIn() {
 
 describe("mounting", () => {
   it("renders the sign-in screen with no session", async () => {
-    token = null;
+    signedOut();
     render(<App />);
     expect(await screen.findByText(/Continue with Discord/i)).toBeTruthy();
   });
@@ -2371,7 +2386,7 @@ describe("adapting to the deployment", () => {
   });
 
   it("names the game on the sign-in screen before anyone signs in", async () => {
-    token = null;
+    signedOut();
     server.config.mockResolvedValue(ROCKET);
     render(<App />);
 

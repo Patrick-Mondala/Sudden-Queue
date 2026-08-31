@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useContext, createContext } from "react";
 import { Crosshair, Swords, Users, Trophy, User, MessageSquare, Send, X, Check, Shield, Star, Wifi, Timer, Copy, ChevronRight, LogOut, Bell, Filter, Plus, Minus, AlertTriangle, CircleDot, Lock, Unlock, RefreshCw } from "lucide-react";
 import { signIn } from "./api/auth.js";
-import { api as server, bus as liveBus, getToken, CLIENT_VERSION } from "./api/client.js";
+import { api as server, bus as liveBus, CLIENT_VERSION } from "./api/client.js";
+import { IS_DESKTOP } from "./api/shell.js";
 import { checkForUpdate, installUpdate } from "./api/updates.js";
+import { ACCEPT_WINDOW_SECONDS } from "@suddenqueue/core";
 import { t, tn, errorText, currentLocale, onLocaleChange } from "./i18n/index.js";
 
 /**
@@ -63,16 +65,90 @@ function playQueuePop() {
 }
 
 async function demandAttention() {
-  try {
-    const { getCurrentWindow, UserAttentionType } = await import("@tauri-apps/api/window");
-    const win = getCurrentWindow();
-    await win.unminimize().catch(() => {});
-    await win.setFocus().catch(() => {});
-    await win.requestUserAttention(UserAttentionType.Critical).catch(() => {});
-  } catch {
-    // Not in the desktop shell. A browser tab cannot demand focus, and the
-    // accept prompt is on screen either way.
+  if (IS_DESKTOP) {
+    try {
+      const { getCurrentWindow, UserAttentionType } = await import("@tauri-apps/api/window");
+      const win = getCurrentWindow();
+      await win.unminimize().catch(() => {});
+      await win.setFocus().catch(() => {});
+      await win.requestUserAttention(UserAttentionType.Critical).catch(() => {});
+    } catch {
+      // Nothing to raise. The accept prompt is on screen either way.
+    }
+    return;
   }
+
+  // Already looking at it; a notification would be noise.
+  if (document.visibilityState === "visible") return;
+
+  // A tab cannot raise itself the way a window can, so this is the only thing
+  // that reaches somebody who alt-tabbed to Discord. Worth having rather than
+  // nice to have: the window is twenty seconds and missing it costs a cooldown.
+  flashTitle();
+  try {
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    const note = new Notification(t("Match found"), {
+      body: t("Accept before the timer runs out."),
+      // Replaces its predecessor instead of stacking. Two matches cannot be
+      // pending at once, so a second banner would only ever be stale.
+      tag: "sq-match-found",
+      requireInteraction: true,
+    });
+    note.onclick = () => {
+      window.focus();
+      note.close();
+    };
+  } catch {
+    // Blocked or unsupported. The title is still flashing.
+  }
+}
+
+/**
+ * Asks for notification permission at the only moment it makes sense to.
+ *
+ * On entering the queue, not on load: at that point the player has just said
+ * they intend to wait for something, so the prompt reads as part of what they
+ * asked for. A permission dialog on first paint reads as a website being rude,
+ * and a refusal is permanent.
+ */
+function requestMatchNotifications() {
+  if (IS_DESKTOP) return;
+  try {
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission !== "default") return;
+    void Notification.requestPermission().catch(() => {});
+  } catch {
+    // Some browsers throw on the promise-less form. Nothing to do about it.
+  }
+}
+
+/**
+ * Flashes the tab title while a match is waiting.
+ *
+ * Runs alongside the notification rather than instead of it. The title is the
+ * one part of a background tab that is always visible, and it is all there is
+ * for the player who refused notifications -- a permanent refusal, usually
+ * given long before it meant anything. Stops on its own, and on the first sign
+ * the player has come back.
+ */
+function flashTitle() {
+  const original = document.title;
+  let on = false;
+  const timer = setInterval(() => {
+    on = !on;
+    document.title = on ? t("Match found!") : original;
+  }, 900);
+
+  const stop = () => {
+    clearInterval(timer);
+    document.title = original;
+    document.removeEventListener("visibilitychange", onVisible);
+  };
+  function onVisible() {
+    if (document.visibilityState === "visible") stop();
+  }
+  document.addEventListener("visibilitychange", onVisible);
+  setTimeout(stop, ACCEPT_WINDOW_SECONDS * 1000);
 }
 import "./App.css";
 
@@ -508,6 +584,23 @@ function Login({ onSignedIn }) {
   const [error, setError] = useState(null);
   const abortRef = useRef(null);
 
+  // A web sign-in that failed comes back as a redirect carrying the reason,
+  // because the callback has no screen of its own to say it on. Read it once,
+  // then strip it: a reload should not re-accuse someone of something they
+  // have already seen and moved past.
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get("error");
+    if (!code) return;
+    setError(
+      code === "BANNED"
+        ? t("This account is suspended.")
+        : t("Sign-in failed. Try again."),
+    );
+    const url = new URL(window.location.href);
+    url.searchParams.delete("error");
+    window.history.replaceState(null, "", url);
+  }, []);
+
   const startDiscord = async () => {
     setError(null);
     setPhase("waiting");
@@ -614,6 +707,7 @@ function PlayScreen({ me, party, queue, setQueue, cooldownUntil, history, notify
     // rejection cannot leave the screen claiming you are queued.
     try {
       await server.joinQueue(regions);
+      requestMatchNotifications();
       setQueue({ state: "queued", since: Date.now(), regions });
     } catch (err) {
       notify(errorText(err, "Could not join the queue"));
@@ -4562,7 +4656,11 @@ export default function App() {
   // again every time the app opens. Deliberately mount-only: re-running it when
   // `me` changes would re-adopt the session on every sign-in.
   useEffect(() => {
-    if (me || !getToken()) return;
+    // No token check. The browser build keeps its session in an httpOnly
+    // cookie that script cannot read, so "nothing in local storage" would look
+    // exactly like being signed out to a page that is in fact signed in. The
+    // server is the only thing that knows; a 401 is the honest answer.
+    if (me) return;
     let cancelled = false;
 
     server

@@ -175,6 +175,88 @@ describe("oauth entry point", () => {
     });
     expect(res.statusCode).toBe(400);
   });
+
+  it("starts a login without a handoff, for a browser signing in to play here", async () => {
+    // The desktop app asks for a handoff first so it can poll for the token.
+    // A browser has nowhere to poll from and does not need to: it is the thing
+    // being signed in. The same entry point has to serve both.
+    const res = await app.server.inject({ method: "GET", url: "/auth/discord/start" });
+
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toContain("discord.com/oauth2/authorize");
+  });
+});
+
+describe("a session held as a cookie", () => {
+  // The whole browser build rests on this. Its session is an httpOnly cookie
+  // that page scripts cannot read -- which is the point, and which means it
+  // can never send an Authorization header. If the cookie alone does not
+  // authenticate, the web client cannot make a single call.
+
+  it("authenticates a request carrying no bearer token", async () => {
+    const { userId, token } = await login();
+
+    const res = await app.server.inject({
+      method: "GET",
+      url: "/me",
+      cookies: { sq_session: token },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().userId).toBe(userId);
+  });
+
+  it("still prefers the header when a request sends both", async () => {
+    const desktop = await login();
+    const browser = await login();
+
+    // Not a case the app creates, but the precedence has to be decided rather
+    // than incidental: a stale cookie must not silently answer for a request
+    // that said who it was.
+    const res = await app.server.inject({
+      method: "GET",
+      url: "/me",
+      headers: authed(desktop.token),
+      cookies: { sq_session: browser.token },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().userId).toBe(desktop.userId);
+  });
+
+  it("refuses a cookie the server has revoked", async () => {
+    const { token } = await login();
+    await app.services.sessions.revoke(token);
+
+    const res = await app.server.inject({
+      method: "GET",
+      url: "/me",
+      cookies: { sq_session: token },
+    });
+
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("clears the cookie on logout, so the browser is signed out for real", async () => {
+    const { token } = await login();
+
+    const res = await app.server.inject({
+      method: "POST",
+      url: "/auth/logout",
+      cookies: { sq_session: token },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const cleared = res.cookies.find((c) => c.name === "sq_session");
+    expect(cleared?.value).toBe("");
+
+    const after = await app.server.inject({
+      method: "GET",
+      url: "/me",
+      cookies: { sq_session: token },
+    });
+    expect(after.statusCode).toBe(401);
+  });
 });
 
 describe("party", () => {

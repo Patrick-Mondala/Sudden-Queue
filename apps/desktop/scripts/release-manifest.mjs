@@ -8,8 +8,9 @@
  *
  *   node scripts/release-manifest.mjs --notes "What changed"
  *
- * Writes latest.json and SHA256SUMS beside the installer. All four files go to
- * the release; the installer, latest.json and SHA256SUMS go to the server.
+ * Writes latest.json and SHA256SUMS beside the installer. Everything goes to
+ * the release; the installer, the browser bundle, latest.json and SHA256SUMS
+ * go to the server.
  */
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -113,16 +114,33 @@ writeFileSync(out, `${JSON.stringify(manifest, null, 2)}\n`);
  * The server reads this before it will believe latest.json, so a release that
  * has not landed properly raises no floor and shuts nobody out.
  */
+const sha256 = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
+
+const sumLines = [`${sha256(join(bundles, installer))}  ${asset}`];
+
+/**
+ * The browser build, when this run produced one.
+ *
+ * Vouched for by the same file as the installer rather than a second one: it
+ * is copied across in the same step and fails the same way, and a truncated
+ * bundle would leave the website broken at exactly the moment the release it
+ * belongs to starts refusing every older client. Extra entries here cost the
+ * server nothing -- it looks the installer up by name.
+ */
+const webBundle = join(desktop, "webapp.tar.gz");
+if (existsSync(webBundle)) sumLines.push(`${sha256(webBundle)}  webapp.tar.gz`);
+
 const sums = join(bundles, "SHA256SUMS");
-writeFileSync(sums, `${createHash("sha256").update(readFileSync(join(bundles, installer))).digest("hex")}  ${asset}\n`);
+writeFileSync(sums, `${sumLines.join("\n")}\n`);
 
 console.log(`latest.json written to ${out}`);
 console.log(`SHA256SUMS written to ${sums}`);
-console.log(`\nUpload all four to the ${tag} release:`);
+console.log(`\nUpload these to the ${tag} release:`);
 console.log(`  ${join(bundles, installer)}`);
 console.log(`  ${join(bundles, signature)}`);
 console.log(`  ${out}`);
 console.log(`  ${sums}`);
+if (existsSync(webBundle)) console.log(`  ${webBundle}`);
 console.log(
   `\nThen copy three of them -- the installer as ${asset}, latest.json and\n` +
     "SHA256SUMS -- into the releases directory on the server, installer first.\n" +
