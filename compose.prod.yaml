@@ -27,6 +27,14 @@ services:
       retries: 10
 
   server:
+    # Named, and named the same as the migrate service below, so the two share
+    # one image instead of compose building one per service. They did not, and
+    # the consequence was silent: `up -d --build` rebuilds only what it starts,
+    # migrate sits behind a profile and is not started, so `run --rm migrate`
+    # reused whatever image it had from last time -- applying the migrations
+    # that existed when that image was built, reporting success, and leaving
+    # the schema behind the code.
+    image: sudden-queue-server:local
     build:
       context: .
       dockerfile: apps/server/Dockerfile
@@ -96,13 +104,16 @@ services:
 
   # Migrations, run on purpose:
   #
-  #   docker compose -f compose.prod.yaml --profile migrate run --rm migrate
+  #   docker compose -f compose.prod.yaml --profile migrate run --build --rm migrate
   #
   # A separate one-shot rather than part of the server's startup: a process
   # that migrates when it boots will migrate production because somebody
   # restarted it.
   migrate:
     profiles: ["migrate"]
+    # The same image as the server, so migrations can never be older than the
+    # code that expects them.
+    image: sudden-queue-server:local
     build:
       context: .
       dockerfile: apps/server/Dockerfile

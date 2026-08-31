@@ -133,7 +133,7 @@ works.
 # update
 cd /srv/sudden-queue && sudo git pull
 sudo docker compose -f compose.prod.yaml up -d --build
-sudo docker compose -f compose.prod.yaml --profile migrate run --rm migrate
+sudo docker compose -f compose.prod.yaml --profile migrate run --build --rm migrate
 
 # logs
 sudo docker compose -f compose.prod.yaml logs -f server

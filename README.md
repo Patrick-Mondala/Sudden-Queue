@@ -148,7 +148,7 @@ disagree with itself.
 ```bash
 sudo mkdir -p releases
 sudo docker compose -f compose.prod.yaml up -d --build
-sudo docker compose -f compose.prod.yaml --profile migrate run --rm migrate
+sudo docker compose -f compose.prod.yaml --profile migrate run --build --rm migrate
 ```
 
 `releases/` is where the published installer, its `SHA256SUMS` and `latest.json`
