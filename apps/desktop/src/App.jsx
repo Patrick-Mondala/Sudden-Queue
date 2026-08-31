@@ -153,6 +153,8 @@ const IGN_MIN = 2;
 const IGN_MAX = 16;
 /** Matches TEAM_NOTE_MAX_LENGTH on the server, which is the one that refuses. */
 const TEAM_NOTE_MAX = 240;
+/** Matches REPORT_REASON_MAX_LENGTH on the server, which is the one that refuses. */
+const REPORT_REASON_MAX = 500;
 
 /**
  * How often a running client asks whether it is still current.
@@ -2272,6 +2274,7 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <H size={26}><PlayerName p={view} /></H>
                 {isMe && <Tag color={T.accent}>{t("You")}</Tag>}
+                {!isMe && <ReportPlayer player={{ id: p.id }} notify={notify} />}
                 {isMe && (
                   <InGameNameField
                     value={view.inGameName ?? null}
@@ -3056,6 +3059,109 @@ function InviteToasts({ invites, onAccept, onDecline }) {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Reporting somebody, from their profile.
+ *
+ * One per player and rewritable, so this opens filled in with whatever you
+ * said last time rather than pretending you have not been here before. The
+ * point of allowing the edit is that the useful version of a report is usually
+ * the second one -- written once you have stopped being angry and can say what
+ * actually happened.
+ *
+ * Nothing here punishes anybody, and the copy says so. A report that reads as
+ * a punish button gets used as one.
+ */
+function ReportPlayer({ player, notify }) {
+  const [existing, setExisting] = useState(undefined); // undefined = still asking
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setExisting(undefined);
+    server
+      .myReportOf(player.id)
+      .then((res) => { if (!cancelled) setExisting(res?.report ?? null); })
+      .catch(() => { if (!cancelled) setExisting(null); });
+    return () => { cancelled = true; };
+  }, [player.id]);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const saved = await server.reportPlayer(player.id, draft.trim());
+      setExisting(saved);
+      setOpen(false);
+      notify(t("Reported. A Game Master will look."));
+    } catch (err) {
+      notify(errorText(err, "Could not send that report"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const withdraw = async () => {
+    setBusy(true);
+    try {
+      await server.withdrawPlayerReport(player.id);
+      setExisting(null);
+      setOpen(false);
+      notify(t("Report withdrawn"));
+    } catch (err) {
+      notify(errorText(err, "Could not withdraw that report"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (existing === undefined) return null;
+
+  if (!open) {
+    return (
+      <Btn
+        size="sm"
+        onClick={() => { setDraft(existing?.reason ?? ""); setOpen(true); }}
+        style={existing ? { borderColor: T.captain, color: T.captain } : undefined}
+      >
+        <AlertTriangle size={12} /> {existing ? t("Reported") : t("Report")}
+      </Btn>
+    );
+  }
+
+  return (
+    <Panel pad={12} style={{ marginTop: 10 }}>
+      <Eyebrow style={{ marginBottom: 8 }}>
+        {existing ? t("Your report") : t("Report this player")}
+      </Eyebrow>
+      <div style={{ fontSize: 12, color: T.muted, lineHeight: 1.5, marginBottom: 8 }}>
+        {t("Say what happened. This goes to a Game Master to read; it does nothing on its own.")}
+      </div>
+      <textarea
+        value={draft}
+        autoFocus
+        onChange={(e) => setDraft(e.target.value.slice(0, REPORT_REASON_MAX))}
+        aria-label={t("What happened")}
+        rows={3}
+        style={{ width: "100%", boxSizing: "border-box", background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 4, padding: "8px 10px", color: T.text, fontSize: 12.5, fontFamily: T.body, resize: "vertical" }}
+      />
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+        <Btn size="sm" kind="primary" disabled={busy || draft.trim().length < 3} onClick={save}>
+          {existing ? t("Update report") : t("Send report")}
+        </Btn>
+        <Btn size="sm" disabled={busy} onClick={() => setOpen(false)}>{t("Cancel")}</Btn>
+        <div style={{ flex: 1 }} />
+        {existing && (
+          <Btn size="sm" kind="danger" disabled={busy} onClick={withdraw}>{t("Withdraw")}</Btn>
+        )}
+        <span style={{ fontFamily: T.mono, fontSize: 11, color: T.dim }}>
+          {draft.trim().length}/{REPORT_REASON_MAX}
+        </span>
+      </div>
+    </Panel>
   );
 }
 

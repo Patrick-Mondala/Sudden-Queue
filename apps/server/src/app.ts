@@ -46,6 +46,7 @@ import { LadderService } from "./ladder/service.js";
 import { ChatService } from "./chat/service.js";
 import { ModerationService, MAX_SUSPENSION_HOURS, MIN_SUSPENSION_HOURS, SUSPENSION_REASON_MAX_LENGTH } from "./moderation/service.js";
 import { ReportService, REPORT_REASON_MAX_LENGTH } from "./moderation/reports.js";
+import { ManagementService } from "./moderation/management.js";
 import { RateLimiter } from "./http/rate-limit.js";
 import { QueueRepository } from "./queue/repository.js";
 import { createReleaseFloor } from "./releases.js";
@@ -291,6 +292,7 @@ export async function buildApp({
   const reporting = new MatchReporting(db);
   const moderation = new ModerationService(db);
   const reports = new ReportService(db);
+  const management = new ManagementService(db);
 
   // ---------------------------------------------------------------- realtime
 
@@ -1860,6 +1862,153 @@ export async function buildApp({
     notifier.closeUser(userId);
     population.nudge();
   }
+
+  // ----------------------------------------------------- management overrides
+
+  /**
+   * The powers that used to mean opening psql.
+   *
+   * Each one is a person overriding what the system worked out, so each one is
+   * a Game Master route and each one lands in the audit log the tab can read
+   * back.
+   */
+  server.post("/mod/users/:id/clear-cooldown", { preHandler: authenticate }, async (req, reply) => {
+    if (!requireGameMaster(req, reply)) return reply;
+    const { id } = req.params as { id: string };
+
+    const result = await management.clearCooldown(requireUser(req).userId, id);
+    if (isFail(result)) {
+      return reply.code(404).send({ error: result.code, message: result.message });
+    }
+
+    notifier.toUser(id, { type: "notification", level: "info", text: "Your queue cooldown was lifted." });
+    return { ok: true };
+  });
+
+  server.post("/mod/users/:id/clear-name", { preHandler: authenticate }, async (req, reply) => {
+    if (!requireGameMaster(req, reply)) return reply;
+    const { id } = req.params as { id: string };
+
+    const result = await management.clearInGameName(requireUser(req).userId, id);
+    if (isFail(result)) {
+      return reply.code(404).send({ error: result.code, message: result.message });
+    }
+
+    notifier.toUser(id, {
+      type: "notification",
+      level: "warn",
+      text: "Your in-game name was cleared by a Game Master. Please set a new one.",
+    });
+    return { ok: true };
+  });
+
+  server.post("/mod/users/:id/rating", { preHandler: authenticate }, async (req, reply) => {
+    if (!requireGameMaster(req, reply)) return reply;
+
+    const body = z
+      .object({ delta: z.number().int(), reason: z.string().min(1).max(SUSPENSION_REASON_MAX_LENGTH) })
+      .safeParse(req.body);
+
+    if (!body.success) {
+      return reply
+        .code(400)
+        .send({ error: "BAD_REQUEST", message: "delta and reason are required" });
+    }
+
+    const { id } = req.params as { id: string };
+    const result = await management.adjustRating(
+      requireUser(req).userId,
+      id,
+      body.data.delta,
+      body.data.reason,
+    );
+
+    if (isFail(result)) {
+      return reply
+        .code(result.code === "NOT_FOUND" ? 404 : 400)
+        .send({ error: result.code, message: result.message });
+    }
+
+    return result.data;
+  });
+
+  server.patch("/mod/teams/:id", { preHandler: authenticate }, async (req, reply) => {
+    if (!requireGameMaster(req, reply)) return reply;
+
+    const body = z
+      .object({ name: z.string().optional(), tag: z.string().optional() })
+      .safeParse(req.body);
+
+    if (!body.success) {
+      return reply.code(400).send({ error: "BAD_REQUEST", message: "name or tag is required" });
+    }
+
+    const { id } = req.params as { id: string };
+    const result = await management.renameTeam(requireUser(req).userId, id, body.data);
+
+    if (isFail(result)) {
+      const status = result.code === "NOT_FOUND" ? 404 : result.code === "TAG_TAKEN" ? 409 : 400;
+      return reply.code(status).send({ error: result.code, message: result.message });
+    }
+
+    await broadcastTeam(id);
+    return { ok: true };
+  });
+
+  server.post("/mod/matches/:id/void", { preHandler: authenticate }, async (req, reply) => {
+    if (!requireGameMaster(req, reply)) return reply;
+
+    const body = z
+      .object({ reason: z.string().min(1).max(SUSPENSION_REASON_MAX_LENGTH) })
+      .safeParse(req.body);
+
+    if (!body.success) {
+      return reply.code(400).send({ error: "BAD_REQUEST", message: "reason is required" });
+    }
+
+    const { id } = req.params as { id: string };
+    const result = await management.voidMatch(requireUser(req).userId, id, body.data.reason);
+
+    if (isFail(result)) {
+      return reply
+        .code(result.code === "NOT_FOUND" ? 404 : 409)
+        .send({ error: result.code, message: result.message });
+    }
+
+    const parts = await lifecycle.participants(id);
+    notifier.toUsers(parts.map((p) => p.userId), {
+      type: "match.state",
+      matchId: id,
+      state: "CANCELLED",
+    });
+
+    return result.data;
+  });
+
+  server.delete("/mod/queue/:partyId", { preHandler: authenticate }, async (req, reply) => {
+    if (!requireGameMaster(req, reply)) return reply;
+    const { partyId } = req.params as { partyId: string };
+
+    const result = await management.removeFromQueue(requireUser(req).userId, partyId);
+    if (isFail(result)) {
+      return reply.code(404).send({ error: result.code, message: result.message });
+    }
+
+    return { ok: true };
+  });
+
+  /** Bans handed down, newest first. Spent ones included: it is a record. */
+  server.get("/mod/bans", { preHandler: authenticate }, async (req, reply) => {
+    if (!requireGameMaster(req, reply)) return reply;
+    const limit = Number((req.query as Record<string, string>)?.limit ?? 100);
+    return { bans: await moderation.banHistory(Number.isFinite(limit) ? limit : 100) };
+  });
+
+  server.get("/mod/audit", { preHandler: authenticate }, async (req, reply) => {
+    if (!requireGameMaster(req, reply)) return reply;
+    const limit = Number((req.query as Record<string, string>)?.limit ?? 100);
+    return { entries: await management.audit(Number.isFinite(limit) ? limit : 100) };
+  });
 
   // ------------------------------------------------------ reporting a player
 

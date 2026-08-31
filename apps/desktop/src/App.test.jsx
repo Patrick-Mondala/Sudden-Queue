@@ -86,6 +86,9 @@ const server = {
   decideScrimRequest: vi.fn(),
   ladder: vi.fn(),
   playerProfile: vi.fn(),
+  myReportOf: vi.fn(),
+  reportPlayer: vi.fn(),
+  withdrawPlayerReport: vi.fn(),
   chatHistory: vi.fn(),
   disputes: vi.fn(),
   resolveDispute: vi.fn(),
@@ -225,6 +228,7 @@ beforeEach(() => {
   server.scrims.mockResolvedValue({ listings: [], myListing: null, incoming: [], pendingLineup: null });
   server.ladder.mockResolvedValue({ rows: [], total: 0, myPosition: null, limit: 50, offset: 0 });
   server.playerProfile.mockResolvedValue(null);
+  server.myReportOf.mockResolvedValue({ report: null });
   server.chatHistory.mockResolvedValue({ channel: "", messages: [] });
   server.disputes.mockResolvedValue([]);
   server.findPlayers.mockResolvedValue({ users: [] });
@@ -2556,5 +2560,82 @@ describe("leaving and breaking up a party", () => {
     await act(async () => {});
 
     expect(screen.getByText("ARIA")).toBeTruthy();
+  });
+});
+
+describe("reporting a player", () => {
+  async function openTheirProfile(report = null) {
+    server.myReportOf.mockResolvedValue({ report });
+    server.playerProfile.mockResolvedValue({
+      userId: "user-2",
+      discordName: "Aria",
+      inGameName: "ARIA",
+      isGameMaster: false,
+      tier: "A",
+      peakTier: "A",
+      placementsRemaining: 0,
+      gamesPlayed: 40,
+      wins: 20,
+      losses: 20,
+      currentStreak: 0,
+      longestStreak: 0,
+      disputesInvolved: 0,
+      missedAccepts: 0,
+      position: 2,
+      team: null,
+    });
+
+    await signedIn();
+    emit({ type: "party.updated", party: {
+      partyId: "p1", leaderId: "user-1", queued: false,
+      members: [
+        { userId: "user-1", discordName: "Player1", inGameName: "PLAYER_1", isLeader: true, tier: "B", placementsRemaining: 0 },
+        { userId: "user-2", discordName: "Aria", inGameName: "ARIA", isLeader: false, tier: "A", placementsRemaining: 0 },
+      ],
+    } });
+
+    await userEvent.click(await screen.findByText("ARIA"));
+    return screen.findByRole("button", { name: /^Report$|^Reported$/i });
+  }
+
+  it("offers a report on somebody else's profile", async () => {
+    expect(await openTheirProfile()).toBeTruthy();
+  });
+
+  it("sends what was written, and says it does nothing on its own", async () => {
+    server.reportPlayer.mockResolvedValue({ subjectId: "user-2", reason: "Left the match", status: "open" });
+    await userEvent.click(await openTheirProfile());
+
+    // The copy matters: a report that reads as a punish button gets used as one.
+    expect(screen.getByText(/does nothing on its own/i)).toBeTruthy();
+
+    await userEvent.type(screen.getByLabelText(/What happened/i), "Left the match");
+    await userEvent.click(screen.getByRole("button", { name: /Send report/i }));
+
+    await waitFor(() => expect(server.reportPlayer).toHaveBeenCalledWith("user-2", "Left the match"));
+  });
+
+  it("opens filled in when you have reported them before", async () => {
+    await userEvent.click(await openTheirProfile({ subjectId: "user-2", reason: "Said it badly the first time", status: "open" }));
+
+    // Rewritable is the point: the useful version is usually the second one.
+    expect(screen.getByLabelText(/What happened/i).value).toBe("Said it badly the first time");
+    expect(screen.getByRole("button", { name: /Update report/i })).toBeTruthy();
+  });
+
+  it("lets a report be withdrawn", async () => {
+    server.withdrawPlayerReport.mockResolvedValue({ ok: true });
+    await userEvent.click(await openTheirProfile({ subjectId: "user-2", reason: "Changed my mind", status: "open" }));
+
+    await userEvent.click(screen.getByRole("button", { name: /Withdraw/i }));
+
+    await waitFor(() => expect(server.withdrawPlayerReport).toHaveBeenCalledWith("user-2"));
+  });
+
+  it("does not offer to report yourself", async () => {
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /Profile/i }));
+
+    expect(screen.queryByRole("button", { name: /^Report$/i })).toBeNull();
   });
 });

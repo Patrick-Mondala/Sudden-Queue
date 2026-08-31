@@ -207,6 +207,13 @@ export const api = {
   ladder: (limit, offset) => request(`/ladder?limit=${limit}&offset=${offset}`),
   playerProfile: (userId) => request(`/players/${userId}`),
 
+  // One report per player, rewritable. Fetched before the form opens so an
+  // existing one arrives filled in rather than looking like a blank slate.
+  myReportOf: (userId) => request(`/players/${userId}/report`),
+  reportPlayer: (userId, reason) =>
+    request(`/players/${userId}/report`, { method: "POST", body: { reason } }),
+  withdrawPlayerReport: (userId) => request(`/players/${userId}/report`, { method: "DELETE" }),
+
   scrims: (region) => request(region ? `/scrims?region=${region}` : "/scrims"),
   postListing: (region, note) => request("/scrims", { method: "POST", body: { region, note } }),
   removeListing: () => request("/scrims/mine", { method: "DELETE" }),

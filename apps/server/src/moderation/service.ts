@@ -38,6 +38,22 @@ export interface Suspension {
   reason: string;
 }
 
+/** One ban as it was handed down, for the record rather than the to-do list. */
+export interface BanRecord {
+  id: string;
+  userId: string | null;
+  discordName: string | null;
+  inGameName: string | null;
+  /** Who handed it down. Null if that account has since been deleted. */
+  byName: string | null;
+  reason: string | null;
+  hours: number | null;
+  until: string | null;
+  /** Whether this ban is still running, which a later one may have replaced. */
+  active: boolean;
+  at: string;
+}
+
 /** Identity only. Nothing here carries a rating, and nothing should. */
 export interface ModeratedUser {
   userId: string;
@@ -165,6 +181,58 @@ export class ModerationService {
       .from(users)
       .where(gt(users.bannedUntil, new Date()))
       .orderBy(users.bannedUntil);
+  }
+
+  /**
+   * Bans handed down, most recent first, spent ones included.
+   *
+   * Different question from `suspended`, which asks who cannot sign in right
+   * now and sorts by when they get back. This asks what has been done and
+   * when, so it reads as a record rather than a to-do list -- and a ban that
+   * has since expired is still part of that record.
+   *
+   * Read from the audit log rather than from the accounts, because an account
+   * carries only its current state: one row per ban, including the several a
+   * repeat offender collected on the way to their last one.
+   */
+  async banHistory(limit = 100): Promise<BanRecord[]> {
+    const rows = await this.db
+      .select({
+        id: auditLog.id,
+        subjectId: auditLog.subjectId,
+        actorId: auditLog.actorId,
+        actorName: sql<string | null>`actor.discord_name`,
+        subjectName: sql<string | null>`subject.discord_name`,
+        subjectInGameName: sql<string | null>`subject.in_game_name`,
+        subjectBannedUntil: sql<Date | null>`subject.banned_until`,
+        payload: auditLog.payload,
+        createdAt: auditLog.createdAt,
+      })
+      .from(auditLog)
+      .leftJoin(sql`${users} AS actor`, sql`actor.id = ${auditLog.actorId}`)
+      .leftJoin(sql`${users} AS subject`, sql`subject.id = ${auditLog.subjectId}`)
+      .where(eq(auditLog.eventType, "user.suspended"))
+      .orderBy(desc(auditLog.createdAt))
+      .limit(Math.min(Math.max(limit, 1), 200));
+
+    const now = Date.now();
+    return rows.map((r) => {
+      const until = (r.payload as { until?: string } | null)?.until ?? null;
+      return {
+        id: r.id,
+        userId: r.subjectId,
+        discordName: r.subjectName,
+        inGameName: r.subjectInGameName,
+        byName: r.actorName,
+        reason: (r.payload as { reason?: string } | null)?.reason ?? null,
+        hours: (r.payload as { hours?: number } | null)?.hours ?? null,
+        until,
+        // Whether this particular ban is still running, which is not the same
+        // as whether the account is banned -- a later one may have replaced it.
+        active: until !== null && new Date(until).getTime() > now,
+        at: r.createdAt.toISOString(),
+      };
+    });
   }
 
   /**
