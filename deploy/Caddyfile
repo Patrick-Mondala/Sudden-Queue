@@ -44,7 +44,12 @@
 	redir /app /app/
 	handle_path /app/* {
 		root * /srv/webapp
-		file_server
+		# .published records which release this bundle came from, for the
+		# publish script. It lives with the bundle so it cannot outlive it, and
+		# it is nobody else's business.
+		file_server {
+			hide .published
+		}
 	}
 
 	# The download page, which is the only thing a player sees before they have

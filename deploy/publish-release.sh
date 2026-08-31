@@ -25,6 +25,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 releases="$root/releases"
+webroot="$root/webapp"
 
 fail() { echo "publish-release: $*" >&2; exit 1; }
 
@@ -33,6 +34,31 @@ command -v sha256sum >/dev/null || fail "sha256sum is not installed"
 command -v tar >/dev/null || fail "tar is not installed"
 
 [ -d "$releases" ] || fail "no releases directory at $releases -- is this the deployment checkout?"
+
+# Everywhere this script publishes to, proven writable before it fetches a byte.
+#
+# Under the systemd timer this runs with ProtectSystem=strict, where only the
+# paths named in ReadWritePaths are writable and the rest of the filesystem --
+# including the rest of this checkout -- is not. A directory missing from that
+# list fails with EPERM partway through: after files have been written, before
+# the manifest that makes them live. That leaves the deployment serving the old
+# version with the new one half-installed beside it, and because the timer says
+# nothing, it stays that way until somebody reads the journal.
+#
+# Checked here instead, where failing costs nothing and says what to do.
+for dir in "$releases" "$webroot"; do
+  [ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null || true
+  [ -d "$dir" ] || fail "$dir does not exist and cannot be created"
+
+  probe="$dir/.write-probe.$"
+  if ! (: > "$probe") 2>/dev/null; then
+    fail "cannot write to $dir.
+  Running under the systemd timer? Add it to ReadWritePaths in
+  deploy/sudden-queue-publish.service, copy the unit to /etc/systemd/system,
+  then: systemctl daemon-reload"
+  fi
+  rm -f "$probe"
+done
 
 # Who to fetch from, taken from the checkout rather than written here again.
 remote="$(git -C "$root" config --get remote.origin.url || true)"
@@ -103,9 +129,12 @@ alias_name="$(printf '%s' "$installer" | sed -E "s/_${version//./\\.}_/_/")"
 # Releases cut before the browser build existed simply do not have one. Those
 # publish exactly as they always did rather than failing, so re-publishing an
 # older tag stays possible.
-webroot="$root/webapp"
-# Outside the web root on purpose: everything in there is served at /app.
-web_marker="$root/.webapp-published"
+# Kept with the bundle rather than beside it. It is the one writable place
+# that is certain to exist, and it means the marker cannot outlive what it
+# describes: delete webapp/ to force a reinstall and the marker goes too,
+# instead of leaving the script certain it has already published something
+# that is no longer there.
+web_marker="$webroot/.published"
 have_web=0
 curl -fsSLI -o /dev/null "$base/webapp.tar.gz" 2>/dev/null && have_web=1
 

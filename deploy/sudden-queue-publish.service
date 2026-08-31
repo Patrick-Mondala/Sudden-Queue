@@ -19,9 +19,9 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/srv/sudden-queue
 
-# Root, because it writes into the directory Caddy serves and the compose
-# stack owns that as root. The script fetches over https and writes three
-# files; it takes no input from anywhere but the repository's own releases.
+# Root, because it writes into the directories Caddy serves and the compose
+# stack owns those as root. The script fetches over https and writes what it
+# publishes; it takes no input from anywhere but the repository's own releases.
 ExecStart=/srv/sudden-queue/deploy/publish-release.sh
 
 # A failed run is not an emergency and must not become one. The next timer
@@ -34,7 +34,16 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+# Every directory the script publishes into has to be listed here, because
+# ProtectSystem=strict makes everything else read-only -- including the rest of
+# the checkout. Miss one and the run dies partway with EPERM, after the files
+# it already wrote and before the manifest that makes them live, which is a
+# deployment stuck on the previous version with the next one half-installed.
+#
+# The script checks it can write to both before it does anything, so a missing
+# entry here says so in the journal rather than failing silently mid-publish.
 ReadWritePaths=/srv/sudden-queue/releases
+ReadWritePaths=/srv/sudden-queue/webapp
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true

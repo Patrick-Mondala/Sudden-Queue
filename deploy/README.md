@@ -79,6 +79,23 @@ The browser client is published in the same step and before the manifest,
 because it reports the version it was built as: a release that raised the floor
 without it would leave the deployment refusing its own website.
 
+**If you installed the timer before the browser client existed, reinstall the
+unit.** It runs under `ProtectSystem=strict`, so the only directories it can
+write to are the ones named in `ReadWritePaths` -- and `webapp/` was not one
+of them until now. Without it, every run dies partway: the installer lands, the
+manifest does not, and the deployment sits on the previous version with the next
+one half-installed beside it.
+
+```bash
+sudo cp deploy/sudden-queue-publish.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo deploy/publish-release.sh    # catch up now rather than waiting for the timer
+```
+
+The script checks it can write everywhere it needs to before it fetches
+anything, so if this is ever wrong again it says so in the journal and changes
+nothing, rather than failing silently halfway.
+
 Doing it by hand is three downloads whose order matters silently, which is why
 there is a script. `latest.json` is what the server reads to decide which
 clients it will still serve, so the moment it lands every older copy is refused
