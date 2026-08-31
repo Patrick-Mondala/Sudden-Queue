@@ -3091,3 +3091,63 @@ describe("the queue belongs to the party, not to this window", () => {
     expect(await screen.findByText(/Ready to queue/i)).toBeTruthy();
   });
 });
+
+describe("a browser tab told it is out of date", () => {
+  // The desktop app installs an update. A tab cannot, and does not need to --
+  // the deployment that refused it is the same one serving it, so the current
+  // bundle is one fetch away. It has to fetch it on the player's behalf,
+  // because the reload keys are deliberately swallowed and there is no gesture
+  // that would get them out of it.
+  let replaced;
+
+  beforeEach(() => {
+    isDesktop = false;
+    replaced = [];
+    delete window.location;
+    window.location = {
+      pathname: "/app/",
+      search: "",
+      href: "http://localhost/app/",
+      replace: (u) => replaced.push(String(u)),
+    };
+  });
+  afterEach(() => {
+    isDesktop = true;
+  });
+
+  it("fetches the current bundle instead of stranding the player", async () => {
+    render(<App />);
+    await screen.findByText(/need to use the web version/i);
+
+    emit({ type: "client.tooOld", minimum: "0.1.13" });
+
+    expect(replaced).toEqual(["/app/?v=0.1.13"]);
+  });
+
+  it("gives up rather than looping when the reload did not help", async () => {
+    // Already fetched for this floor and still refused: something is wrong
+    // that fetching again will not fix.
+    window.location.search = "?v=0.1.13";
+
+    render(<App />);
+    // The notice renders ahead of everything, the update gate included, so it
+    // has to be answered before the gate can be found on screen.
+    await userEvent.click(await screen.findByRole("button", { name: "Yes" }));
+
+    emit({ type: "client.tooOld", minimum: "0.1.13" });
+
+    expect(replaced).toEqual([]);
+    expect(await screen.findByText(/Update required/i)).toBeTruthy();
+  });
+
+  it("reloads again for a newer floor", async () => {
+    window.location.search = "?v=0.1.13";
+
+    render(<App />);
+    await screen.findByText(/need to use the web version/i);
+
+    emit({ type: "client.tooOld", minimum: "0.1.14" });
+
+    expect(replaced).toEqual(["/app/?v=0.1.14"]);
+  });
+});

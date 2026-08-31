@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useContext, createContext } f
 import { Crosshair, Swords, Users, Trophy, User, MessageSquare, Send, X, Check, Shield, Star, Wifi, Timer, Copy, ChevronRight, LogOut, Bell, Filter, Plus, Minus, AlertTriangle, CircleDot, Lock, Unlock, RefreshCw } from "lucide-react";
 import { signIn } from "./api/auth.js";
 import { api as server, bus as liveBus, CLIENT_VERSION } from "./api/client.js";
-import { IS_DESKTOP } from "./api/shell.js";
+import { IS_DESKTOP, IS_WEB } from "./api/shell.js";
 import { checkForUpdate, installUpdate } from "./api/updates.js";
 import { ACCEPT_WINDOW_SECONDS } from "@suddenqueue/core";
 import { t, tn, errorText, currentLocale, onLocaleChange } from "./i18n/index.js";
@@ -4438,8 +4438,33 @@ export default function App() {
     () =>
       liveBus.on((e) => {
         if (e?.type !== "client.tooOld") return;
+
+        // A tab cannot install anything, and it does not need to: "too old"
+        // in a browser only ever means this page is running a bundle the
+        // deployment has replaced, and that same deployment is one fetch away.
+        // So it goes and gets it.
+        //
+        // The app has to do this rather than the player, because the reload
+        // keys are deliberately swallowed -- there is no gesture that would
+        // get them out of here, and telling somebody to hard refresh is not a
+        // fix for people who came to the browser to avoid that sort of thing.
+        //
+        // Keyed on the version being demanded rather than a plain flag: a new
+        // floor is a new url and reloads once, while a floor that refuses us
+        // again after we already fetched for it is not something fetching will
+        // fix, so that falls through to the gate and says so.
+        const wanted = e.minimum ?? null;
+        if (IS_WEB && wanted) {
+          const params = new URLSearchParams(window.location.search);
+          if (params.get("v") !== wanted) {
+            params.set("v", wanted);
+            window.location.replace(`${window.location.pathname}?${params}`);
+            return;
+          }
+        }
+
         setUpdateCheck((current) =>
-          current.phase === "found" ? current : { phase: "rejected", minimum: e.minimum ?? null },
+          current.phase === "found" ? current : { phase: "rejected", minimum: wanted },
         );
       }),
     [],
