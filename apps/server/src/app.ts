@@ -595,6 +595,23 @@ export async function buildApp({
     return { ok: true };
   });
 
+  /**
+   * The party's live queue ticket, as a client needs to render it.
+   *
+   * Null when there is none. Shaped to match the `queue.joined` event so a
+   * client restoring on load and a client hearing about it live end up in the
+   * same state by the same path.
+   */
+  async function queuedView(partyId: string) {
+    const ticket = await queue.getByPartyId(partyId);
+    if (!ticket) return null;
+    return {
+      partyId,
+      regions: ticket.regions,
+      joinedAt: ticket.joinedAt.getTime(),
+    };
+  }
+
   server.get("/me", { preHandler: authenticate }, async (req) => {
     const user = requireUser(req);
     const partyId = await party.ensureParty(user.userId);
@@ -638,6 +655,12 @@ export async function buildApp({
       // So a client that reloads mid-cooldown still knows about it, rather
       // than offering a queue button that will be refused.
       queueCooldownSeconds: cooldownRemainingSeconds(stats?.queueCooldownUntil ?? null),
+      // And the same for the queue itself. A session is not the only way to be
+      // queued -- the ticket belongs to the party, so another window, another
+      // device, or this one before it was reloaded may have joined. A client
+      // that assumed idle offered a queue button that answered ALREADY_QUEUED
+      // and no way at all to leave.
+      queued: await queuedView(partyId),
       missedAccepts: stats?.missedAccepts ?? 0,
     };
   });

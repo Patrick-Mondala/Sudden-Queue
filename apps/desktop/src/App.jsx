@@ -4582,6 +4582,15 @@ export default function App() {
       })),
     );
 
+    // Whether the party is queued is the server's to say, not something this
+    // window can infer from having just started. It may have been queued from
+    // another window, another device, or by this one before it was reloaded.
+    setQueue(
+      profile.queued
+        ? { state: "queued", since: profile.queued.joinedAt, regions: profile.queued.regions }
+        : { state: "idle" },
+    );
+
     // Anything sent while we were still connecting is waiting on the server.
     try {
       setInvites(await server.getInvites());
@@ -4621,6 +4630,14 @@ export default function App() {
         case "queue.counts":
           // Pushed whenever they move, and once on connect. Nothing asks.
           setPop({ online: e.online, inQueue: e.inQueue, inMatch: e.inMatch });
+          break;
+        case "queue.joined":
+          // The server has always sent this to every session the party has
+          // open; nothing here listened, so a second window went on showing a
+          // queue button that could only answer ALREADY_QUEUED -- and offered
+          // no way to leave, because as far as it knew there was nothing to
+          // leave. The ticket belongs to the party, not to a socket.
+          setQueue({ state: "queued", since: e.joinedAt, regions: e.regions });
           break;
         case "queue.left":
           setQueue({ state: "idle" });

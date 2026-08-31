@@ -187,6 +187,93 @@ describe("oauth entry point", () => {
   });
 });
 
+describe("being queued outlives the session that queued", () => {
+  // The ticket belongs to the party, not to a socket. Someone signed in on the
+  // desktop app and in a browser at once has two sessions and one ticket, and
+  // a client that assumed otherwise showed a queue button that could only ever
+  // answer ALREADY_QUEUED -- with no way to leave, because as far as it knew
+  // there was nothing to leave. Worse, the second client's own heartbeat kept
+  // the ticket from ever going stale, so it never cleared itself either.
+
+  it("tells a fresh client it is already in the queue", async () => {
+    const { token } = await login();
+    const joined = await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(token),
+      payload: { regions: ["na"] },
+    });
+    // Asserted rather than assumed: a join that quietly failed would leave the
+    // real assertion below passing for the wrong reason.
+    expect(joined.statusCode).toBe(200);
+
+    // A second window, or the same one reloaded: nothing local to go on.
+    const res = await app.server.inject({ method: "GET", url: "/me", headers: authed(token) });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().queued).toMatchObject({ regions: ["na"] });
+    expect(typeof res.json().queued.joinedAt).toBe("number");
+  });
+
+  it("tells a party member too, not only the leader who queued", async () => {
+    const leader = await login();
+    const member = await login();
+
+    const invite = await app.server.inject({
+      method: "POST",
+      url: "/party/invite",
+      headers: authed(leader.token),
+      payload: { userId: member.userId },
+    });
+    await app.server.inject({
+      method: "POST",
+      url: `/party/invite/${invite.json().inviteId}/accept`,
+      headers: authed(member.token),
+    });
+
+    // Only the leader may queue, so the member never makes the call that would
+    // have told them -- but they are in the match that comes out of it.
+    const joined = await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(leader.token),
+      payload: { regions: ["na"] },
+    });
+    expect(joined.statusCode).toBe(200);
+
+    const res = await app.server.inject({
+      method: "GET",
+      url: "/me",
+      headers: authed(member.token),
+    });
+
+    expect(res.json().queued).toMatchObject({ regions: ["na"] });
+  });
+
+  it("says so plainly when there is no ticket", async () => {
+    const { token } = await login();
+
+    const res = await app.server.inject({ method: "GET", url: "/me", headers: authed(token) });
+
+    expect(res.json().queued).toBeNull();
+  });
+
+  it("goes back to null once they leave", async () => {
+    const { token } = await login();
+    await app.server.inject({
+      method: "POST",
+      url: "/queue/join",
+      headers: authed(token),
+      payload: { regions: ["na"] },
+    });
+    await app.server.inject({ method: "POST", url: "/queue/leave", headers: authed(token) });
+
+    const res = await app.server.inject({ method: "GET", url: "/me", headers: authed(token) });
+
+    expect(res.json().queued).toBeNull();
+  });
+});
+
 describe("a session held as a cookie", () => {
   // The whole browser build rests on this. Its session is an httpOnly cookie
   // that page scripts cannot read -- which is the point, and which means it

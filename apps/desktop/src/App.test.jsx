@@ -3048,3 +3048,46 @@ describe("the browser build", () => {
     expect(screen.queryByText(/need to use the web version/i)).toBeNull();
   });
 });
+
+describe("the queue belongs to the party, not to this window", () => {
+  // Someone signed in on the desktop app and in a browser has two sessions and
+  // one ticket; a party member has no session that queued at all. Both used to
+  // sit on "Ready to queue" while the server held a live ticket -- offering a
+  // button that could only answer ALREADY_QUEUED, and no way to leave.
+
+  it("shows the search when another session queues", async () => {
+    render(<App />);
+    expect(await screen.findByText(/Ready to queue/i)).toBeTruthy();
+
+    // The server has always sent this to every session in the party. Nothing
+    // listened for it.
+    emit({
+      type: "queue.joined",
+      partyId: "party-1",
+      regions: ["na"],
+      joinedAt: Date.now(),
+    });
+
+    expect(await screen.findByText(/Searching/)).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /Leave queue/i })).toBeTruthy();
+  });
+
+  it("restores it on load, for a window that missed the event", async () => {
+    server.me.mockResolvedValue({
+      ...PROFILE,
+      queued: { partyId: "party-1", regions: ["na"], joinedAt: Date.now() - 30_000 },
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText(/Searching/)).toBeTruthy();
+  });
+
+  it("stays idle on load when there is no ticket", async () => {
+    server.me.mockResolvedValue({ ...PROFILE, queued: null });
+
+    render(<App />);
+
+    expect(await screen.findByText(/Ready to queue/i)).toBeTruthy();
+  });
+});
