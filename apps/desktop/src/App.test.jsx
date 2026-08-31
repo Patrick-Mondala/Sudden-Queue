@@ -86,6 +86,7 @@ const server = {
   decideScrimRequest: vi.fn(),
   ladder: vi.fn(),
   playerProfile: vi.fn(),
+  playerHistory: vi.fn(),
   myReportOf: vi.fn(),
   reportPlayer: vi.fn(),
   withdrawPlayerReport: vi.fn(),
@@ -238,6 +239,7 @@ beforeEach(() => {
   server.scrims.mockResolvedValue({ listings: [], myListing: null, incoming: [], pendingLineup: null });
   server.ladder.mockResolvedValue({ rows: [], total: 0, myPosition: null, limit: 50, offset: 0 });
   server.playerProfile.mockResolvedValue(null);
+  server.playerHistory.mockResolvedValue([]);
   server.myReportOf.mockResolvedValue({ report: null });
   server.chatHistory.mockResolvedValue({ channel: "", messages: [] });
   server.disputes.mockResolvedValue([]);

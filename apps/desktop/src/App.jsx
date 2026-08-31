@@ -2715,8 +2715,31 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
 
   const view = { ...p, ...(full ?? {}) };
   const total = (view.wins ?? 0) + (view.losses ?? 0);
-  // Only your own history is loaded in this client; theirs is not published.
-  const ownHistory = isMe ? history : [];
+
+  /**
+   * Their matches, or yours.
+   *
+   * Yours is already loaded by the shell, so it is passed straight through.
+   * Theirs is fetched, and carries no more than yours does: the result and the
+   * side, never a rating delta -- a run of point swings reconstructs the
+   * number a rank is there to stand in for.
+   */
+  const [theirHistory, setTheirHistory] = useState([]);
+
+  useEffect(() => {
+    if (isMe) return;
+    let cancelled = false;
+    setTheirHistory([]);
+    server
+      .playerHistory(p.id)
+      .then((rows) => { if (!cancelled) setTheirHistory(rows ?? []); })
+      .catch(() => {
+        // The profile is still worth showing without it.
+      });
+    return () => { cancelled = true; };
+  }, [p.id, isMe]);
+
+  const ownHistory = isMe ? history : theirHistory;
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16, height: "100%" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
@@ -4016,8 +4039,26 @@ export default function App() {
       if (reload) e.preventDefault();
     };
 
+    /**
+     * And the webview's own right-click menu.
+     *
+     * It offers Back, Refresh, Save as, Print and Share -- a browser's menu on
+     * something that is not a browser. Every entry is either meaningless here
+     * or actively unhelpful: Back and Refresh are the reload problem again
+     * with a different shortcut, and the rest save or print a page nobody
+     * wants a copy of.
+     *
+     * Blanket for now. When there is a menu of our own worth showing -- copy a
+     * name, open a profile -- this is where it hangs.
+     */
+    const noMenu = (e) => e.preventDefault();
+
     window.addEventListener("keydown", swallow);
-    return () => window.removeEventListener("keydown", swallow);
+    window.addEventListener("contextmenu", noMenu);
+    return () => {
+      window.removeEventListener("keydown", swallow);
+      window.removeEventListener("contextmenu", noMenu);
+    };
   }, []);
 
   /**

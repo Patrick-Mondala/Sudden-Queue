@@ -1573,6 +1573,23 @@ export async function buildApp({
     };
   });
 
+  /**
+   * Somebody else's finished matches.
+   *
+   * The same rows as your own history, and safe to publish for the reason
+   * those rows were shaped that way in the first place: they carry the result
+   * and the side, and deliberately no rating delta -- a history of point
+   * swings reconstructs the number the rank is there to stand in for.
+   *
+   * Which leaves a match list saying who played what and how it went, and that
+   * is already the more public half of the ladder.
+   */
+  server.get("/players/:id/history", { preHandler: authenticate }, async (req) => {
+    const { id } = req.params as { id: string };
+    const limit = Number((req.query as Record<string, string>)?.limit ?? 25);
+    return reporting.historyFor(id, Math.min(Math.max(limit, 1), 100));
+  });
+
   server.get("/players/:id", { preHandler: authenticate }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const profile = await ladder.profile(id);

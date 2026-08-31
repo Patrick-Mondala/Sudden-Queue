@@ -225,6 +225,7 @@ export const api = {
 
   ladder: (limit, offset) => request(`/ladder?limit=${limit}&offset=${offset}`),
   playerProfile: (userId) => request(`/players/${userId}`),
+  playerHistory: (userId, limit = 25) => request(`/players/${userId}/history?limit=${limit}`),
 
   // One report per player, rewritable. Fetched before the form opens so an
   // existing one arrives filled in rather than looking like a blank slate.
