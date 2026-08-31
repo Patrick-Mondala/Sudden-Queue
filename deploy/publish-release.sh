@@ -44,8 +44,18 @@ tag="${1:-}"
 if [ -z "$tag" ]; then
   # The latest *published* release. A draft has not been looked at by a person
   # yet, and this is not the place to decide it is ready.
-  tag="$(curl -fsSL "https://api.github.com/repos/$slug/releases/latest" |
-    grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+  #
+  # Downloaded whole before it is read, rather than piped into grep. `grep -m1`
+  # stops at the first match and closes the pipe under curl, which exits 23 --
+  # and with pipefail that takes the script down before it has printed a single
+  # line about what it was doing. It is a race against how much of the response
+  # has been written, so it fails intermittently, which is the worst way for the
+  # thing on a once-a-minute timer to fail.
+  api="$(mktemp)"
+  curl -fsSL -o "$api" "https://api.github.com/repos/$slug/releases/latest" ||
+    fail "cannot reach the GitHub API to find the latest release of $slug"
+  tag="$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$api" | head -n 1)"
+  rm -f "$api"
   [ -n "$tag" ] || fail "no published release found for $slug"
 fi
 
@@ -195,7 +205,14 @@ echo "Published $version. The floor rises to it within a few seconds."
 # What a player's client will actually fetch, asked the way they will ask it.
 hostname="$(grep -m1 '^SQ_HOSTNAME=' "$root/.env" 2>/dev/null | cut -d= -f2- || true)"
 if [ -n "$hostname" ] && [ "${hostname#:}" = "$hostname" ]; then
-  echo -n "Serving: "
-  curl -fsS "https://$hostname/download/latest.json" | grep -m1 '"version"' ||
+  # Same reason as the tag lookup: to a file, then read. This one runs after
+  # everything has been published, so failing here would report a broken
+  # publish for work that actually succeeded.
+  served="$(mktemp)"
+  if curl -fsS -o "$served" "https://$hostname/download/latest.json"; then
+    echo "Serving: $(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$served" | head -n 1)"
+  else
     echo "  could not read https://$hostname/download/latest.json -- check the caddy container"
+  fi
+  rm -f "$served"
 fi
