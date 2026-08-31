@@ -289,6 +289,30 @@ const Btn = ({ children, kind = "ghost", size = "md", style, ...rest }) => {
  * near enough irrelevant to playing -- so it is the fallback for anyone who
  * has not set an in-game name yet, and nothing else.
  */
+/**
+ * Server history rows into what a row on screen needs.
+ *
+ * Shared because there are two callers now -- your own history and somebody
+ * else's -- and the second one originally set the raw rows straight into
+ * state. The result was a list of "NaNd ago" with no result and nothing
+ * clickable, because every field the row draws is computed here rather than
+ * sent: the id is called matchId over the wire, the timestamp is one of two
+ * columns, and win or loss is a comparison between the result and which side
+ * you were on.
+ */
+const toHistoryRows = (rows) =>
+  (rows ?? []).map((r) => ({
+    id: r.matchId,
+    ts: new Date(r.resolvedAt ?? r.createdAt).getTime(),
+    region: r.region,
+    type: r.type,
+    result: r.result === null ? "—" : (r.result === "TEAM1") === (r.team === 1) ? "win" : "loss",
+    state: r.state === "DISPUTED" ? "in dispute" : "completed",
+    // Rosters are fetched when a row is opened rather than shipped with every
+    // row; this flag is what makes the row clickable without them.
+    openable: true,
+  }));
+
 const displayName = (p) => p?.inGameName?.trim() || p?.discordName || null;
 
 /**
@@ -533,6 +557,7 @@ function Login({ onSignedIn }) {
           <div style={{ fontSize: 12, color: T.dim, lineHeight: 1.5 }}>{t("Discord is the only sign-in. Your rank, record and match history follow the account.")}</div>
         </Panel>
       </div>
+
     </div>
   );
 }
@@ -990,6 +1015,7 @@ function TeamsScreen({ me, notify, onView }) {
   const [regions, setRegions] = usePersistentState("sq.teams.filter", ["na", "sa", "eu", "asia"]);
   const [busy, setBusy] = useState(false);
   const [openTeam, setOpenTeam] = useState(null);
+  const [tab, setTab] = useState("mine");
 
   const load = useCallback(async () => {
     try {
@@ -1031,22 +1057,57 @@ function TeamsScreen({ me, notify, onView }) {
     return <Panel style={{ height: "100%", display: "grid", placeItems: "center", color: T.dim, fontSize: 12.5 }}>Loading…</Panel>;
   }
 
+  /**
+   * Your team and everyone else's, rather than one or the other.
+   *
+   * Joining a team used to remove the directory from the app entirely, which
+   * is precisely backwards: being on a team is when you most want to look at
+   * the others -- scouting a scrim opponent, or seeing who is recruiting when
+   * you are thinking about leaving.
+   *
+   * Only shown when there is a choice to make. Somebody without a team has one
+   * screen, and a tab strip with a single tab is furniture.
+   */
+  const onATeam = Boolean(state.team);
+  const showing = onATeam ? tab : "directory";
+
+  const directoryPanel = (
+    <TeamDirectory
+      teams={(directory ?? []).filter((team) => regions.includes(team.region))}
+      regions={regions}
+      setRegions={setRegions}
+      myApplication={state.myApplication}
+      busy={busy}
+      act={act}
+      onRefresh={load}
+      onOpenTeam={setOpenTeam}
+      onATeam={onATeam}
+    />
+  );
+
   return (
-    <>
-      {state.team ? (
-        <MyTeamPanel me={me} state={state} busy={busy} act={act} onView={onView} onRefresh={load} />
-      ) : (
-        <TeamDirectory
-          teams={(directory ?? []).filter((team) => regions.includes(team.region))}
-          regions={regions}
-          setRegions={setRegions}
-          myApplication={state.myApplication}
-          busy={busy}
-          act={act}
-          onRefresh={load}
-          onOpenTeam={setOpenTeam}
-        />
+    <div style={{ display: "flex", flexDirection: "column", gap: 12, height: "100%", minHeight: 0 }}>
+      {onATeam && (
+        <div style={{ display: "flex", gap: 6 }}>
+          {[["mine", t("My team")], ["directory", t("All teams")]].map(([id, label]) => (
+            <button
+              key={id}
+              onClick={() => setTab(id)}
+              style={{ background: showing === id ? T.raised : "transparent", border: `1px solid ${showing === id ? T.line2 : "transparent"}`, color: showing === id ? T.text : T.muted, borderRadius: 4, padding: "7px 14px", fontSize: 12.5, fontWeight: 600 }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       )}
+
+      <div style={{ flex: 1, minHeight: 0 }}>
+        {showing === "mine" ? (
+          <MyTeamPanel me={me} state={state} busy={busy} act={act} onView={onView} onRefresh={load} />
+        ) : (
+          directoryPanel
+        )}
+      </div>
 
       {openTeam && (
         <TeamDetail
@@ -1062,7 +1123,7 @@ function TeamsScreen({ me, notify, onView }) {
           }}
         />
       )}
-    </>
+    </div>
   );
 }
 
@@ -1246,7 +1307,7 @@ function MyTeamPanel({ me, state, busy, act, onView, onRefresh }) {
 }
 
 /** No team yet: browse for one, or start your own. */
-function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act, onOpenTeam, onRefresh }) {
+function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act, onOpenTeam, onRefresh, onATeam }) {
   const [creating, setCreating] = useState(false);
   const [tag, setTag] = useState("");
   const [name, setName] = useState("");
@@ -1289,8 +1350,8 @@ function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act, o
                   <Btn
                     size="sm"
                     kind={team.applicationsOpen ? "primary" : "ghost"}
-                    disabled={busy || !team.applicationsOpen || !!myApplication || team.memberCount >= 10}
-                    title={myApplication ? t("Withdraw your other application first") : undefined}
+                    disabled={busy || onATeam || !team.applicationsOpen || !!myApplication || team.memberCount >= 10}
+                    title={onATeam ? t("Leave your team first") : myApplication ? t("Withdraw your other application first") : undefined}
                     onClick={(e) => { e.stopPropagation(); act(() => server.applyToTeam(team.id, null), `Applied to ${team.name}`); }}
                     style={{ minWidth: 88, justifyContent: "center" }}
                   >
@@ -1304,6 +1365,10 @@ function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act, o
       </Panel>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: 0 }}>
+        {/* One team per player, so somebody already on one is not offered a
+            second. The server refuses it either way; this stops the offer
+            being made. */}
+        {!onATeam && (
         <Panel>
           <Eyebrow style={{ marginBottom: 10 }}>{t("Start a team")}</Eyebrow>
           {!creating ? (
@@ -1341,6 +1406,7 @@ function TeamDirectory({ teams, regions, setRegions, myApplication, busy, act, o
             </div>
           )}
         </Panel>
+        )}
 
         <Panel>
           <Eyebrow style={{ marginBottom: 8 }}>{t("How teams work")}</Eyebrow>
@@ -2757,6 +2823,7 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
    * number a rank is there to stand in for.
    */
   const [theirHistory, setTheirHistory] = useState([]);
+  const [openTeam, setOpenTeam] = useState(null);
 
   useEffect(() => {
     if (isMe) return;
@@ -2764,7 +2831,7 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
     setTheirHistory([]);
     server
       .playerHistory(p.id)
-      .then((rows) => { if (!cancelled) setTheirHistory(rows ?? []); })
+      .then((rows) => { if (!cancelled) setTheirHistory(toHistoryRows(rows)); })
       .catch(() => {
         // The profile is still worth showing without it.
       });
@@ -2827,9 +2894,9 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
         </Panel>
         <Panel style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
           <Eyebrow style={{ marginBottom: 10 }}>{t("Match history")}</Eyebrow>
-          {!isMe && (
+          {ownHistory.length === 0 && (
             <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>
-              Another player's match history isn't available yet.
+              {isMe ? t("No finished matches yet.") : t("They have no finished matches yet.")}
             </div>
           )}
           <div style={{ overflow: "auto", flex: 1 }}>
@@ -2860,7 +2927,14 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
         {full?.team && (
           <Panel>
             <Eyebrow style={{ marginBottom: 6 }}>{t("Team")}</Eyebrow>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {/* Opens the same roster the directory does. Somebody looking at a
+                player and wondering who they play with should not have to go
+                to another tab and find the team by name. */}
+            <div
+              className="row-hover"
+              onClick={() => setOpenTeam(full.team.id)}
+              style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", borderRadius: 4, padding: 4, margin: -4 }}
+            >
               <div style={{ width: 30, height: 30, borderRadius: 4, background: T.raised, display: "grid", placeItems: "center", fontFamily: T.mono, fontSize: 10, color: T.muted, border: `1px solid ${T.line2}` }}>{full.team.tag}</div>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>{full.team.name}</div>
@@ -2872,6 +2946,17 @@ function ProfileScreen({ p, me, history, onBack, onViewMatch, onSaved, notify })
         {!isMe && <Btn onClick={onBack} style={{ justifyContent: "center" }}>← Back</Btn>}
         <Panel><Eyebrow style={{ marginBottom: 6 }}>{t("Public profile")}</Eyebrow><div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>{t("This same record is visible on the public profile page. Only matchmaker data is shown — no in-game stats.")}</div></Panel>
       </div>
+
+      {openTeam && (
+        <TeamDetail
+          teamId={openTeam}
+          me={me}
+          myApplication={null}
+          busy={false}
+          onClose={() => setOpenTeam(null)}
+          onApply={() => setOpenTeam(null)}
+        />
+      )}
     </div>
   );
 }
@@ -4229,20 +4314,7 @@ export default function App() {
 
   const refreshHistory = useCallback(async () => {
     try {
-      const rows = await server.history();
-      setHistory(
-        rows.map((r) => ({
-          id: r.matchId,
-          ts: new Date(r.resolvedAt ?? r.createdAt).getTime(),
-          region: r.region,
-          type: r.type,
-          result: r.result === null ? "—" : (r.result === "TEAM1") === (r.team === 1) ? "win" : "loss",
-          state: r.state === "DISPUTED" ? "in dispute" : "completed",
-          // Rosters are fetched when a row is opened rather than shipped with
-          // every row; this flag is what makes the row clickable without them.
-          openable: true,
-        })),
-      );
+      setHistory(toHistoryRows(await server.history()));
     } catch {
       // History is not essential to signing in; an empty list is honest.
     }

@@ -2817,3 +2817,112 @@ describe("the management tab", () => {
     expect(await screen.findByText("match.voided")).toBeTruthy();
   });
 });
+
+describe("browsing teams while on one", () => {
+  const MY_TEAM = {
+    team: {
+      id: "t1", tag: "ACE", name: "Aces High", region: "na", captainId: "user-1",
+      applicationsOpen: true, note: null, createdAt: new Date().toISOString(),
+      members: [{ userId: "user-1", discordName: "Player1", inGameName: "PLAYER_1", isGameMaster: false, role: "captain", isStarter: true, tier: "B", placementsRemaining: 0, joinedAt: new Date().toISOString() }],
+    },
+    role: "captain",
+    applications: [],
+    myApplication: null,
+  };
+
+  async function openTeams(mine = MY_TEAM) {
+    server.myTeam.mockResolvedValue(mine);
+    server.listTeams.mockResolvedValue({
+      teams: [{ id: "t2", tag: "RIV", name: "Rivals", region: "na", applicationsOpen: true, memberCount: 5, tier: "A" }],
+    });
+    await signedIn();
+    await userEvent.click(screen.getByRole("button", { name: /^Teams$/i }));
+  }
+
+  it("lets somebody on a team see the directory, which used to vanish", async () => {
+    await openTeams();
+
+    // Being on a team is when you most want to look at the others: scouting a
+    // scrim opponent, or seeing who is recruiting before you leave.
+    await userEvent.click(await screen.findByRole("button", { name: /All teams/i }));
+    expect(await screen.findByText("Rivals")).toBeTruthy();
+  });
+
+  it("does not offer a second team to somebody who has one", async () => {
+    await openTeams();
+    await userEvent.click(await screen.findByRole("button", { name: /All teams/i }));
+
+    // One team per player; the server refuses it either way.
+    expect(screen.queryByRole("button", { name: /Register a team/i })).toBeNull();
+    expect((await screen.findByRole("button", { name: /^Apply$/i })).disabled).toBe(true);
+  });
+
+  it("shows no tab strip to somebody without a team", async () => {
+    await openTeams({ team: null, role: null, applications: [], myApplication: null });
+
+    // A tab strip with one tab is furniture.
+    expect(screen.queryByRole("button", { name: /My team/i })).toBeNull();
+    expect(await screen.findByText("Rivals")).toBeTruthy();
+  });
+});
+
+describe("another player's profile", () => {
+  const THEIR_HISTORY = [
+    { matchId: "m-1", type: "PUG", region: "na", state: "COMPLETED", result: "TEAM1", team: 1, resolvedAt: new Date("2026-08-20T10:00:00Z").toISOString(), createdAt: new Date("2026-08-20T09:00:00Z").toISOString() },
+    { matchId: "m-2", type: "SCRIM", region: "eu", state: "COMPLETED", result: "TEAM2", team: 1, resolvedAt: new Date("2026-08-19T10:00:00Z").toISOString(), createdAt: new Date("2026-08-19T09:00:00Z").toISOString() },
+  ];
+
+  async function openThem(over = {}, history = THEIR_HISTORY) {
+    server.playerHistory.mockResolvedValue(history);
+    server.playerProfile.mockResolvedValue({
+      userId: "user-2", discordName: "aria", inGameName: "ARIA", isGameMaster: false,
+      tier: "A", peakTier: "A", placementsRemaining: 0, gamesPlayed: 40, wins: 20, losses: 20,
+      currentStreak: 0, longestStreak: 0, disputesInvolved: 0, missedAccepts: 0, position: 2,
+      team: { id: "t2", tag: "RIV", name: "Rivals", role: "captain" },
+      ...over,
+    });
+
+    await signedIn();
+    emit({ type: "party.updated", party: { partyId: "p1", leaderId: "user-1", queued: false, members: [
+      { userId: "user-1", discordName: "Player1", inGameName: "PLAYER_1", isLeader: true, tier: "B", placementsRemaining: 0 },
+      { userId: "user-2", discordName: "aria", inGameName: "ARIA", isLeader: false, tier: "A", placementsRemaining: 0 },
+    ] } });
+    await userEvent.click(await screen.findByText("ARIA"));
+  }
+
+  it("draws their matches as rows rather than as NaN", async () => {
+    await openThem();
+
+    // The rows are raw server shapes until they go through the same mapper the
+    // shell uses: matchId not id, one of two timestamps, and win or loss
+    // computed from the result against which side they were on.
+    expect(await screen.findByText(/win/i)).toBeTruthy();
+    expect(screen.queryByText(/NaN/)).toBeNull();
+  });
+
+  it("opens one of their matches", async () => {
+    await openThem();
+
+    await userEvent.click(await screen.findByText(/win/i));
+    await waitFor(() => expect(server.matchDetail ?? server.playerProfile).toHaveBeenCalled());
+  });
+
+  it("opens their team from the profile", async () => {
+    server.team.mockResolvedValue({
+      id: "t2", tag: "RIV", name: "Rivals", region: "na", captainId: "user-2",
+      applicationsOpen: true, note: "Scrims Tuesdays", createdAt: new Date().toISOString(),
+      members: [{ userId: "user-2", discordName: "aria", inGameName: "ARIA", isGameMaster: false, role: "captain", isStarter: true, tier: "A", placementsRemaining: 0, joinedAt: new Date().toISOString() }],
+    });
+    await openThem();
+
+    await userEvent.click(await screen.findByText("Rivals"));
+
+    expect(await screen.findByText(/Scrims Tuesdays/i)).toBeTruthy();
+  });
+
+  it("says so plainly when they have played nothing", async () => {
+    await openThem({}, []);
+
+    expect(await screen.findByText(/no finished matches yet/i)).toBeTruthy();
+  });
+});
