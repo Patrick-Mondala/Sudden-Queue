@@ -222,9 +222,14 @@ describe("finding an account", () => {
     expect((await mod.search("130891065069666304")).map((u) => u.userId)).toContain(target);
   });
 
-  it("returns nothing for an empty search rather than everyone", async () => {
+  it("returns everyone for an empty search, which is what the panel opens on", async () => {
     await makeUser(handle);
-    expect(await mod.search("   ")).toEqual([]);
+    await makeUser(handle);
+
+    // It used to return nothing, and the players panel filled the gap with the
+    // suspended list -- so an account that had never been in trouble could not
+    // be reached without already knowing its name well enough to search.
+    expect(await mod.search("   ")).toHaveLength(2);
   });
 
   it("publishes identity without a rating", async () => {

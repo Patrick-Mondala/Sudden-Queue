@@ -1635,14 +1635,18 @@ describe("suspending a player", () => {
     expect(screen.queryByRole("button", { name: /Manage/i })).toBeNull();
   });
 
-  it("lists who is serving one before anything is searched", async () => {
-    server.suspensions.mockResolvedValue({
-      users: [account({ bannedUntil: new Date(Date.now() + 86_400_000).toISOString(), banReason: "Throwing" })],
+  it("lists everybody before anything is searched", async () => {
+    // Not just the suspended. A Game Master usually arrives wanting to find a
+    // particular person, and somebody who has never been in trouble was
+    // unreachable without already knowing their name well enough to search.
+    server.findPlayers.mockResolvedValue({
+      users: [account(), account({ userId: "user-8", discordName: "quiet_type", inGameName: "QUIET" })],
     });
     await openPlayers();
 
     expect(await screen.findByText("Griefer99")).toBeTruthy();
-    expect(screen.getByText(/Currently suspended/i)).toBeTruthy();
+    expect(screen.getByText("QUIET")).toBeTruthy();
+    expect(screen.getByText(/All players/i)).toBeTruthy();
   });
 
   it("finds an account by name", async () => {
@@ -1689,7 +1693,7 @@ describe("suspending a player", () => {
       bannedUntil: new Date(Date.now() + 86_400_000).toISOString(),
       banReason: "Throwing matches",
     });
-    server.suspensions.mockResolvedValue({ users: [serving] });
+    server.findPlayers.mockResolvedValue({ users: [serving] });
     server.reinstate.mockResolvedValue({ discordName: "Griefer99" });
     await openPlayers();
 

@@ -1417,7 +1417,7 @@ function until(iso) {
 function PlayersPanel({ me, notify }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState(null);
-  const [suspended, setSuspended] = useState([]);
+  const [everybody, setEverybody] = useState([]);
   const [target, setTarget] = useState(null);
   const [hours, setHours] = useState(24);
   const [reason, setReason] = useState("");
@@ -1426,16 +1426,27 @@ function PlayersPanel({ me, notify }) {
   const [adjusting, setAdjusting] = useState(false);
   const [delta, setDelta] = useState("");
 
-  const loadSuspended = useCallback(async () => {
+  /**
+   * Everybody, before anything is typed.
+   *
+   * This used to open on the suspended list, which answers "who is in
+   * trouble" -- but the question a Game Master usually arrives with is "find
+   * me this person", and somebody who has never been suspended was
+   * unreachable without already knowing their name well enough to search it.
+   *
+   * Most recently seen first, because the account you want is nearly always
+   * one that was playing when the thing happened.
+   */
+  const loadEverybody = useCallback(async () => {
     try {
-      const res = await server.suspensions();
-      setSuspended(res.users ?? []);
+      const res = await server.findPlayers("");
+      setEverybody(res.users ?? []);
     } catch (err) {
-      notify(errorText(err, "Could not load suspensions"));
+      notify(errorText(err, "Could not load players"));
     }
   }, [notify]);
 
-  useEffect(() => { loadSuspended(); }, [loadSuspended]);
+  useEffect(() => { loadEverybody(); }, [loadEverybody]);
 
   // Typing is not a search. Waiting a beat keeps a five-letter name from being
   // five queries against every account on the server.
@@ -1471,7 +1482,7 @@ function PlayersPanel({ me, notify }) {
   }, []);
 
   const refresh = async (userId) => {
-    await loadSuspended();
+    await loadEverybody();
     if (query.trim()) {
       try {
         const res = await server.findPlayers(query.trim());
@@ -1543,8 +1554,9 @@ function PlayersPanel({ me, notify }) {
     }
   };
 
-  const listed = results ?? suspended;
+  const listed = results ?? everybody;
   const serving = target && Date.parse(target.bannedUntil ?? 0) > Date.now();
+  const cooling = target && Date.parse(target.queueCooldownUntil ?? 0) > Date.now();
 
   const row = (u) => (
     <div
@@ -1568,7 +1580,7 @@ function PlayersPanel({ me, notify }) {
     <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 16, height: "100%", minHeight: 0 }}>
       <Panel pad={0} style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
         <div style={{ padding: "14px 16px", borderBottom: `1px solid ${T.line}` }}>
-          <Eyebrow>{results ? t("Search") : t("Currently suspended")}</Eyebrow>
+          <Eyebrow>{results ? t("Search") : t("All players")}</Eyebrow>
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -1581,7 +1593,7 @@ function PlayersPanel({ me, notify }) {
         <div style={{ flex: 1, overflow: "auto", padding: 8 }}>
           {listed.length === 0 ? (
             <div style={{ color: T.dim, fontSize: 12.5, padding: 20, textAlign: "center", lineHeight: 1.5 }}>
-              {results ? t("Nobody by that name.") : t("Nobody is suspended.")}
+              {results ? t("Nobody by that name.") : t("No accounts yet.")}
             </div>
           ) : listed.map(row)}
         </div>
@@ -1612,6 +1624,26 @@ function PlayersPanel({ me, notify }) {
                 {target.banReason && (
                   <div style={{ fontSize: 12, color: T.muted, marginTop: 4, lineHeight: 1.4 }}>{target.banReason}</div>
                 )}
+              </div>
+            )}
+
+            {/* The queue cooldown, which is a different thing from a
+                suspension: it comes from missing accepts rather than from
+                anybody's decision, and it is what the Lift cooldown button
+                below is about. Shown whenever there is one to see, so the
+                control is not a guess about what it will change. */}
+            {(cooling || target.recentMissedAccepts > 0) && (
+              <div style={{ marginTop: 14, padding: "10px 12px", background: T.raised, border: `1px solid ${T.line2}`, borderRadius: 5 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600, color: cooling ? T.captain : T.muted }}>
+                  {cooling ? `Queue cooldown — ${until(target.queueCooldownUntil)}` : t("No cooldown running")}
+                </div>
+                <div style={{ fontSize: 12, color: T.muted, marginTop: 4, lineHeight: 1.4 }}>
+                  {tn(
+                    "{count} recent missed accept, so the next one escalates.",
+                    "{count} recent missed accepts, so the next one escalates.",
+                    target.recentMissedAccepts,
+                  )}
+                </div>
               </div>
             )}
 
@@ -3611,11 +3643,23 @@ function ReportPlayer({ player, notify }) {
     );
   }
 
+  // A modal, not a panel that shoves the profile down the page. Reporting is a
+  // deliberate act with a decision at the end of it, and a form that appears
+  // inline reads as another field on the page rather than something to finish.
   return (
-    <Panel pad={12} style={{ marginTop: 10 }}>
-      <Eyebrow style={{ marginBottom: 8 }}>
-        {existing ? t("Your report") : t("Report this player")}
-      </Eyebrow>
+    <div
+      style={{ position: "absolute", inset: 0, background: "rgba(13,16,20,0.86)", backdropFilter: "blur(6px)", display: "grid", placeItems: "center", zIndex: 70, animation: "sqIn .2s ease" }}
+      onClick={() => setOpen(false)}
+    >
+    <Panel pad={16} style={{ width: 460, maxWidth: "92vw" }} onClick={(e) => e.stopPropagation()}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+        <Eyebrow style={{ flex: 1 }}>
+          {existing ? t("Your report") : t("Report this player")}
+        </Eyebrow>
+        <button onClick={() => setOpen(false)} aria-label={t("Close")} style={{ background: "transparent", border: "none", color: T.muted, padding: 4 }}>
+          <X size={15} />
+        </button>
+      </div>
       <div style={{ fontSize: 12, color: T.muted, lineHeight: 1.5, marginBottom: 8 }}>
         {t("Say what happened. This goes to a Game Master to read; it does nothing on its own.")}
       </div>
@@ -3641,6 +3685,7 @@ function ReportPlayer({ player, notify }) {
         </span>
       </div>
     </Panel>
+    </div>
   );
 }
 

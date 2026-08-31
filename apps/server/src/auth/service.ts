@@ -62,20 +62,20 @@ export class AuthService {
      * Refreshed on every login below, so accounts that stored a display name
      * before this correct themselves the next time their owner signs in.
      */
-    const displayName = profile.username;
+    const username = profile.username;
 
     const upserted = await this.db
       .insert(users)
       .values({
         discordId: profile.id,
-        discordName: displayName,
+        discordName: username,
         avatarUrl: profile.avatarUrl,
       })
       .onConflictDoUpdate({
         target: users.discordId,
         // Refresh identity on every login; people rename themselves.
         set: {
-          discordName: displayName,
+          discordName: username,
           avatarUrl: profile.avatarUrl,
           lastSeenAt: new Date(),
         },

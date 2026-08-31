@@ -2,7 +2,7 @@ import { type Result, fail, ok } from "@suddenqueue/core";
 import { and, desc, eq, gt, ilike, or, sql } from "drizzle-orm";
 
 import type { Database } from "../db/client.js";
-import { auditLog, users } from "../db/schema/index.js";
+import { auditLog, playerRatings, users } from "../db/schema/index.js";
 import type { Role } from "../auth/roles.js";
 
 /**
@@ -52,6 +52,13 @@ export interface BanRecord {
   /** Whether this ban is still running, which a later one may have replaced. */
   active: boolean;
   at: string;
+}
+
+/** What a cooldown looks like to whoever might lift it. */
+export interface Cooldown {
+  queueCooldownUntil: string | null;
+  /** How long the next one would be. Lifting has to clear this too. */
+  recentMissedAccepts: number;
 }
 
 /** Identity only. Nothing here carries a rating, and nothing should. */
@@ -241,9 +248,32 @@ export class ModerationService {
    * A Game Master is given a Discord name, or a Discord id pasted out of a
    * report -- rarely our own uuid -- so all three have to work.
    */
+  /**
+   * Everybody, most recently seen first.
+   *
+   * The players panel opened on the suspended list, which answered "who is in
+   * trouble" when the question a Game Master usually arrives with is "find me
+   * this person" -- and somebody who has never been suspended was unreachable
+   * without knowing enough of their name to search for it.
+   *
+   * Ordered by last seen rather than alphabetically, because the account you
+   * want is nearly always one that was playing when the thing happened.
+   * Accounts that have never signed in sort last rather than first, which is
+   * what NULLS LAST buys.
+   */
+  async list(limit = 100): Promise<ModeratedUser[]> {
+    return this.db
+      .select(USER_FIELDS)
+      .from(users)
+      .orderBy(sql`${users.lastSeenAt} DESC NULLS LAST`, users.discordName)
+      .limit(Math.min(Math.max(limit, 1), 500));
+  }
+
   async search(query: string, limit = 20): Promise<ModeratedUser[]> {
     const q = query.trim();
-    if (q.length === 0) return [];
+    // An empty search is not "nobody", it is "everybody" -- which is what the
+    // panel shows before anything has been typed.
+    if (q.length === 0) return this.list(limit === 20 ? 100 : limit);
 
     const like = `%${q}%`;
     const conditions = [
@@ -260,9 +290,33 @@ export class ModerationService {
       .limit(Math.min(Math.max(limit, 1), 50));
   }
 
-  async userFor(userId: string): Promise<ModeratedUser | null> {
-    const [row] = await this.db.select(USER_FIELDS).from(users).where(eq(users.id, userId));
-    return row ?? null;
+  /**
+   * One account, with the two things that are acted on from the panel.
+   *
+   * The queue cooldown comes along because lifting one is a power in there and
+   * a control that cannot show what it is about to change is a guess. It is
+   * not a rating and does not become one: the escalation counter beside it is
+   * how long the next cooldown will be, which is the other half of what
+   * "lifted" has to mean.
+   */
+  async userFor(userId: string): Promise<(ModeratedUser & Cooldown) | null> {
+    const [row] = await this.db
+      .select({
+        ...USER_FIELDS,
+        queueCooldownUntil: playerRatings.queueCooldownUntil,
+        recentMissedAccepts: playerRatings.recentMissedAccepts,
+      })
+      .from(users)
+      .leftJoin(playerRatings, eq(playerRatings.userId, users.id))
+      .where(eq(users.id, userId));
+
+    if (!row) return null;
+
+    return {
+      ...row,
+      queueCooldownUntil: row.queueCooldownUntil?.toISOString() ?? null,
+      recentMissedAccepts: row.recentMissedAccepts ?? 0,
+    };
   }
 
   /** What has been done to this account, most recent first. */
