@@ -129,21 +129,23 @@ describe("heartbeat and staleness", () => {
     expect(await repo.heartbeat(partyId, userIds[0]!)).toBe(false);
   });
 
-  it("prunes tickets whose client went quiet, and leaves fresh ones alone", async () => {
-    const stale = await makeParty(handle, 1);
-    const fresh = await makeParty(handle, 1);
-    await repo.join({ partyId: stale.partyId, regions: ["na"], ratingSnapshot: 1200, size: 1 });
-    await repo.join({ partyId: fresh.partyId, regions: ["na"], ratingSnapshot: 1200, size: 1 });
+  it("prunes a party whose player has gone, and leaves a present one alone", async () => {
+    const gone = await makeParty(handle, 1);
+    const here = await makeParty(handle, 1);
+    await repo.join({ partyId: gone.partyId, regions: ["na"], ratingSnapshot: 1200, size: 1 });
+    await repo.join({ partyId: here.partyId, regions: ["na"], ratingSnapshot: 1200, size: 1 });
 
-    await handle.db.execute(
-      sql`UPDATE queue_tickets
-          SET heartbeat_at = now() - interval '${sql.raw(String(QUEUE_STALE_AFTER_SECONDS + 10))} seconds'
-          WHERE party_id = ${stale.partyId}`,
-    );
+    // Both look equally quiet by the clock. The only difference is that the
+    // server is still holding a socket for one of them, and that is now what
+    // decides it.
+    await handle.db
+      .update(users)
+      .set({ lastSeenAt: new Date(Date.now() - (QUEUE_STALE_AFTER_SECONDS + 10) * 1000) });
 
-    const pruned = await repo.pruneStale();
-    expect(pruned).toEqual([stale.partyId]);
-    expect(await repo.getByPartyId(fresh.partyId)).not.toBeNull();
+    const pruned = await repo.pruneStale([here.userIds[0]!]);
+
+    expect(pruned).toEqual([gone.partyId]);
+    expect(await repo.getByPartyId(here.partyId)).not.toBeNull();
   });
 });
 
@@ -208,6 +210,33 @@ describe("a party is only queueable while all of it is there", () => {
 
     expect(await repo.pruneStale()).not.toContain(partyId);
     expect(await repo.countQueuedPlayers()).toBe(3);
+  });
+
+  it("keeps a place for a tab the browser has throttled", async () => {
+    // The bug this rule replaced. A hidden tab has its timers cut to about one
+    // a minute after five minutes, so the heartbeat that used to prove liveness
+    // stopped arriving inside a twenty second window -- and the player was
+    // swept out of a queue they were still sat waiting in, having done nothing
+    // but look at another tab, which is the entire point of queueing.
+    //
+    // Every timestamp here is well past the cutoff. The socket is still open,
+    // and that is enough.
+    const { partyId, userIds } = await makeParty(handle, 3);
+    await repo.join({ partyId, regions: ["na"], ratingSnapshot: 1200, size: 3 });
+    for (const id of userIds) await goQuiet(id, QUEUE_STALE_AFTER_SECONDS + 300);
+
+    expect(await repo.pruneStale(userIds)).not.toContain(partyId);
+    expect(await repo.countQueuedPlayers()).toBe(3);
+  });
+
+  it("drops them once the socket goes too, not merely the heartbeat", async () => {
+    const { partyId, userIds } = await makeParty(handle, 3);
+    await repo.join({ partyId, regions: ["na"], ratingSnapshot: 1200, size: 3 });
+    for (const id of userIds) await goQuiet(id, QUEUE_STALE_AFTER_SECONDS + 300);
+
+    // Two are still connected; the third closed the browser. A party is only
+    // queueable while all of it is there.
+    expect(await repo.pruneStale(userIds.slice(0, 2))).toContain(partyId);
   });
 
   it("treats joining as a sign of life, so a fresh ticket survives its first tick", async () => {

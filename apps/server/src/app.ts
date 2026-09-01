@@ -344,6 +344,7 @@ export async function buildApp({
       population.nudge();
     },
     onError: (err, ctx) => server.log.error({ err, ctx }, "matchmaker error"),
+    connectedUserIds: () => notifier.onlineUserIds(),
   });
 
   const sweeper = new MatchSweeper(lifecycle, {
@@ -2313,6 +2314,32 @@ export async function buildApp({
     disconnectTimers.clear();
   });
 
+  /**
+   * How often a socket is asked to prove it is still there.
+   *
+   * Comfortably inside QUEUE_STALE_AFTER_SECONDS, because presence is what
+   * decides who keeps a queue slot: a peer that vanished has to be noticed
+   * before the absence it should have started could have run out.
+   */
+  const SOCKET_PING_MS = 8_000;
+
+  /**
+   * Stamps when the server last had this player on a socket.
+   *
+   * Written by the server rather than reported by the client, because it is
+   * what decides how long an absence has lasted -- and the client's own timer
+   * is precisely what cannot be relied on for that. Fire and forget: a missed
+   * stamp costs a ticket a few more seconds of grace, which is the harmless
+   * direction to be wrong in.
+   */
+  function markSeen(userId: string): void {
+    void db
+      .update(users)
+      .set({ lastSeenAt: new Date() })
+      .where(eq(users.id, userId))
+      .catch((err: unknown) => server.log.error({ err, userId }, "last seen update failed"));
+  }
+
   server.get("/ws", { websocket: true }, async (socket, req) => {
     const token =
       (req.query as Record<string, string>)?.token ??
@@ -2331,6 +2358,39 @@ export async function buildApp({
     };
 
     notifier.add(userId, conn);
+    markSeen(userId);
+
+    /**
+     * Proof the peer is still on the other end.
+     *
+     * A socket the server holds but nobody is behind -- a closed laptop, a
+     * network that went away without a FIN -- is indistinguishable from a
+     * connected player, and presence now decides who keeps a queue slot. So it
+     * would hold one indefinitely, which is the same bug this fix set out to
+     * remove, arriving from the opposite direction.
+     *
+     * The protocol's own ping settles it, rather than anything the page has to
+     * run: a browser cannot throttle a pong, because the browser is not
+     * involved in sending one.
+     */
+    let alive = true;
+    socket.on("pong", () => {
+      alive = true;
+    });
+    const pinger = setInterval(() => {
+      if (!alive) {
+        socket.terminate();
+        return;
+      }
+      alive = false;
+      try {
+        socket.ping();
+      } catch {
+        // Already closing; the close handler does the rest.
+      }
+    }, SOCKET_PING_MS);
+    pinger.unref?.();
+
     // Tell this socket where things stand before anything changes: a second
     // window for someone already online moves no number, so the broadcast its
     // arrival triggers would not be sent.
@@ -2398,8 +2458,15 @@ export async function buildApp({
       }
     });
 
-    socket.on("close", () => notifier.remove(userId, conn));
-    socket.on("error", () => notifier.remove(userId, conn));
+    const gone = () => {
+      clearInterval(pinger);
+      notifier.remove(userId, conn);
+      // Stamped on the way out as well as on the way in, so "gone since" is a
+      // real time rather than whenever the client last managed a heartbeat.
+      markSeen(userId);
+    };
+    socket.on("close", gone);
+    socket.on("error", gone);
   });
 
   /**

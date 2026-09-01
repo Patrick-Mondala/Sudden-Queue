@@ -94,11 +94,35 @@ export class QueueRepository {
   }
 
   /**
-   * Drops tickets whose client stopped heartbeating. Returns the party ids so
-   * the caller can notify anyone still connected.
+   * Drops tickets whose players are gone. Returns the party ids so the caller
+   * can notify anyone still connected.
+   *
+   * `connected` is who the server is currently holding a socket for, and it is
+   * the authority on presence. It used to be inferred from a timer in the
+   * client sending a heartbeat every five seconds -- which a browser is free
+   * to ignore. Chrome throttles timers in a hidden tab to roughly one a minute
+   * after five minutes, so a player who queued and switched tabs stopped
+   * heartbeating inside a twenty second window and was swept out of a queue
+   * they were still waiting in. That is the normal way to use a queue, and the
+   * bug arrived reliably five minutes into every wait.
+   *
+   * So presence is now what the server observes rather than what the client
+   * claims. A throttled tab keeps its socket, so it keeps its place. The
+   * timestamps still decide *how long* an absence has to last, which is what
+   * stops a one-second reconnect costing somebody their slot.
    */
-  async pruneStale(): Promise<string[]> {
+  async pruneStale(connected: readonly string[] = []): Promise<string[]> {
     const cutoff = new Date(Date.now() - QUEUE_STALE_AFTER_SECONDS * 1000);
+    // Each id is bound as its own parameter rather than the list as one. A JS
+    // array handed to a sql template arrives as a single scalar, and casting
+    // that to uuid[] fails at the driver -- so the list is expanded here, with
+    // a uuid that matches nothing standing in for "nobody is connected" so the
+    // clause below never has to special-case an empty one.
+    const online = connected.length > 0 ? connected : ["00000000-0000-0000-0000-000000000000"];
+    const onlineList = sql.join(
+      online.map((id) => sql`${id}::uuid`),
+      sql`, `,
+    );
 
     // A party is only queueable while all of it is still there. Checking the
     // ticket alone let one connected member hold the slot for a whole stack
@@ -109,12 +133,18 @@ export class QueueRepository {
       .where(
         // The cutoff goes in as an ISO string with an explicit cast: a raw Date
         // inside a template reaches the driver as an object it will not encode.
-        sql`${queueTickets.heartbeatAt} < ${cutoff.toISOString()}::timestamptz
-            OR EXISTS (
+        //
+        // One condition, read as: this party has a member the server is not
+        // holding a socket for, who has also been gone long enough to mean it.
+        // Both halves are required -- presence alone would drop somebody for a
+        // reconnect that took a second, and staleness alone is the client-timer
+        // rule that a background tab breaks.
+        sql`EXISTS (
               SELECT 1
               FROM party_members pm
               JOIN users u ON u.id = pm.user_id
               WHERE pm.party_id = ${queueTickets.partyId}
+                AND u.id NOT IN (${onlineList})
                 AND (u.last_seen_at IS NULL OR u.last_seen_at < ${cutoff.toISOString()}::timestamptz)
             )`,
       )

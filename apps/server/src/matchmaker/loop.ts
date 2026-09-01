@@ -15,6 +15,16 @@ export interface MatchmakerEvents {
   onMatchCreated?: (match: CreatedMatch, region: string) => void | Promise<void>;
   onTicketsPruned?: (partyIds: string[]) => void | Promise<void>;
   onError?: (error: unknown, context: string) => void;
+
+  /**
+   * Who the server is currently holding a socket for.
+   *
+   * Presence is the server's own observation rather than something the client
+   * asserts on a timer, because a browser throttles timers in a hidden tab and
+   * a queue is the one screen people deliberately look away from. Absent in
+   * tests that do not care, which then prune on timestamps alone.
+   */
+  connectedUserIds?: () => readonly string[];
 }
 
 /**
@@ -57,7 +67,7 @@ export class Matchmaker {
     let created = 0;
 
     try {
-      const pruned = await this.queue.pruneStale();
+      const pruned = await this.queue.pruneStale(this.events.connectedUserIds?.() ?? []);
       if (pruned.length > 0) await this.events.onTicketsPruned?.(pruned);
     } catch (err) {
       this.events.onError?.(err, "pruneStale");
